@@ -1,0 +1,16 @@
+cat << 'EOF' >> .gitignore
+
+# Local Trading System Overrides
+*.db
+trading_system.db
+.env
+*.env
+.aws/
+credentials
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.backup
+EOF

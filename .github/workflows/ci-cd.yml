@@ -1,0 +1,136 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: trading-intelligence
+  ECS_CLUSTER: trading-intelligence
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run tests
+        run: pytest trading_system/tests -q
+
+  deploy:
+    if: github.event_name == 'push'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+      - name: Build and push image
+        id: image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" .
+          docker push "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          echo "image=$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+      - name: Register ECS task definitions
+        id: task-defs
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.image }}
+          SERVICES: api dashboard scheduler market_stream reconciliation trade_monitor reviews learning
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ecs-task-definitions
+          : > /tmp/ecs-task-definitions/services.txt
+
+          for service in $SERVICES; do
+            family="$ECS_CLUSTER-$service"
+            task_definition="$(aws ecs describe-task-definition \
+              --task-definition "$family" \
+              --query taskDefinition \
+              --output json)"
+            next_task_definition="$(echo "$task_definition" | jq \
+              --arg image "$IMAGE_URI" \
+              --arg container "$service" \
+              '.containerDefinitions |= map(if .name == $container then .image = $image else . end)
+              | del(
+                  .taskDefinitionArn,
+                  .revision,
+                  .status,
+                  .requiresAttributes,
+                  .compatibilities,
+                  .registeredAt,
+                  .registeredBy
+                )')"
+            task_definition_arn="$(aws ecs register-task-definition \
+              --cli-input-json "$next_task_definition" \
+              --query taskDefinition.taskDefinitionArn \
+              --output text)"
+
+            echo "$service $task_definition_arn" >> /tmp/ecs-task-definitions/services.txt
+            if [ "$service" = "api" ]; then
+              echo "api_task_definition=$task_definition_arn" >> "$GITHUB_OUTPUT"
+            fi
+          done
+      - name: Run Alembic migration task
+        env:
+          TASK_DEFINITION: ${{ steps.task-defs.outputs.api_task_definition }}
+          SUBNETS: ${{ secrets.ECS_SUBNETS }}
+          SECURITY_GROUPS: ${{ secrets.ECS_SECURITY_GROUPS }}
+        run: |
+          set -euo pipefail
+          task_arn="$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --launch-type FARGATE \
+            --task-definition "$TASK_DEFINITION" \
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUPS],assignPublicIp=DISABLED}" \
+            --overrides '{"containerOverrides":[{"name":"api","command":["alembic","-c","trading_system/alembic.ini","upgrade","head"]}]}' \
+            --query 'tasks[0].taskArn' \
+            --output text)"
+
+          if [ "$task_arn" = "None" ] || [ -z "$task_arn" ]; then
+            echo "Migration task did not start."
+            exit 1
+          fi
+
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$task_arn"
+          exit_code="$(aws ecs describe-tasks \
+            --cluster "$ECS_CLUSTER" \
+            --tasks "$task_arn" \
+            --query "tasks[0].containers[?name=='api'].exitCode | [0]" \
+            --output text)"
+
+          if [ "$exit_code" != "0" ]; then
+            reason="$(aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --tasks "$task_arn" \
+              --query "tasks[0].containers[?name=='api'].reason | [0]" \
+              --output text)"
+            echo "Migration task failed with exit code $exit_code: $reason"
+            exit 1
+          fi
+      - name: Roll ECS services
+        run: |
+          set -euo pipefail
+          while read -r service task_definition; do
+            aws ecs update-service \
+              --cluster "$ECS_CLUSTER" \
+              --service "trading-intelligence-$service" \
+              --task-definition "$task_definition"
+          done < /tmp/ecs-task-definitions/services.txt
