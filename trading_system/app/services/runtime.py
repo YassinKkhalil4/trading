@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import desc, select
 
 from trading_system.app.ai.thesis_engine import build_rule_based_thesis
 from trading_system.app.catalysts.catalyst_engine import CatalystEngine, CatalystRunResult
@@ -70,7 +70,7 @@ from trading_system.app.research.vectorbt_backtests import (
 from trading_system.app.risk.kill_switch import KillSwitchActionResult, KillSwitchService
 from trading_system.app.regime.regime_service import MarketRegimeService, RegimeRunResult
 from trading_system.app.risk.live_gates import LiveGateService
-from trading_system.app.risk.risk_engine import PortfolioState, RiskEngine
+from trading_system.app.risk.risk_engine import PortfolioState, RiskDecision, RiskEngine
 from trading_system.app.risk.live_readiness import LiveReadinessResult, LiveReadinessService
 from trading_system.app.scanners.production_scanners import (
     ProductionScannerEngine,
@@ -78,6 +78,7 @@ from trading_system.app.scanners.production_scanners import (
 )
 from trading_system.app.security.auth import AuthService
 from trading_system.app.scanners.vwap_reclaim import VwapReclaimScanner, VwapReclaimSnapshot
+from trading_system.app.services.replay.decision_snapshot_service import DecisionSnapshotService
 from trading_system.app.services.scheduler import ScheduledCollectorRunner, ScheduledJobResult
 from trading_system.app.signals.signal_engine import SignalEngine, TradeSignal
 from trading_system.app.strategies.approval import (
@@ -308,27 +309,37 @@ class TradingRuntimeService:
             weekly_loss_pct=weekly_loss_pct,
         )
         volatility_score = self._latest_volatility_score(signal.symbol)
-        risk_decision = RiskEngine(self.settings).evaluate(
-            signal,
-            PortfolioState(
-                account_equity=account_equity,
-                open_positions=open_positions,
-                daily_loss_pct=loss_controls["daily_loss_pct"],
-                weekly_loss_pct=loss_controls["weekly_loss_pct"],
-                sector_exposure_pct=sector_exposure_pct,
-                symbol_exposure_pct=symbol_exposure_pct,
-                strategy_exposure_pct=strategy_exposure_pct,
-                correlated_exposure_pct=correlated_exposure_pct,
-                overnight_exposure_pct=overnight_exposure_pct,
-                event_risk_active=event_risk_active,
-                spread_bps=spread_bps,
-                expected_slippage_bps=expected_slippage_bps,
-                volatility_score=volatility_score,
-                trades_today=trades_today,
-                trades_by_strategy_today={signal.strategy_id: strategy_trades_today},
-                broker_sync_ok=reconciliation.ok,
-                broker_sync_reason=reconciliation.reason,
-            ),
+        portfolio_state = PortfolioState(
+            account_equity=account_equity,
+            open_positions=open_positions,
+            daily_loss_pct=loss_controls["daily_loss_pct"],
+            weekly_loss_pct=loss_controls["weekly_loss_pct"],
+            sector_exposure_pct=sector_exposure_pct,
+            symbol_exposure_pct=symbol_exposure_pct,
+            strategy_exposure_pct=strategy_exposure_pct,
+            correlated_exposure_pct=correlated_exposure_pct,
+            overnight_exposure_pct=overnight_exposure_pct,
+            event_risk_active=event_risk_active,
+            spread_bps=spread_bps,
+            expected_slippage_bps=expected_slippage_bps,
+            volatility_score=volatility_score,
+            trades_today=trades_today,
+            trades_by_strategy_today={signal.strategy_id: strategy_trades_today},
+            broker_sync_ok=reconciliation.ok,
+            broker_sync_reason=reconciliation.reason,
+        )
+        risk_decision = RiskEngine(self.settings).evaluate(signal, portfolio_state)
+        risk_context = self._risk_snapshot_context(
+            signal_row=signal_row,
+            volatility_score=volatility_score,
+            spread_bps=spread_bps,
+        )
+        self._capture_risk_decision_snapshot(
+            signal=signal,
+            signal_id=signal_row.id,
+            portfolio_state=portfolio_state,
+            risk_decision=risk_decision,
+            risk_context=risk_context,
         )
         self._record_risk_operational_effects(
             signal=signal,
@@ -660,28 +671,38 @@ class TradingRuntimeService:
             weekly_loss_pct=weekly_loss_pct,
         )
         volatility_score = self._latest_volatility_score(signal.symbol)
-        risk_decision = RiskEngine(self.settings).evaluate(
-            signal,
-            PortfolioState(
-                account_equity=account_equity,
-                open_positions=open_positions,
-                daily_loss_pct=loss_controls["daily_loss_pct"],
-                weekly_loss_pct=loss_controls["weekly_loss_pct"],
-                sector_exposure_pct=sector_exposure_pct,
-                symbol_exposure_pct=symbol_exposure_pct,
-                strategy_exposure_pct=strategy_exposure_pct,
-                correlated_exposure_pct=correlated_exposure_pct,
-                overnight_exposure_pct=overnight_exposure_pct,
-                event_risk_active=event_risk_active,
-                spread_bps=spread_bps,
-                expected_slippage_bps=expected_slippage_bps,
-                volatility_score=volatility_score,
-                trades_today=trades_today,
-                trades_by_strategy_today={signal.strategy_id: strategy_trades_today},
-                broker_sync_ok=reconciliation.ok,
-                broker_sync_reason=reconciliation.reason,
-                kill_switch_active=self.repository.active_kill_switch_count() > 0,
-            ),
+        portfolio_state = PortfolioState(
+            account_equity=account_equity,
+            open_positions=open_positions,
+            daily_loss_pct=loss_controls["daily_loss_pct"],
+            weekly_loss_pct=loss_controls["weekly_loss_pct"],
+            sector_exposure_pct=sector_exposure_pct,
+            symbol_exposure_pct=symbol_exposure_pct,
+            strategy_exposure_pct=strategy_exposure_pct,
+            correlated_exposure_pct=correlated_exposure_pct,
+            overnight_exposure_pct=overnight_exposure_pct,
+            event_risk_active=event_risk_active,
+            spread_bps=spread_bps,
+            expected_slippage_bps=expected_slippage_bps,
+            volatility_score=volatility_score,
+            trades_today=trades_today,
+            trades_by_strategy_today={signal.strategy_id: strategy_trades_today},
+            broker_sync_ok=reconciliation.ok,
+            broker_sync_reason=reconciliation.reason,
+            kill_switch_active=self.repository.active_kill_switch_count() > 0,
+        )
+        risk_decision = RiskEngine(self.settings).evaluate(signal, portfolio_state)
+        risk_context = self._risk_snapshot_context(
+            signal_row=signal_row,
+            volatility_score=volatility_score,
+            spread_bps=spread_bps,
+        )
+        self._capture_risk_decision_snapshot(
+            signal=signal,
+            signal_id=signal_row.id,
+            portfolio_state=portfolio_state,
+            risk_decision=risk_decision,
+            risk_context=risk_context,
         )
         self._record_risk_operational_effects(
             signal=signal,
@@ -897,6 +918,48 @@ class TradingRuntimeService:
             payload={"order": model_to_dict(order), "actor": actor, **(payload or {})},
             source_timestamp=datetime.now(UTC),
         )
+
+    def _capture_risk_decision_snapshot(
+        self,
+        *,
+        signal: TradeSignal,
+        signal_id: str,
+        portfolio_state: PortfolioState,
+        risk_decision: RiskDecision,
+        risk_context: dict[str, Any],
+    ) -> None:
+        DecisionSnapshotService(self.repository).capture_risk_decision(
+            signal=signal,
+            signal_id=signal_id,
+            portfolio_state=portfolio_state,
+            risk_decision=risk_decision,
+            risk_context=risk_context,
+            source_timestamp=signal.source_timestamp,
+        )
+
+    def _risk_snapshot_context(
+        self,
+        *,
+        signal_row: models.Signal,
+        volatility_score: float | None,
+        spread_bps: float,
+    ) -> dict[str, Any]:
+        context: dict[str, Any] = {
+            "volatility_score": volatility_score,
+            "spread_bps": spread_bps,
+        }
+        version = self.repository.session.scalar(
+            select(models.SignalVersion)
+            .where(models.SignalVersion.signal_id == signal_row.id)
+            .order_by(desc(models.SignalVersion.created_at))
+            .limit(1)
+        )
+        if version and isinstance(version.payload, dict):
+            if version.payload.get("regime_reference"):
+                context["regime_state"] = {"reference": version.payload["regime_reference"]}
+            if version.payload.get("catalyst_reference"):
+                context["catalyst_state"] = {"reference": version.payload["catalyst_reference"]}
+        return context
 
     def _record_risk_operational_effects(
         self,

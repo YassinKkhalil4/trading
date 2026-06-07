@@ -2175,6 +2175,79 @@ class TradingRepository:
         self.session.commit()
         return row
 
+    def store_decision_snapshot(
+        self,
+        *,
+        stage: str,
+        decision_type: DecisionType,
+        outcome: DecisionOutcome,
+        symbol: str,
+        strategy_id: str,
+        entity_id: str,
+        rule_version: str,
+        reason: str,
+        payload: dict,
+        source_timestamp: datetime,
+    ) -> models.DecisionLog:
+        safe_payload = _json_safe(payload)
+        row = models.DecisionLog(
+            decision_type=decision_type.value,
+            outcome=outcome.value,
+            entity_type="decision_snapshot",
+            entity_id=entity_id,
+            strategy_id=strategy_id,
+            rule_version=rule_version,
+            reason=reason,
+            payload={
+                "snapshot_stage": stage,
+                "symbol": symbol,
+                **safe_payload,
+            },
+            source_timestamp=source_timestamp,
+        )
+        self.session.add(row)
+        self.session.add(
+            models.AuditLog(
+                actor="system",
+                event_type=f"decision_snapshot:{stage}:{outcome.value}",
+                entity_type="decision_snapshot",
+                entity_id=entity_id,
+                reason=reason,
+                payload={
+                    "snapshot_stage": stage,
+                    "symbol": symbol,
+                    "strategy_id": strategy_id,
+                    "rule_version": rule_version,
+                    "decision_payload": safe_payload,
+                },
+                source_timestamp=source_timestamp,
+            )
+        )
+        self.session.commit()
+        return row
+
+    def list_decision_snapshots(
+        self,
+        *,
+        stage: str | None = None,
+        entity_id: str | None = None,
+        limit: int = 50,
+    ) -> list[models.DecisionLog]:
+        query = select(models.DecisionLog).where(models.DecisionLog.entity_type == "decision_snapshot")
+        if entity_id:
+            query = query.where(models.DecisionLog.entity_id == entity_id)
+        fetch_limit = limit * 5 if stage else limit
+        rows = list(
+            self.session.scalars(query.order_by(desc(models.DecisionLog.created_at)).limit(fetch_limit)).all()
+        )
+        if stage:
+            rows = [
+                row
+                for row in rows
+                if isinstance(row.payload, dict) and row.payload.get("snapshot_stage") == stage
+            ]
+        return rows[:limit]
+
     def store_audit_log(
         self,
         *,
