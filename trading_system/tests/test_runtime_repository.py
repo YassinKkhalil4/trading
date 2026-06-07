@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from types import SimpleNamespace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import sessionmaker
@@ -15,6 +15,7 @@ from trading_system.app.db.base import Base
 from trading_system.app.db.repositories import TradingRepository
 from trading_system.app.db.session import build_engine
 from trading_system.app.execution.alpaca_paper_adapter import AlpacaPaperOrderResult
+from trading_system.app.features.production_features import ProductionFeatureEngine
 from trading_system.app.services.runtime import TradingRuntimeService
 from trading_system.app.strategies.registry import StrategyRegistryService
 
@@ -333,6 +334,107 @@ def test_broker_order_updates_are_archived_when_raw_archive_bucket_is_configured
     assert archived_objects[0]["Key"].startswith(
         "raw/broker_order/provider=alpaca_live/symbol=AMD/date=2026/06/06/"
     )
+
+
+def test_raw_ingestion_payloads_are_archived_with_distinct_utc_timestamps(monkeypatch):
+    repo = _repo()
+    archived_objects: list[dict] = []
+
+    class FakeS3Client:
+        def put_object(self, **kwargs):
+            archived_objects.append(kwargs)
+
+    def fake_client(service_name: str, **_kwargs):
+        assert service_name == "s3"
+        return FakeS3Client()
+
+    monkeypatch.setenv("RAW_ARCHIVE_BUCKET", "trading-raw-archive")
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=fake_client))
+
+    source_timestamp = datetime(2026, 6, 3, 9, 31, tzinfo=ZoneInfo("America/New_York"))
+    received_at = datetime(2026, 6, 3, 13, 31, 2, tzinfo=UTC)
+    repo.enqueue_raw_market_bar(
+        {
+            "provider": "alpaca_market_data",
+            "symbol": "AMD",
+            "timeframe": "1Min",
+            "source_timestamp": source_timestamp,
+            "received_at": received_at,
+            "raw_payload": {"o": 100.0, "h": 101.0, "l": 99.0, "c": 100.5, "v": 1000},
+        }
+    )
+    repo.enqueue_raw_trade_tick(
+        provider="alpaca_market_data",
+        symbol="AMD",
+        trade_id="trade-1",
+        source_timestamp=source_timestamp,
+        received_at=received_at,
+        price=100.25,
+        size=100,
+        raw_payload={"i": "trade-1", "p": 100.25, "s": 100},
+    )
+    repo.enqueue_raw_news(
+        provider="unit_news",
+        symbol="AMD",
+        headline="AMD unit test headline",
+        url="https://example.test/news",
+        source_timestamp=source_timestamp,
+        raw_payload={"headline": "AMD unit test headline"},
+    )
+
+    archive_payloads = [json.loads(item["Body"].decode("utf-8")) for item in archived_objects]
+    assert {payload["category"] for payload in archive_payloads} == {
+        "market_data",
+        "trade_ticks",
+        "news",
+    }
+    assert all(payload["source_timestamp"].endswith("+00:00") for payload in archive_payloads)
+    assert all(payload["received_at"].endswith("+00:00") for payload in archive_payloads)
+    assert all(payload["processed_at"].endswith("+00:00") for payload in archive_payloads)
+    assert repo.counts()["raw_ingestion_events"] == 3
+    assert repo.counts()["raw_trade_ticks"] == 1
+
+
+def test_feature_store_blocks_when_clean_candle_status_is_invalid():
+    repo = _repo()
+    timestamps = [
+        datetime(2026, 6, 3, 13, 30, tzinfo=UTC),
+        datetime(2026, 6, 3, 13, 31, tzinfo=UTC),
+        datetime(2026, 6, 3, 13, 32, tzinfo=UTC),
+    ]
+    candles = [
+        {"open": 100.0, "high": 101.0, "low": 99.5, "close": 100.0, "volume": 1000.0},
+        {"open": 100.0, "high": 102.0, "low": 99.5, "close": 101.0, "volume": 1100.0},
+        {"open": 140.0, "high": 142.0, "low": 139.0, "close": 141.0, "volume": 1200.0},
+    ]
+    for timestamp, candle in zip(timestamps, candles, strict=True):
+        raw_id = repo.store_raw_candle(
+            {
+                "provider": "alpaca_market_data",
+                "symbol": "AMD",
+                "timeframe": "1Min",
+                "source_timestamp": timestamp,
+                "raw_payload": candle,
+            }
+        )
+        repo.store_clean_candle(
+            {
+                "raw_market_data_id": raw_id,
+                "provider": "alpaca_market_data",
+                "symbol": "AMD",
+                "timeframe": "1Min",
+                "source_timestamp": timestamp,
+                "data_quality_status": "VALID",
+                "quality_reason": "test",
+                **candle,
+            }
+        )
+
+    result = ProductionFeatureEngine(repo).run_once(["AMD"])
+
+    assert any(row["data_quality_status"] == "SUSPICIOUS_PRICE" for row in repo.latest_clean_candles(3))
+    assert result.intraday_snapshots == 0
+    assert repo.latest_features(1) == []
 
 
 def test_submit_signal_to_paper_uses_broker_equity_loss_for_kill_switch():

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -28,10 +29,282 @@ class OrderManagerResult:
     version: str = ORDER_MANAGER_VERSION
 
 
+@dataclass(frozen=True)
+class BrokerOrderEventResult:
+    success: bool
+    duplicate: bool
+    orders_seen: int
+    orders_changed: int
+    reason: str
+    order: dict[str, Any] | None
+    fill: dict[str, Any] | None
+    payload: dict[str, Any]
+    version: str = ORDER_MANAGER_VERSION
+
+
 class OrderManager:
     def __init__(self, repository: TradingRepository, settings: Settings | None = None) -> None:
         self.repository = repository
         self.settings = settings or get_settings()
+
+    @staticmethod
+    def build_client_order_id(
+        *,
+        namespace: str,
+        symbol: str,
+        strategy_id: str | None,
+        source_timestamp: datetime,
+        side: str,
+        leg: str = "entry",
+    ) -> str:
+        raw = "|".join(
+            [
+                namespace.strip().lower(),
+                symbol.strip().upper(),
+                (strategy_id or "none").strip().upper(),
+                source_timestamp.isoformat(),
+                side.strip().lower(),
+                leg.strip().lower(),
+            ]
+        )
+        return f"oms-{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:32]}-{leg.strip().lower()}"
+
+    def request_bracket_order(
+        self,
+        *,
+        signal_id: str | None,
+        strategy_id: str | None,
+        symbol: str,
+        side: str,
+        quantity: float,
+        limit_price: float,
+        stop_loss: float,
+        take_profit_price: float,
+        environment_mode: str,
+        execution_environment: str,
+        broker: str,
+        source_timestamp: datetime | None = None,
+        reason: str = "Bracket order accepted by OMS.",
+    ) -> OrderManagerResult:
+        source_timestamp = source_timestamp or datetime.now(UTC)
+        normalized_symbol = symbol.strip().upper()
+        normalized_side = side.strip().lower()
+        if normalized_side not in {"buy", "sell"}:
+            return OrderManagerResult(False, 0, 0, "Bracket order side must be buy or sell.", {})
+        if quantity <= 0:
+            return OrderManagerResult(False, 0, 0, "Bracket order quantity must be positive.", {})
+        if limit_price <= 0 or stop_loss <= 0 or take_profit_price <= 0:
+            return OrderManagerResult(False, 0, 0, "Bracket order prices must be positive.", {})
+
+        exit_side = "sell" if normalized_side == "buy" else "buy"
+        leg_specs = [
+            ("entry", normalized_side, "limit", limit_price, stop_loss, OrderStatus.SUBMITTED.value),
+            ("take_profit", exit_side, "limit", take_profit_price, None, OrderStatus.CREATED.value),
+            ("stop_loss", exit_side, "stop", None, stop_loss, OrderStatus.CREATED.value),
+        ]
+        client_order_ids = {
+            leg: self.build_client_order_id(
+                namespace="bracket",
+                symbol=normalized_symbol,
+                strategy_id=strategy_id,
+                source_timestamp=source_timestamp,
+                side=normalized_side,
+                leg=leg,
+            )
+            for leg, *_ in leg_specs
+        }
+        existing = self.repository.session.scalars(
+            select(models.Order).where(models.Order.idempotency_key.in_(client_order_ids.values()))
+        ).all()
+        if existing:
+            self.repository.store_decision_log(
+                decision_type=DecisionType.EXECUTION,
+                outcome=DecisionOutcome.BLOCKED,
+                entity_type="order",
+                entity_id=existing[0].id,
+                strategy_id=strategy_id,
+                rule_version=ORDER_MANAGER_VERSION,
+                reason="Duplicate bracket ClOrdID rejected before broker submission.",
+                payload={
+                    "client_order_ids": client_order_ids,
+                    "existing_orders": [model_to_dict(row) for row in existing],
+                },
+                source_timestamp=source_timestamp,
+            )
+            return OrderManagerResult(
+                False,
+                len(existing),
+                0,
+                "Duplicate bracket ClOrdID rejected before broker submission.",
+                {"orders": [model_to_dict(row) for row in existing], "client_order_ids": client_order_ids},
+            )
+
+        rows = []
+        for leg, leg_side, order_type, leg_limit, leg_stop, status in leg_specs:
+            row = models.Order(
+                signal_id=signal_id,
+                idempotency_key=client_order_ids[leg],
+                environment_mode=environment_mode,
+                execution_environment=execution_environment,
+                broker=broker,
+                broker_order_id=None,
+                symbol=normalized_symbol,
+                side=leg_side,
+                quantity=quantity,
+                order_type=order_type,
+                limit_price=leg_limit,
+                stop_loss=leg_stop,
+                status=status,
+                rejection_reason=None,
+                expected_price=leg_limit,
+                submitted_at=datetime.now(UTC) if status == OrderStatus.SUBMITTED.value else None,
+                source_timestamp=source_timestamp,
+            )
+            self.repository.session.add(row)
+            rows.append((leg, row))
+        self.repository.session.commit()
+        payload = {
+            "order_class": "bracket",
+            "client_order_ids": client_order_ids,
+            "legs": {leg: model_to_dict(row) for leg, row in rows},
+        }
+        self.repository.store_decision_log(
+            decision_type=DecisionType.EXECUTION,
+            outcome=DecisionOutcome.APPROVED,
+            entity_type="order",
+            entity_id=rows[0][1].id,
+            strategy_id=strategy_id,
+            rule_version=ORDER_MANAGER_VERSION,
+            reason=reason,
+            payload=payload,
+            source_timestamp=source_timestamp,
+        )
+        return OrderManagerResult(
+            True,
+            3,
+            3,
+            "Bracket order legs recorded with strict ClOrdIDs.",
+            payload,
+        )
+
+    def apply_broker_order_event(
+        self,
+        *,
+        broker_order: dict[str, Any],
+        environment_mode: str,
+        broker: str = "alpaca_live",
+    ) -> BrokerOrderEventResult:
+        client_order_id = str(broker_order.get("client_order_id") or "").strip()
+        broker_order_id = str(broker_order.get("id") or "").strip()
+        if not client_order_id and not broker_order_id:
+            reason = "Broker order event ignored because it has no ClOrdID or broker order id."
+            self.repository.store_execution_error(
+                order_id=None,
+                environment_mode=environment_mode,
+                error_type="BROKER_ORDER_EVENT_MISSING_ID",
+                reason=reason,
+                payload=broker_order,
+            )
+            return BrokerOrderEventResult(False, False, 0, 0, reason, None, None, {"broker_order": broker_order})
+
+        row = None
+        if client_order_id:
+            row = self.repository.session.scalar(
+                select(models.Order).where(models.Order.idempotency_key == client_order_id)
+            )
+        if not row and broker_order_id:
+            row = self.repository.session.scalar(
+                select(models.Order).where(models.Order.broker_order_id == broker_order_id)
+            )
+        if not row:
+            reason = "Unknown broker order event ignored; OMS will not create live orders from webhooks."
+            self.repository.store_audit_log(
+                actor="system",
+                event_type="UNKNOWN_BROKER_ORDER_EVENT_IGNORED",
+                entity_type="order",
+                entity_id=client_order_id or broker_order_id,
+                reason=reason,
+                payload={"broker": broker, "environment_mode": environment_mode, "broker_order": broker_order},
+            )
+            return BrokerOrderEventResult(True, True, 0, 0, reason, None, None, {"broker_order": broker_order})
+
+        previous = model_to_dict(row)
+        next_status = self._normalize_broker_status(str(broker_order.get("status") or row.status))
+        fill = self.repository.store_broker_fill_from_order(order=row, broker_order=broker_order)
+        if (
+            row.status == next_status
+            and (not broker_order_id or row.broker_order_id == broker_order_id)
+            and fill is None
+        ):
+            reason = "Duplicate broker order event ignored; no OMS state changed."
+            self.repository.store_audit_log(
+                actor="system",
+                event_type="DUPLICATE_BROKER_ORDER_EVENT_IGNORED",
+                entity_type="order",
+                entity_id=row.id,
+                reason=reason,
+                payload={"broker_order": broker_order, "previous_order": previous},
+            )
+            return BrokerOrderEventResult(
+                True,
+                True,
+                1,
+                0,
+                reason,
+                model_to_dict(row),
+                None,
+                {"broker_order": broker_order},
+            )
+
+        row.broker_order_id = broker_order_id or row.broker_order_id
+        row.status = next_status
+        if next_status == OrderStatus.REJECTED.value:
+            row.rejection_reason = (
+                str(
+                    broker_order.get("failed_reason")
+                    or broker_order.get("reject_reason")
+                    or broker_order.get("reason")
+                    or "Broker reported order rejection."
+                )
+            )
+        if next_status in {OrderStatus.CANCELLED.value, OrderStatus.STALE_CANCELLED.value}:
+            row.cancelled_at = datetime.now(UTC)
+        row.limit_price = self._float_or_none(broker_order.get("limit_price")) or row.limit_price
+        self.repository.session.commit()
+
+        if next_status == OrderStatus.REJECTED.value and previous["status"] != OrderStatus.REJECTED.value:
+            self.repository.store_execution_error(
+                order_id=row.id,
+                environment_mode=environment_mode,
+                error_type="BROKER_ORDER_REJECTED",
+                reason=row.rejection_reason or "Broker reported order rejection.",
+                payload={"broker_order": broker_order, "previous_order": previous},
+            )
+        self.repository.store_decision_log(
+            decision_type=DecisionType.EXECUTION,
+            outcome=DecisionOutcome.CHANGED,
+            entity_type="order",
+            entity_id=row.id,
+            strategy_id=None,
+            rule_version=ORDER_MANAGER_VERSION,
+            reason="Broker order event applied to OMS state.",
+            payload={
+                "previous_order": previous,
+                "order": model_to_dict(row),
+                "fill": model_to_dict(fill) if fill else None,
+                "broker_order": broker_order,
+            },
+        )
+        return BrokerOrderEventResult(
+            True,
+            False,
+            1,
+            1,
+            "Broker order event applied to OMS state.",
+            model_to_dict(row),
+            model_to_dict(fill) if fill else None,
+            {"broker_order": broker_order},
+        )
 
     def cancel_stale_orders(self) -> OrderManagerResult:
         cutoff = datetime.now(UTC) - timedelta(seconds=self.settings.max_order_stale_seconds)
@@ -343,3 +616,29 @@ class OrderManager:
             "reason": f"Unsupported environment for stale broker cancellation: {row.environment_mode}.",
             "broker_order_id": row.broker_order_id,
         }
+
+    @staticmethod
+    def _normalize_broker_status(status: str) -> str:
+        normalized = status.strip().lower()
+        if normalized in {"new", "accepted", "pending_new", "accepted_for_bidding", "submitted"}:
+            return OrderStatus.SUBMITTED.value
+        if normalized in {"partially_filled", "partial_fill", "partial"}:
+            return OrderStatus.PARTIALLY_FILLED.value
+        if normalized in {"filled", "done_for_day"}:
+            return OrderStatus.FILLED.value
+        if normalized in {"canceled", "cancelled"}:
+            return OrderStatus.CANCELLED.value
+        if normalized in {"expired", "stopped"}:
+            return OrderStatus.STALE_CANCELLED.value
+        if normalized in {"rejected", "suspended", "calculated"}:
+            return OrderStatus.REJECTED.value
+        return status.strip().upper()
+
+    @staticmethod
+    def _float_or_none(value: Any) -> float | None:
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None

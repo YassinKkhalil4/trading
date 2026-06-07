@@ -20,11 +20,11 @@ from trading_system.app.execution.alpaca_live_adapter import (
     AlpacaLiveEmergencyResult,
     AlpacaLiveOrderResult,
 )
+from trading_system.app.execution.order_manager import OrderManager
 from trading_system.app.execution.paper_execution import PaperOrder
 from trading_system.app.execution.reconciliation import ReconciliationResult
 from trading_system.app.risk.live_gates import LIVE_GATE_VERSION, LiveGateService
 from trading_system.app.risk.risk_engine import RiskDecision
-from trading_system.app.signals.idempotency import build_idempotency_key
 from trading_system.app.signals.signal_engine import TradeSignal
 
 
@@ -70,12 +70,13 @@ class LiveExecutionService:
         if not reconciliation.ok:
             return self._blocked(signal, signal_id, reconciliation.reason, gate.__dict__)
 
-        order_key = build_idempotency_key(
+        order_key = OrderManager.build_client_order_id(
             namespace="live_order",
             symbol=signal.symbol,
             strategy_id=signal.strategy_id,
             source_timestamp=signal.source_timestamp,
-            direction=signal.direction.value,
+            side=signal.direction.value,
+            leg="entry",
         )
         existing_order = self.repository.session.scalar(
             select(models.Order).where(models.Order.idempotency_key == order_key)

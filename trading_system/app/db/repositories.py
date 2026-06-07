@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import UTC, datetime, timedelta
@@ -12,8 +13,10 @@ from sqlalchemy.orm import Session
 
 from trading_system.app.ai.thesis_engine import AIThesis
 from trading_system.app.core.enums import (
+    DataQualityStatus,
     DecisionOutcome,
     DecisionType,
+    Direction,
     ExecutionEnvironment,
     LiveApprovalStatus,
     OrderStatus,
@@ -21,6 +24,7 @@ from trading_system.app.core.enums import (
     SignalStatus,
     StrategyApprovalStatus,
     StrategyStatus,
+    TradeType,
 )
 from trading_system.app.db import models
 from trading_system.app.db.base import Base
@@ -41,6 +45,14 @@ def model_to_dict(row: Any) -> dict[str, Any]:
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _as_utc(value: datetime | None = None) -> datetime:
+    if value is None:
+        return _now()
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 class TradingRepository:
@@ -393,18 +405,29 @@ class TradingRepository:
         return row
 
     def store_raw_candle(self, payload: dict) -> str:
+        source_timestamp = _as_utc(payload["source_timestamp"])
+        received_at = _as_utc(payload.get("received_at"))
+        processed_at = _now()
         existing = self.session.scalar(
             select(models.RawMarketData).where(
                 models.RawMarketData.provider == payload["provider"],
-                models.RawMarketData.symbol == payload["symbol"],
+                models.RawMarketData.symbol == payload["symbol"].upper(),
                 models.RawMarketData.timeframe == payload["timeframe"],
-                models.RawMarketData.source_timestamp == payload["source_timestamp"],
+                models.RawMarketData.source_timestamp == source_timestamp,
             )
         )
         if existing:
             return existing.id
 
-        row = models.RawMarketData(**payload)
+        row = models.RawMarketData(
+            provider=payload["provider"],
+            symbol=payload["symbol"].upper(),
+            timeframe=payload["timeframe"],
+            source_timestamp=source_timestamp,
+            raw_payload=payload["raw_payload"],
+            received_at=received_at,
+            processed_at=processed_at,
+        )
         self.session.add(row)
         try:
             self.session.commit()
@@ -413,25 +436,113 @@ class TradingRepository:
             existing = self.session.scalar(
                 select(models.RawMarketData).where(
                     models.RawMarketData.provider == payload["provider"],
-                    models.RawMarketData.symbol == payload["symbol"],
+                    models.RawMarketData.symbol == payload["symbol"].upper(),
                     models.RawMarketData.timeframe == payload["timeframe"],
-                    models.RawMarketData.source_timestamp == payload["source_timestamp"],
+                    models.RawMarketData.source_timestamp == source_timestamp,
                 )
             )
             if existing:
                 return existing.id
             raise
+        self._record_raw_ingestion_event(
+            payload_type="raw_market_bars",
+            provider=payload["provider"],
+            symbol=payload["symbol"],
+            raw_table=models.RawMarketData.__tablename__,
+            raw_row_id=row.id,
+            raw_payload=payload["raw_payload"],
+            source_timestamp=source_timestamp,
+            received_at=received_at,
+            processed_at=processed_at,
+        )
         self._archive_raw_payload(
             category="market_data",
             provider=payload["provider"],
             symbol=payload["symbol"],
             row_id=row.id,
-            source_timestamp=payload["source_timestamp"],
+            source_timestamp=source_timestamp,
+            received_at=received_at,
+            processed_at=processed_at,
             payload=payload["raw_payload"],
         )
         return row.id
 
+    def enqueue_raw_market_bar(self, payload: dict) -> str:
+        return self.store_raw_candle(payload)
+
+    def store_raw_trade_tick(
+        self,
+        *,
+        provider: str,
+        symbol: str,
+        raw_payload: dict,
+        source_timestamp: datetime,
+        trade_id: str | None = None,
+        price: float | None = None,
+        size: float | None = None,
+        exchange: str | None = None,
+        conditions: list[str] | None = None,
+        received_at: datetime | None = None,
+    ) -> models.RawTradeTick:
+        source_timestamp = _as_utc(source_timestamp)
+        received_at = _as_utc(received_at)
+        processed_at = _now()
+        existing = None
+        if trade_id:
+            existing = self.session.scalar(
+                select(models.RawTradeTick).where(
+                    models.RawTradeTick.provider == provider,
+                    models.RawTradeTick.symbol == symbol.upper(),
+                    models.RawTradeTick.trade_id == trade_id,
+                )
+            )
+        if existing:
+            return existing
+        row = models.RawTradeTick(
+            provider=provider,
+            symbol=symbol.upper(),
+            trade_id=trade_id,
+            price=price,
+            size=size,
+            exchange=exchange,
+            conditions=conditions,
+            raw_payload=raw_payload,
+            source_timestamp=source_timestamp,
+            received_at=received_at,
+            processed_at=processed_at,
+        )
+        self.session.add(row)
+        self.session.commit()
+        self._record_raw_ingestion_event(
+            payload_type="raw_trade_ticks",
+            provider=provider,
+            symbol=symbol,
+            raw_table=models.RawTradeTick.__tablename__,
+            raw_row_id=row.id,
+            raw_payload=raw_payload,
+            source_timestamp=source_timestamp,
+            received_at=received_at,
+            processed_at=processed_at,
+        )
+        self._archive_raw_payload(
+            category="trade_ticks",
+            provider=provider,
+            symbol=symbol,
+            row_id=row.id,
+            source_timestamp=source_timestamp,
+            received_at=received_at,
+            processed_at=processed_at,
+            payload=raw_payload,
+        )
+        return row
+
+    def enqueue_raw_trade_tick(self, **kwargs: Any) -> models.RawTradeTick:
+        return self.store_raw_trade_tick(**kwargs)
+
     def store_clean_candle(self, payload: dict) -> str:
+        payload = dict(payload)
+        payload["symbol"] = payload["symbol"].upper()
+        payload["source_timestamp"] = _as_utc(payload["source_timestamp"])
         existing = self.session.scalar(
             select(models.CleanMarketData).where(
                 models.CleanMarketData.provider == payload["provider"],
@@ -441,8 +552,18 @@ class TradingRepository:
             )
         )
         if existing:
+            self.store_data_quality_error(
+                provider=payload["provider"],
+                symbol=payload["symbol"],
+                timeframe=payload["timeframe"],
+                data_quality_status=DataQualityStatus.SUSPICIOUS_PRICE.value,
+                reason="Duplicate provider/symbol/timeframe candle received.",
+                source_timestamp=payload["source_timestamp"],
+                payload=payload,
+            )
             return existing.id
 
+        self._apply_candle_quality_blocks(payload)
         row = models.CleanMarketData(**payload)
         self.session.add(row)
         try:
@@ -460,7 +581,55 @@ class TradingRepository:
             if existing:
                 return existing.id
             raise
+        if row.data_quality_status != DataQualityStatus.VALID.value:
+            self.store_data_quality_error(
+                provider=row.provider,
+                symbol=row.symbol,
+                timeframe=row.timeframe,
+                data_quality_status=row.data_quality_status,
+                reason=row.quality_reason or "Clean candle failed repository quality checks.",
+                source_timestamp=row.source_timestamp,
+                payload=payload,
+            )
         return row.id
+
+    def _apply_candle_quality_blocks(self, payload: dict) -> None:
+        if payload.get("data_quality_status") != DataQualityStatus.VALID.value:
+            return
+        previous = self.session.scalar(
+            select(models.CleanMarketData)
+            .where(
+                models.CleanMarketData.provider == payload["provider"],
+                models.CleanMarketData.symbol == payload["symbol"],
+                models.CleanMarketData.timeframe == payload["timeframe"],
+                models.CleanMarketData.source_timestamp < payload["source_timestamp"],
+            )
+            .order_by(desc(models.CleanMarketData.source_timestamp))
+            .limit(1)
+        )
+        if not previous:
+            return
+        timeframe_seconds = _timeframe_seconds(payload["timeframe"])
+        if timeframe_seconds:
+            gap_seconds = (payload["source_timestamp"] - _as_utc(previous.source_timestamp)).total_seconds()
+            if gap_seconds > timeframe_seconds * 1.5:
+                payload["data_quality_status"] = DataQualityStatus.STALE.value
+                payload["quality_reason"] = f"Missing candle gap detected before this candle: {gap_seconds:.0f}s."
+                return
+        previous_close = float(previous.close)
+        if previous_close <= 0:
+            return
+        largest_jump = max(
+            abs(float(payload["open"]) - previous_close),
+            abs(float(payload["high"]) - previous_close),
+            abs(float(payload["low"]) - previous_close),
+            abs(float(payload["close"]) - previous_close),
+        ) / previous_close
+        if largest_jump >= 0.25:
+            payload["data_quality_status"] = DataQualityStatus.SUSPICIOUS_PRICE.value
+            payload["quality_reason"] = (
+                f"Extreme price jump detected: {largest_jump * 100:.1f}% from prior close."
+            )
 
     def store_market_data_stream_event(
         self,
@@ -505,10 +674,15 @@ class TradingRepository:
         row_id: str,
         source_timestamp: datetime,
         payload: dict,
+        received_at: datetime | None = None,
+        processed_at: datetime | None = None,
     ) -> None:
         bucket = os.getenv("RAW_ARCHIVE_BUCKET", "").strip()
         if not bucket:
             return
+        source_timestamp = _as_utc(source_timestamp)
+        received_at = _as_utc(received_at)
+        processed_at = _as_utc(processed_at)
         key = _raw_archive_key(
             category=category,
             provider=provider,
@@ -522,6 +696,8 @@ class TradingRepository:
             "symbol": symbol,
             "row_id": row_id,
             "source_timestamp": source_timestamp,
+            "received_at": received_at,
+            "processed_at": processed_at,
             "payload": payload,
         }
         try:
@@ -562,6 +738,37 @@ class TradingRepository:
             reason="Raw provider payload archived to S3.",
             payload={"bucket": bucket, "key": key, "s3_uri": f"s3://{bucket}/{key}"},
         )
+
+    def _record_raw_ingestion_event(
+        self,
+        *,
+        payload_type: str,
+        provider: str,
+        symbol: str | None,
+        raw_table: str,
+        raw_row_id: str,
+        raw_payload: dict,
+        source_timestamp: datetime,
+        received_at: datetime,
+        processed_at: datetime,
+        status: str = "PROCESSED",
+    ) -> models.RawIngestionEvent:
+        row = models.RawIngestionEvent(
+            payload_type=payload_type,
+            provider=provider,
+            symbol=symbol.upper() if symbol else None,
+            status=status,
+            raw_table=raw_table,
+            raw_row_id=raw_row_id,
+            payload_hash=_payload_hash(raw_payload),
+            raw_payload=raw_payload,
+            source_timestamp=_as_utc(source_timestamp),
+            received_at=_as_utc(received_at),
+            processed_at=_as_utc(processed_at),
+        )
+        self.session.add(row)
+        self.session.commit()
+        return row
 
     def store_scheduler_run(
         self,
@@ -632,7 +839,7 @@ class TradingRepository:
             data_quality_status=data_quality_status,
             reason=reason,
             source_timestamp=source_timestamp,
-            payload=payload,
+            payload=_json_safe(payload) if payload is not None else None,
         )
         self.session.add(row)
         self.session.commit()
@@ -699,6 +906,9 @@ class TradingRepository:
                 "trade_count": row.trade_count,
                 "provider": row.provider,
                 "symbol": row.symbol,
+                "raw_market_data_id": row.raw_market_data_id,
+                "data_quality_status": row.data_quality_status,
+                "quality_reason": row.quality_reason,
             }
             for row in rows
         ]
@@ -1353,6 +1563,8 @@ class TradingRepository:
         )
         self.session.add(row)
         self.session.commit()
+        if order.signal_id:
+            self.persist_journal_lifecycle_for_signal(signal_id=order.signal_id)
         return row
 
     def store_broker_sync(
@@ -1630,25 +1842,46 @@ class TradingRepository:
         raw_payload: dict,
         source_timestamp: datetime,
     ) -> models.RawNews:
+        source_timestamp = _as_utc(source_timestamp)
+        received_at = _now()
+        processed_at = _now()
         row = models.RawNews(
             provider=provider,
-            symbol=symbol,
+            symbol=symbol.upper() if symbol else None,
             headline=headline,
             url=url,
             raw_payload=raw_payload,
             source_timestamp=source_timestamp,
+            received_at=received_at,
+            processed_at=processed_at,
         )
         self.session.add(row)
         self.session.commit()
+        self._record_raw_ingestion_event(
+            payload_type="raw_news",
+            provider=provider,
+            symbol=symbol,
+            raw_table=models.RawNews.__tablename__,
+            raw_row_id=row.id,
+            raw_payload=raw_payload,
+            source_timestamp=source_timestamp,
+            received_at=received_at,
+            processed_at=processed_at,
+        )
         self._archive_raw_payload(
             category="news",
             provider=provider,
             symbol=symbol,
             row_id=row.id,
             source_timestamp=source_timestamp,
+            received_at=received_at,
+            processed_at=processed_at,
             payload=raw_payload,
         )
         return row
+
+    def enqueue_raw_news(self, **kwargs: Any) -> models.RawNews:
+        return self.store_raw_news(**kwargs)
 
     def store_clean_news(
         self,
@@ -1719,7 +1952,9 @@ class TradingRepository:
             accession_number=accession_number,
             form_type=form_type,
             raw_payload=raw_payload,
-            source_timestamp=source_timestamp,
+            source_timestamp=_as_utc(source_timestamp),
+            received_at=_now(),
+            processed_at=_now(),
         )
         self.session.add(row)
         self.session.commit()
@@ -1729,6 +1964,8 @@ class TradingRepository:
             symbol=symbol,
             row_id=row.id,
             source_timestamp=source_timestamp,
+            received_at=row.received_at,
+            processed_at=row.processed_at,
             payload=raw_payload,
         )
         return row
@@ -2066,6 +2303,238 @@ class TradingRepository:
         )
         return journal
 
+    def calculate_journal_lifecycle_metrics(self, *, signal_id: str) -> dict[str, Any] | None:
+        fills = self.session.execute(
+            select(models.Fill, models.Order)
+            .join(models.Order, models.Fill.order_id == models.Order.id)
+            .where(models.Order.signal_id == signal_id)
+            .order_by(models.Fill.source_timestamp.asc(), models.Fill.created_at.asc())
+        ).all()
+        if not fills:
+            return None
+
+        signal = self.session.get(models.Signal, signal_id)
+        symbol = signal.symbol if signal else fills[0][1].symbol
+        entry_side = self._journal_entry_side(signal=signal, fallback_side=fills[0][1].side)
+        exit_side = "buy" if entry_side == "sell" else "sell"
+        entry_fills = [(fill, order) for fill, order in fills if order.side.lower() == entry_side]
+        exit_fills = [(fill, order) for fill, order in fills if order.side.lower() == exit_side]
+        if not entry_fills:
+            return None
+
+        entry_quantity = sum(float(fill.quantity or 0.0) for fill, _order in entry_fills)
+        exit_quantity = sum(float(fill.quantity or 0.0) for fill, _order in exit_fills)
+        if entry_quantity <= 0:
+            return None
+
+        actual_entry = _weighted_average([(fill.price, fill.quantity) for fill, _order in entry_fills])
+        if actual_entry is None:
+            return None
+        actual_exit = _weighted_average([(fill.price, fill.quantity) for fill, _order in exit_fills])
+        slippage_bps = _weighted_average(
+            [
+                (fill.slippage_bps, fill.quantity)
+                for fill, _order in entry_fills + exit_fills
+                if fill.slippage_bps is not None
+            ]
+        )
+        first_entry_at = min(_as_utc(fill.source_timestamp) for fill, _order in entry_fills)
+        last_exit_at = (
+            max(_as_utc(fill.source_timestamp) for fill, _order in exit_fills) if exit_fills else None
+        )
+        latest_candle = self._latest_journal_candle(symbol)
+        latest_candle_at = _as_utc(latest_candle.source_timestamp) if latest_candle else None
+        fully_exited = exit_quantity >= entry_quantity and exit_quantity > 0
+        if fully_exited and last_exit_at is not None:
+            end_at = last_exit_at
+        else:
+            end_at = latest_candle_at or last_exit_at or datetime.now(UTC)
+
+        high, low = self._journal_price_excursion(symbol=symbol, start_at=first_entry_at, end_at=end_at)
+        if high is None and actual_exit is not None:
+            high = max(actual_entry, actual_exit)
+        if low is None and actual_exit is not None:
+            low = min(actual_entry, actual_exit)
+        high = high if high is not None else actual_entry
+        low = low if low is not None else actual_entry
+
+        direction = signal.direction if signal else Direction.LONG.value
+        signed_multiplier = -1.0 if direction == Direction.SHORT.value else 1.0
+        exited_quantity = min(exit_quantity, entry_quantity)
+        pnl = None
+        if actual_exit is not None and exited_quantity > 0:
+            commissions = sum((fill.commission or 0.0) for fill, _order in entry_fills + exit_fills)
+            pnl = (actual_exit - actual_entry) * exited_quantity * signed_multiplier - commissions
+
+        if direction == Direction.SHORT.value:
+            max_favorable = max(0.0, (actual_entry - low) * entry_quantity)
+            max_adverse = min(0.0, (actual_entry - high) * entry_quantity)
+        else:
+            max_favorable = max(0.0, (high - actual_entry) * entry_quantity)
+            max_adverse = min(0.0, (low - actual_entry) * entry_quantity)
+
+        open_quantity = max(0.0, entry_quantity - exit_quantity)
+        rule_violations = self._journal_rule_violations(
+            signal=signal,
+            latest_candle=latest_candle,
+            first_entry_at=first_entry_at,
+            open_quantity=open_quantity,
+            entry_side=entry_side,
+        )
+        if fully_exited:
+            change_reason = "Journal lifecycle updated after full exit fill reconciliation."
+        elif exit_quantity > 0:
+            change_reason = "Journal lifecycle updated after partial exit fill reconciliation."
+        else:
+            change_reason = "Journal lifecycle updated after entry fill reconciliation."
+
+        return {
+            "symbol": symbol,
+            "strategy_id": signal.strategy_id if signal else None,
+            "signal_id": signal_id,
+            "actual_entry": actual_entry,
+            "actual_exit": actual_exit,
+            "latest_price": latest_candle.close if latest_candle else actual_exit,
+            "exit_side": exit_side,
+            "open_quantity": open_quantity,
+            "pnl": pnl,
+            "max_favorable_excursion": max_favorable,
+            "max_adverse_excursion": max_adverse,
+            "slippage_bps": slippage_bps,
+            "time_in_trade_seconds": max(0.0, (end_at - first_entry_at).total_seconds()),
+            "rule_violations": rule_violations,
+            "change_reason": change_reason,
+            "fully_exited": fully_exited,
+        }
+
+    def persist_journal_lifecycle_for_signal(self, *, signal_id: str) -> dict[str, Any]:
+        metrics = self.calculate_journal_lifecycle_metrics(signal_id=signal_id)
+        if not metrics:
+            return {"journal": None, "metrics": None, "created": False, "updated": False}
+
+        existing = self.session.scalar(
+            select(models.TradeJournal).where(models.TradeJournal.signal_id == signal_id)
+        )
+        if existing:
+            if self._journal_lifecycle_changed(existing, metrics):
+                journal = self.update_journal_lifecycle(
+                    existing,
+                    actual_entry=metrics["actual_entry"],
+                    actual_exit=metrics["actual_exit"],
+                    pnl=metrics["pnl"],
+                    max_favorable_excursion=metrics["max_favorable_excursion"],
+                    max_adverse_excursion=metrics["max_adverse_excursion"],
+                    slippage_bps=metrics["slippage_bps"],
+                    time_in_trade_seconds=metrics["time_in_trade_seconds"],
+                    rule_violations=metrics["rule_violations"],
+                    change_reason=metrics["change_reason"],
+                )
+                return {"journal": journal, "metrics": metrics, "created": False, "updated": True}
+            return {"journal": existing, "metrics": metrics, "created": False, "updated": False}
+
+        entry_thesis = (
+            f"Automatic journal entry from reconciled fills for {metrics['symbol']}. "
+            f"Entry={metrics['actual_entry']}; exit={metrics['actual_exit']}."
+        )
+        journal = self.store_journal_entry(
+            symbol=metrics["symbol"],
+            strategy_id=metrics["strategy_id"],
+            signal_id=signal_id,
+            entry_thesis=entry_thesis,
+            actual_entry=metrics["actual_entry"],
+            actual_exit=metrics["actual_exit"],
+            pnl=metrics["pnl"],
+            max_favorable_excursion=metrics["max_favorable_excursion"],
+            max_adverse_excursion=metrics["max_adverse_excursion"],
+            slippage_bps=metrics["slippage_bps"],
+            time_in_trade_seconds=metrics["time_in_trade_seconds"],
+            rule_violations=metrics["rule_violations"],
+            human_notes=None,
+            mistake_tags=[],
+            change_reason=metrics["change_reason"],
+        )
+        return {"journal": journal, "metrics": metrics, "created": True, "updated": False}
+
+    def _latest_journal_candle(self, symbol: str) -> models.CleanMarketData | None:
+        return self.session.scalar(
+            select(models.CleanMarketData)
+            .where(models.CleanMarketData.symbol == symbol.upper())
+            .order_by(desc(models.CleanMarketData.source_timestamp))
+            .limit(1)
+        )
+
+    def _journal_price_excursion(
+        self,
+        *,
+        symbol: str,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> tuple[float | None, float | None]:
+        return self.session.execute(
+            select(func.max(models.CleanMarketData.high), func.min(models.CleanMarketData.low)).where(
+                models.CleanMarketData.symbol == symbol.upper(),
+                models.CleanMarketData.source_timestamp >= start_at,
+                models.CleanMarketData.source_timestamp <= end_at,
+            )
+        ).one()
+
+    @staticmethod
+    def _journal_entry_side(*, signal: models.Signal | None, fallback_side: str) -> str:
+        if signal and signal.direction == Direction.SHORT.value:
+            return "sell"
+        if signal and signal.direction == Direction.LONG.value:
+            return "buy"
+        return fallback_side.lower()
+
+    @staticmethod
+    def _journal_lifecycle_changed(journal: models.TradeJournal, metrics: dict[str, Any]) -> bool:
+        checks = {
+            "actual_entry": metrics["actual_entry"],
+            "actual_exit": metrics["actual_exit"],
+            "pnl": metrics["pnl"],
+            "max_favorable_excursion": metrics["max_favorable_excursion"],
+            "max_adverse_excursion": metrics["max_adverse_excursion"],
+            "slippage_bps": metrics["slippage_bps"],
+            "time_in_trade_seconds": metrics["time_in_trade_seconds"],
+            "rule_violations": metrics["rule_violations"],
+        }
+        for field, expected in checks.items():
+            current = getattr(journal, field)
+            if isinstance(expected, float) or isinstance(current, float):
+                if expected is None or current is None:
+                    if expected != current:
+                        return True
+                elif abs(float(current) - float(expected)) > 0.0001:
+                    return True
+            elif current != expected:
+                return True
+        return False
+
+    @staticmethod
+    def _journal_rule_violations(
+        *,
+        signal: models.Signal | None,
+        latest_candle: models.CleanMarketData | None,
+        first_entry_at: datetime,
+        open_quantity: float,
+        entry_side: str,
+    ) -> list[str]:
+        if not signal or open_quantity <= 0:
+            return []
+        violations = []
+        latest_at = _as_utc(latest_candle.source_timestamp) if latest_candle else datetime.now(UTC)
+        if signal.trade_type == TradeType.DAY_TRADE.value and latest_at.date() > first_entry_at.date():
+            violations.append("DAY_TRADE_TO_SWING_BLOCKED")
+        if latest_candle and signal.stop_loss:
+            stop_breached = (
+                latest_candle.close <= signal.stop_loss
+                if entry_side == "buy"
+                else latest_candle.close >= signal.stop_loss
+            )
+            if stop_breached:
+                violations.append("STOP_LOSS_BREACHED")
+        return violations
+
     def store_ai_review(
         self,
         *,
@@ -2187,6 +2656,8 @@ class TradingRepository:
     def counts(self) -> dict[str, int]:
         tracked = {
             "symbols": models.SymbolUniverse,
+            "raw_ingestion_events": models.RawIngestionEvent,
+            "raw_trade_ticks": models.RawTradeTick,
             "clean_candles": models.CleanMarketData,
             "stream_events": models.MarketDataStreamEvent,
             "provider_health": models.ProviderHealthSnapshot,
@@ -2528,6 +2999,14 @@ def _bool_or_none(value: Any) -> bool | None:
     return bool(value)
 
 
+def _weighted_average(values: list[tuple[float | None, float]]) -> float | None:
+    weighted_values = [(value, weight) for value, weight in values if value is not None and weight > 0]
+    total_weight = sum(weight for _value, weight in weighted_values)
+    if total_weight <= 0:
+        return None
+    return sum(float(value) * weight for value, weight in weighted_values if value is not None) / total_weight
+
+
 def _calculate_slippage_bps(
     *,
     expected_price: float | None,
@@ -2564,6 +3043,22 @@ def _raw_archive_key(
 
 def _archive_key_part(value: str) -> str:
     return "".join(char if char.isalnum() or char in {"-", "_", "."} else "_" for char in value)
+
+
+def _payload_hash(payload: dict) -> str:
+    canonical = json.dumps(_json_safe(payload), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _timeframe_seconds(timeframe: str) -> int | None:
+    normalized = timeframe.strip().lower()
+    if normalized.endswith("min"):
+        return int(normalized.removesuffix("min")) * 60
+    if normalized.endswith("m") and normalized[:-1].isdigit():
+        return int(normalized[:-1]) * 60
+    if normalized.endswith("d") and normalized[:-1].isdigit():
+        return int(normalized[:-1]) * 86_400
+    return {"1d": 86_400, "day": 86_400, "daily": 86_400}.get(normalized)
 
 
 def _json_safe(value: Any) -> Any:

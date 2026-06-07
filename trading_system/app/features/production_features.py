@@ -8,16 +8,15 @@ import pandas as pd
 from trading_system.app.db.repositories import TradingRepository
 from trading_system.app.features.calculations import (
     EXPANDED_FEATURE_VERSION,
-    calculate_atr,
+    InvalidFeatureData,
     calculate_distance_pct,
-    calculate_gap_pct,
     calculate_relative_strength,
-    calculate_relative_volume,
     calculate_spread_bps,
     calculate_trend_score,
     calculate_volatility_score,
     calculate_volume_spike_score,
     calculate_vwap,
+    compute_core_features,
 )
 
 
@@ -43,8 +42,11 @@ class ProductionFeatureEngine:
         for symbol in symbols:
             frame = self._best_frame(symbol, "1Min")
             if len(frame) >= 2:
-                self._store_intraday(symbol, frame, benchmark)
-                intraday += 1
+                try:
+                    self._store_intraday(symbol, frame, benchmark)
+                    intraday += 1
+                except InvalidFeatureData:
+                    pass
             daily_frame = self._best_frame(symbol, "1D")
             if len(daily_frame) >= 2:
                 self._store_daily(symbol, daily_frame, benchmark)
@@ -58,8 +60,16 @@ class ProductionFeatureEngine:
 
     def _best_frame(self, symbol: str, timeframe: str) -> pd.DataFrame:
         for provider in ["alpaca_market_data", "yahoo_chart"]:
-            frame = self.repository.clean_candles_df(symbol, timeframe=timeframe, provider=provider, limit=500)
+            frame = self.repository.clean_candles_df(
+                symbol,
+                timeframe=timeframe,
+                provider=provider,
+                limit=500,
+                valid_only=False,
+            )
             if not frame.empty:
+                if _has_invalid_candle_status(frame):
+                    return pd.DataFrame()
                 return frame
         return pd.DataFrame()
 
@@ -67,20 +77,18 @@ class ProductionFeatureEngine:
         ordered = frame.sort_index()
         latest = ordered.iloc[-1]
         previous = ordered.iloc[-2]
+        core = compute_core_features(ordered, previous_close=float(previous["close"]))
         vwap = calculate_vwap(ordered)
-        atr = calculate_atr(ordered)
         price = float(latest["close"])
-        relative_volume = calculate_relative_volume(
-            float(latest["volume"]),
-            max(1.0, float(ordered["volume"].tail(20).mean())),
-        )
+        relative_volume = core.relative_volume
         spread_bps = calculate_spread_bps(float(latest["low"]), float(latest["high"]))
         snapshot = {
             "price": price,
-            "vwap": float(vwap.iloc[-1]),
-            "atr": float(atr.iloc[-1]),
+            "vwap": core.vwap,
+            "atr": core.atr,
             "relative_volume": relative_volume,
-            "gap_pct": calculate_gap_pct(float(latest["open"]), float(previous["close"])),
+            "gap_pct": core.premarket_gap_pct,
+            "premarket_gap_pct": core.premarket_gap_pct,
             "volume_spike_score": calculate_volume_spike_score(relative_volume),
             "distance_from_vwap_pct": calculate_distance_pct(price, float(vwap.iloc[-1])),
             "distance_from_20ema_pct": calculate_distance_pct(
@@ -138,3 +146,9 @@ class ProductionFeatureEngine:
 def _liquidity_score(frame: pd.DataFrame) -> float:
     dollar_volume = float((frame["close"] * frame["volume"]).tail(20).mean())
     return float(max(0.0, min(100.0, dollar_volume / 1_000_000)))
+
+
+def _has_invalid_candle_status(frame: pd.DataFrame) -> bool:
+    if "data_quality_status" not in frame.columns:
+        return False
+    return bool((frame["data_quality_status"].dropna().astype(str) != "VALID").any())

@@ -24,6 +24,51 @@ class LiquidityDecision:
     reason: str
 
 
+@dataclass(frozen=True)
+class CoreFeatureSet:
+    vwap: float
+    atr: float
+    premarket_gap_pct: float
+    relative_volume: float
+
+
+class InvalidFeatureData(ValueError):
+    pass
+
+
+def compute_core_features(
+    frame: pd.DataFrame,
+    *,
+    atr_window: int = 14,
+    previous_close: float | None = None,
+    average_volume: float | None = None,
+) -> CoreFeatureSet:
+    if frame.empty:
+        raise InvalidFeatureData("Cannot compute features without candle data.")
+    invalid_statuses = _invalid_quality_statuses(frame)
+    if invalid_statuses:
+        joined = ", ".join(sorted(invalid_statuses))
+        raise InvalidFeatureData(f"Cannot compute features from invalid candle data: {joined}.")
+
+    ordered = frame.sort_index()
+    if previous_close is None:
+        if len(ordered) < 2:
+            raise InvalidFeatureData("Cannot compute premarket gap without a prior close.")
+        previous_close = float(ordered["close"].iloc[-2])
+    if average_volume is None:
+        history = ordered["volume"].iloc[:-1]
+        average_volume = float(history.tail(20).mean()) if not history.empty else float(ordered["volume"].mean())
+
+    vwap = calculate_vwap(ordered)
+    atr = calculate_atr(ordered, window=atr_window)
+    return CoreFeatureSet(
+        vwap=float(vwap.iloc[-1]),
+        atr=float(atr.iloc[-1]),
+        premarket_gap_pct=calculate_gap_pct(float(ordered["open"].iloc[0]), previous_close),
+        relative_volume=calculate_relative_volume(float(ordered["volume"].iloc[-1]), float(average_volume)),
+    )
+
+
 def calculate_vwap(frame: pd.DataFrame) -> pd.Series:
     typical_price = (frame["high"] + frame["low"] + frame["close"]) / 3
     cumulative_volume = frame["volume"].cumsum()
@@ -127,3 +172,10 @@ def check_liquidity(
             f"Spread {spread_bps:.1f} bps above maximum {gates.max_spread_bps:.1f} bps.",
         )
     return LiquidityDecision(True, "Liquidity gates passed.")
+
+
+def _invalid_quality_statuses(frame: pd.DataFrame) -> set[str]:
+    if "data_quality_status" not in frame.columns:
+        return set()
+    statuses = frame["data_quality_status"].dropna().astype(str)
+    return {status for status in statuses if status != "VALID"}

@@ -109,51 +109,14 @@ class TradeMonitorService:
 
         for signal_id, signal_fills in fills_by_signal.items():
             signal = self.repository.session.get(models.Signal, signal_id)
-            metrics = self._build_journal_metrics(signal=signal, signal_fills=signal_fills)
+            lifecycle = self.repository.persist_journal_lifecycle_for_signal(signal_id=signal_id)
+            metrics = lifecycle["metrics"]
             if not metrics:
                 continue
-
-            existing = self.repository.session.scalar(
-                select(models.TradeJournal).where(models.TradeJournal.signal_id == signal_id)
-            )
-            entry_thesis = (
-                f"Automatic journal entry from reconciled fills for {metrics['symbol']}. "
-                f"Entry={metrics['actual_entry']}; exit={metrics['actual_exit']}."
-            )
-            if existing:
-                if self._journal_changed(existing, metrics):
-                    self.repository.update_journal_lifecycle(
-                        existing,
-                        actual_entry=metrics["actual_entry"],
-                        actual_exit=metrics["actual_exit"],
-                        pnl=metrics["pnl"],
-                        max_favorable_excursion=metrics["max_favorable_excursion"],
-                        max_adverse_excursion=metrics["max_adverse_excursion"],
-                        slippage_bps=metrics["slippage_bps"],
-                        time_in_trade_seconds=metrics["time_in_trade_seconds"],
-                        rule_violations=metrics["rule_violations"],
-                        change_reason=metrics["change_reason"],
-                    )
-                    updated += 1
-            else:
-                self.repository.store_journal_entry(
-                    symbol=metrics["symbol"],
-                    strategy_id=signal.strategy_id if signal else None,
-                    signal_id=signal_id,
-                    entry_thesis=entry_thesis,
-                    actual_entry=metrics["actual_entry"],
-                    actual_exit=metrics["actual_exit"],
-                    pnl=metrics["pnl"],
-                    max_favorable_excursion=metrics["max_favorable_excursion"],
-                    max_adverse_excursion=metrics["max_adverse_excursion"],
-                    slippage_bps=metrics["slippage_bps"],
-                    time_in_trade_seconds=metrics["time_in_trade_seconds"],
-                    rule_violations=metrics["rule_violations"],
-                    human_notes=None,
-                    mistake_tags=[],
-                    change_reason=metrics["change_reason"],
-                )
+            if lifecycle["created"]:
                 created += 1
+            if lifecycle["updated"]:
+                updated += 1
             if self._needs_protective_exit(metrics):
                 result = OrderManager(self.repository).request_protective_exit_order(
                     signal_id=signal_id,

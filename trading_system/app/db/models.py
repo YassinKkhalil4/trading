@@ -135,6 +135,17 @@ class SymbolUniverse(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     industry: Mapped[str | None] = mapped_column(String(128))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     is_tradable: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    is_liquid: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    disable_reason: Mapped[str | None] = mapped_column(String(64), index=True)
+    provider_asset_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    provider_status: Mapped[str | None] = mapped_column(String(32), index=True)
+    last_provider_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    latest_price: Mapped[float | None] = mapped_column(Float)
+    average_volume: Mapped[float | None] = mapped_column(Float)
+    dollar_volume: Mapped[float | None] = mapped_column(Float)
+    spread_bps: Mapped[float | None] = mapped_column(Float)
+    liquidity_rank: Mapped[int | None] = mapped_column(Integer, index=True)
+    raw_asset_payload: Mapped[dict | None] = mapped_column(JSON)
     tradability_reason: Mapped[str | None] = mapped_column(Text)
     change_reason: Mapped[str | None] = mapped_column(Text)
 
@@ -150,6 +161,46 @@ class RawMarketData(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     symbol: Mapped[str] = mapped_column(String(16), index=True)
     timeframe: Mapped[str] = mapped_column(String(16), index=True)
     raw_payload: Mapped[dict] = mapped_column(JSON)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class RawTradeTick(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
+    __tablename__ = "raw_trade_ticks"
+    __table_args__ = (
+        UniqueConstraint("provider", "symbol", "trade_id", name="uq_raw_trade_tick_provider_trade"),
+        Index("ix_raw_trade_ticks_symbol_time", "symbol", "source_timestamp"),
+    )
+
+    provider: Mapped[str] = mapped_column(String(80), index=True)
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    trade_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    price: Mapped[float | None] = mapped_column(Float)
+    size: Mapped[float | None] = mapped_column(Float)
+    exchange: Mapped[str | None] = mapped_column(String(64))
+    conditions: Mapped[list[str] | None] = mapped_column(JSON)
+    raw_payload: Mapped[dict] = mapped_column(JSON)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class RawIngestionEvent(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
+    __tablename__ = "raw_ingestion_events"
+    __table_args__ = (
+        Index("ix_raw_ingestion_events_type_status", "payload_type", "status"),
+        Index("ix_raw_ingestion_events_provider_time", "provider", "source_timestamp"),
+    )
+
+    payload_type: Mapped[str] = mapped_column(String(64), index=True)
+    provider: Mapped[str] = mapped_column(String(80), index=True)
+    symbol: Mapped[str | None] = mapped_column(String(16), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="PROCESSED", index=True)
+    raw_table: Mapped[str] = mapped_column(String(80))
+    raw_row_id: Mapped[str] = mapped_column(String(36), index=True)
+    payload_hash: Mapped[str] = mapped_column(String(64), index=True)
+    raw_payload: Mapped[dict] = mapped_column(JSON)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class CleanMarketData(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
@@ -198,6 +249,8 @@ class RawNews(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     headline: Mapped[str] = mapped_column(Text)
     url: Mapped[str | None] = mapped_column(Text)
     raw_payload: Mapped[dict] = mapped_column(JSON)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class CleanNews(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
@@ -223,6 +276,8 @@ class RawFiling(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     accession_number: Mapped[str | None] = mapped_column(String(64), index=True)
     form_type: Mapped[str | None] = mapped_column(String(32), index=True)
     raw_payload: Mapped[dict] = mapped_column(JSON)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class ApiCallLog(IdMixin, TimestampMixin, SourceTimestampMixin, Base):

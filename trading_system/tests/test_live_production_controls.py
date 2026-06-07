@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
@@ -19,6 +20,7 @@ from trading_system.app.execution.alpaca_live_adapter import (
     AlpacaLiveSyncResult,
 )
 from trading_system.app.execution.live_execution import LiveExecutionService
+from trading_system.app.execution.order_manager import OrderManager
 from trading_system.app.execution.reconciliation import ReconciliationResult
 from trading_system.app.risk.kill_switch import KillSwitchService
 from trading_system.app.risk.live_gates import LiveGateService
@@ -81,6 +83,28 @@ class FakeLiveRejectedAdapter:
             reason="fake live broker rejected order",
             broker_order_id=None,
             payload={"client_order_id": kwargs["client_order_id"], "error": "rejected"},
+        )
+
+
+class FakeLiveSuccessEmergencyAdapter:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.configured = True
+
+    def cancel_all_orders(self) -> AlpacaLiveEmergencyResult:
+        return AlpacaLiveEmergencyResult(
+            configured=True,
+            success=True,
+            reason="fake cancel-all succeeded",
+            payload={"operation": "cancel_all"},
+        )
+
+    def flatten_all_positions(self) -> AlpacaLiveEmergencyResult:
+        return AlpacaLiveEmergencyResult(
+            configured=True,
+            success=True,
+            reason="fake flatten-all succeeded",
+            payload={"operation": "flatten_all"},
         )
 
 
@@ -239,6 +263,27 @@ def _store_test_signal(repo: TradingRepository) -> models.Signal:
     repo.session.add(signal)
     repo.session.commit()
     return signal
+
+
+def _trade_signal_from_row(signal_row: models.Signal) -> TradeSignal:
+    return TradeSignal(
+        symbol=signal_row.symbol,
+        strategy_id=signal_row.strategy_id,
+        strategy_version=signal_row.strategy_version,
+        trade_type=TradeType.DAY_TRADE,
+        direction=Direction.LONG,
+        entry_zone=(100.0, 101.0),
+        stop_loss=95.0,
+        target_1=110.0,
+        target_2=115.0,
+        risk_reward=2.0,
+        confidence_score=80.0,
+        time_horizon="intraday",
+        invalidation="Stop loss breaks",
+        source_timestamp=signal_row.source_timestamp,
+        idempotency_key=signal_row.idempotency_key,
+        rule_version=signal_row.signal_rule_version,
+    )
 
 
 def test_auth_service_bootstraps_admin_and_authenticates_session():
@@ -643,6 +688,298 @@ def test_duplicate_live_submit_is_rejected_before_second_broker_call():
     assert error["error_type"] == "DUPLICATE_LIVE_ORDER"
 
 
+@pytest.mark.parametrize(
+    ("broken_gate", "expected_blocker"),
+    [
+        ("environment_mode", "environment_mode_live"),
+        ("allow_live_trading", "allow_live_trading"),
+        ("confirm_live_trading", "confirm_live_trading"),
+        ("live_keys", "live_keys_present"),
+        ("human_approval", "active_human_approval"),
+        ("kill_switch", "no_active_kill_switch"),
+        ("strategy_approval", "strategy_approved"),
+        ("broker_health", "alpaca_live_healthy"),
+        ("reconciliation", "live_reconciliation_clean"),
+    ],
+)
+def test_mocked_live_blocked_flow_rejects_before_broker_when_any_gate_fails(broken_gate, expected_blocker):
+    repo = _repo()
+    ready_settings = _live_settings()
+    _make_live_ready(repo, ready_settings)
+    settings = ready_settings
+    if broken_gate == "environment_mode":
+        settings = Settings(
+            environment_mode=EnvironmentMode.LIVE_DISABLED,
+            allow_live_trading=True,
+            confirm_live_trading="I_UNDERSTAND_RISK",
+            enable_live_order_path=True,
+            alpaca_live_api_key="live-key",
+            alpaca_live_secret_key="live-secret",
+            admin_session_secret="unit-test-live-session-secret",
+        )
+    elif broken_gate == "allow_live_trading":
+        settings = Settings(
+            environment_mode=EnvironmentMode.LIVE,
+            allow_live_trading=False,
+            confirm_live_trading="I_UNDERSTAND_RISK",
+            enable_live_order_path=True,
+            alpaca_live_api_key="live-key",
+            alpaca_live_secret_key="live-secret",
+            admin_session_secret="unit-test-live-session-secret",
+        )
+    elif broken_gate == "confirm_live_trading":
+        settings = Settings(
+            environment_mode=EnvironmentMode.LIVE,
+            allow_live_trading=True,
+            confirm_live_trading="NOT_CONFIRMED",
+            enable_live_order_path=True,
+            alpaca_live_api_key="live-key",
+            alpaca_live_secret_key="live-secret",
+            admin_session_secret="unit-test-live-session-secret",
+        )
+    elif broken_gate == "live_keys":
+        settings = Settings(
+            environment_mode=EnvironmentMode.LIVE,
+            allow_live_trading=True,
+            confirm_live_trading="I_UNDERSTAND_RISK",
+            enable_live_order_path=True,
+            alpaca_live_api_key="",
+            alpaca_live_secret_key="live-secret",
+            admin_session_secret="unit-test-live-session-secret",
+        )
+    elif broken_gate == "human_approval":
+        repo.session.query(models.LiveTradingApproval).delete()
+        repo.session.commit()
+    elif broken_gate == "kill_switch":
+        KillSwitchService(repo).activate(event_type="TEST", reason="unit test", payload={})
+    elif broken_gate == "strategy_approval":
+        strategy = repo.session.scalar(
+            select(models.StrategyRegistry).where(models.StrategyRegistry.strategy_id == "VWAP_RECLAIM")
+        )
+        strategy.status = StrategyStatus.PAUSED.value
+        repo.session.commit()
+    elif broken_gate == "broker_health":
+        repo.store_provider_health_snapshot(
+            provider_name="alpaca_live",
+            status=ProviderHealthStatus.DOWN.value,
+            reason="unit test broker down",
+            reliability_score=0.0,
+            source_timestamp=datetime.now(UTC),
+        )
+    elif broken_gate == "reconciliation":
+        repo.store_broker_sync(
+            environment_mode=EnvironmentMode.LIVE.value,
+            broker="alpaca_live",
+            success=False,
+            mismatch_detected=True,
+            reason="unit test mismatch",
+            payload={},
+        )
+    signal_row = _store_test_signal(repo)
+    adapter = FakeLiveSubmitAdapter(settings)
+
+    result = LiveExecutionService(repo, adapter=adapter).submit_limit_order(
+        signal=_trade_signal_from_row(signal_row),
+        signal_id=signal_row.id,
+        risk_decision=RiskDecision(
+            approved=True,
+            reason="risk approved",
+            risk_rule_version="test",
+            position_size=10,
+            risk_amount=50.0,
+        ),
+        reconciliation=ReconciliationResult(ok=True, reason="clean reconciliation"),
+    )
+
+    assert result.accepted is False
+    assert expected_blocker in result.gate_decision["blockers"]
+    assert adapter.calls == []
+    assert result.order["status"] == OrderStatus.REJECTED.value
+    assert result.broker_submit["submitted"] is False
+
+
+def test_oms_bracket_orders_use_unique_strict_clordids_and_reject_duplicates():
+    repo = _repo()
+    signal_row = _store_test_signal(repo)
+    source_timestamp = datetime(2026, 6, 6, 12, 0, tzinfo=UTC)
+    manager = OrderManager(repo, _live_settings())
+
+    first = manager.request_bracket_order(
+        signal_id=signal_row.id,
+        strategy_id=signal_row.strategy_id,
+        symbol="amd",
+        side="buy",
+        quantity=10,
+        limit_price=100.0,
+        stop_loss=95.0,
+        take_profit_price=110.0,
+        environment_mode=EnvironmentMode.LIVE.value,
+        execution_environment="LIVE",
+        broker="alpaca_live",
+        source_timestamp=source_timestamp,
+    )
+    duplicate = manager.request_bracket_order(
+        signal_id=signal_row.id,
+        strategy_id=signal_row.strategy_id,
+        symbol="AMD",
+        side="buy",
+        quantity=10,
+        limit_price=100.0,
+        stop_loss=95.0,
+        take_profit_price=110.0,
+        environment_mode=EnvironmentMode.LIVE.value,
+        execution_environment="LIVE",
+        broker="alpaca_live",
+        source_timestamp=source_timestamp,
+    )
+    orders = repo.latest_orders(10)
+
+    assert first.success is True
+    assert duplicate.success is False
+    assert repo.counts()["orders"] == 3
+    assert len({order["idempotency_key"] for order in orders}) == 3
+    assert all(order["idempotency_key"].startswith("oms-") for order in orders)
+    assert any(order["idempotency_key"].endswith("-entry") for order in orders)
+    assert any(order["idempotency_key"].endswith("-take_profit") for order in orders)
+    assert any(order["idempotency_key"].endswith("-stop_loss") for order in orders)
+
+
+def test_oms_broker_partial_fill_events_are_idempotent_and_incremental():
+    repo = _repo()
+    signal_row = _store_test_signal(repo)
+    manager = OrderManager(repo, _live_settings())
+    created = manager.request_bracket_order(
+        signal_id=signal_row.id,
+        strategy_id=signal_row.strategy_id,
+        symbol="AMD",
+        side="buy",
+        quantity=10,
+        limit_price=100.0,
+        stop_loss=95.0,
+        take_profit_price=110.0,
+        environment_mode=EnvironmentMode.LIVE.value,
+        execution_environment="LIVE",
+        broker="alpaca_live",
+        source_timestamp=datetime(2026, 6, 6, 12, 0, tzinfo=UTC),
+    )
+    entry = created.payload["legs"]["entry"]
+    partial_event = {
+        "id": "broker-entry-1",
+        "client_order_id": entry["idempotency_key"],
+        "symbol": "AMD",
+        "side": "buy",
+        "qty": "10",
+        "status": "partially_filled",
+        "filled_qty": "4",
+        "filled_avg_price": "100.25",
+    }
+
+    first = manager.apply_broker_order_event(
+        broker_order=partial_event,
+        environment_mode=EnvironmentMode.LIVE.value,
+    )
+    duplicate = manager.apply_broker_order_event(
+        broker_order=partial_event,
+        environment_mode=EnvironmentMode.LIVE.value,
+    )
+    next_partial = manager.apply_broker_order_event(
+        broker_order=partial_event | {"filled_qty": "7", "filled_avg_price": "100.50"},
+        environment_mode=EnvironmentMode.LIVE.value,
+    )
+
+    fills = repo.latest_fills(10)
+    order = repo.session.get(models.Order, entry["id"])
+
+    assert first.success is True
+    assert first.duplicate is False
+    assert duplicate.duplicate is True
+    assert next_partial.duplicate is False
+    assert order.status == OrderStatus.PARTIALLY_FILLED.value
+    assert len(fills) == 2
+    assert sum(fill["quantity"] for fill in fills) == 7
+
+
+def test_oms_rejected_broker_event_is_safe_to_replay():
+    repo = _repo()
+    signal_row = _store_test_signal(repo)
+    manager = OrderManager(repo, _live_settings())
+    created = manager.request_bracket_order(
+        signal_id=signal_row.id,
+        strategy_id=signal_row.strategy_id,
+        symbol="AMD",
+        side="buy",
+        quantity=10,
+        limit_price=100.0,
+        stop_loss=95.0,
+        take_profit_price=110.0,
+        environment_mode=EnvironmentMode.LIVE.value,
+        execution_environment="LIVE",
+        broker="alpaca_live",
+        source_timestamp=datetime(2026, 6, 6, 12, 0, tzinfo=UTC),
+    )
+    entry = created.payload["legs"]["entry"]
+    rejected_event = {
+        "id": "broker-entry-rejected",
+        "client_order_id": entry["idempotency_key"],
+        "symbol": "AMD",
+        "side": "buy",
+        "qty": "10",
+        "status": "rejected",
+        "reject_reason": "insufficient buying power",
+    }
+
+    first = manager.apply_broker_order_event(
+        broker_order=rejected_event,
+        environment_mode=EnvironmentMode.LIVE.value,
+    )
+    duplicate = manager.apply_broker_order_event(
+        broker_order=rejected_event,
+        environment_mode=EnvironmentMode.LIVE.value,
+    )
+    order = repo.session.get(models.Order, entry["id"])
+
+    assert first.success is True
+    assert first.duplicate is False
+    assert duplicate.duplicate is True
+    assert order.status == OrderStatus.REJECTED.value
+    assert order.rejection_reason == "insufficient buying power"
+    assert repo.counts()["execution_errors"] == 1
+
+
+def test_oms_stale_submitted_orders_are_auto_cancelled_internally():
+    repo = _repo()
+    signal_row = _store_test_signal(repo)
+    order = models.Order(
+        signal_id=signal_row.id,
+        idempotency_key="oms-stale-test-entry",
+        environment_mode=EnvironmentMode.LIVE.value,
+        execution_environment="LIVE",
+        broker="alpaca_live",
+        broker_order_id=None,
+        symbol="AMD",
+        side="buy",
+        quantity=10,
+        order_type="limit",
+        limit_price=100.0,
+        stop_loss=95.0,
+        status=OrderStatus.SUBMITTED.value,
+        expected_price=100.0,
+        submitted_at=datetime.now(UTC) - timedelta(minutes=5),
+        created_at=datetime.now(UTC) - timedelta(minutes=5),
+        source_timestamp=datetime.now(UTC) - timedelta(minutes=5),
+    )
+    repo.session.add(order)
+    repo.session.commit()
+
+    result = OrderManager(repo, Settings(max_order_stale_seconds=1)).cancel_stale_orders()
+    updated = repo.session.get(models.Order, order.id)
+
+    assert result.success is True
+    assert result.orders_changed == 1
+    assert updated.status == OrderStatus.STALE_CANCELLED.value
+    assert updated.cancelled_at is not None
+
+
 def test_live_broker_submit_failure_rejects_order_and_persists_execution_error():
     repo = _repo()
     settings = _live_settings()
@@ -979,6 +1316,30 @@ def test_live_emergency_adapter_failures_are_persisted_as_execution_errors(monke
     audit_events = {row["event_type"] for row in audits}
     assert "LIVE_CANCEL_ALL_ORDERS" in audit_events
     assert "LIVE_FLATTEN_ALL_POSITIONS" in audit_events
+
+
+def test_live_emergency_actions_call_backend_adapter_after_all_gates_pass(monkeypatch):
+    repo = _repo()
+    settings = _live_settings()
+    _make_live_ready(repo, settings)
+    service = TradingRuntimeService(repo, settings=settings)
+    monkeypatch.setattr(
+        "trading_system.app.services.runtime.AlpacaLiveAdapter",
+        FakeLiveSuccessEmergencyAdapter,
+    )
+
+    cancel = service.cancel_all_live_orders(actor="admin", reason="unit test cancel")
+    flatten = service.flatten_all_live_positions(actor="admin", reason="unit test flatten")
+    audits = repo.latest_audit_logs(5)
+
+    assert cancel["success"] is True
+    assert flatten["success"] is True
+    assert cancel["payload"]["operation"] == "cancel_all"
+    assert flatten["payload"]["operation"] == "flatten_all"
+    assert repo.latest_execution_errors(5) == []
+    assert {"LIVE_CANCEL_ALL_ORDERS", "LIVE_FLATTEN_ALL_POSITIONS"}.issubset(
+        {row["event_type"] for row in audits}
+    )
 
 
 def test_missing_candle_repair_records_gap_and_universe_builder_blocks_illiquid_symbol():

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from trading_system.app.db import models
 from trading_system.app.db.repositories import TradingRepository
@@ -22,7 +23,7 @@ class LearningRunResult:
 
 class LearningRecommendationEngine:
     def __init__(self, repository: TradingRepository) -> None:
-        self.repository = repository
+        self.repository = LearningJournalRepository(repository)
 
     def run_weekly_review(self) -> LearningRunResult:
         now = datetime.now(UTC)
@@ -30,8 +31,8 @@ class LearningRecommendationEngine:
         metrics = self._metrics(week_start, now)
         summary = (
             f"Weekly review: {metrics['journal_entries']} journal entries, "
-            f"{metrics['risk_rejections']} risk rejections, {metrics['orders']} orders, "
-            f"{metrics['fills']} fills."
+            f"{metrics['winning_trades']} winners, {metrics['losing_trades']} losers, "
+            f"total PnL {metrics['total_pnl']}."
         )
         review = self.repository.store_weekly_review(
             week_start=week_start,
@@ -54,52 +55,56 @@ class LearningRecommendationEngine:
         )
 
     def _metrics(self, start: datetime, end: datetime) -> dict:
+        entries = self.repository.journal_entries_between(start, end)
+        pnls = [float(entry.pnl) for entry in entries if entry.pnl is not None]
+        slippage_values = [
+            float(entry.slippage_bps) for entry in entries if entry.slippage_bps is not None
+        ]
+        hold_times = [
+            float(entry.time_in_trade_seconds)
+            for entry in entries
+            if entry.time_in_trade_seconds is not None
+        ]
+        rule_violation_count = sum(1 for entry in entries if entry.rule_violations)
         return {
-            "journal_entries": _count_between(self.repository, models.TradeJournal, start, end),
-            "risk_rejections": int(
-                self.repository.session.scalar(
-                    select(func.count())
-                    .select_from(models.RiskCheck)
-                    .where(models.RiskCheck.created_at >= start, models.RiskCheck.approved.is_(False))
-                )
-                or 0
+            "journal_entries": len(entries),
+            "winning_trades": sum(1 for pnl in pnls if pnl > 0),
+            "losing_trades": sum(1 for pnl in pnls if pnl < 0),
+            "total_pnl": sum(pnls),
+            "average_pnl": (sum(pnls) / len(pnls)) if pnls else 0.0,
+            "average_slippage_bps": (
+                sum(slippage_values) / len(slippage_values) if slippage_values else 0.0
             ),
-            "orders": _count_between(self.repository, models.Order, start, end),
-            "fills": _count_between(self.repository, models.Fill, start, end),
-            "rule_violations": int(
-                self.repository.session.scalar(
-                    select(func.count())
-                    .select_from(models.TradeJournal)
-                    .where(models.TradeJournal.created_at >= start, models.TradeJournal.rule_violations != [])
-                )
-                or 0
+            "average_time_in_trade_seconds": (
+                sum(hold_times) / len(hold_times) if hold_times else 0.0
             ),
+            "rule_violations": rule_violation_count,
         }
 
     def _recommend(self, metrics: dict) -> list[dict]:
         recommendations: list[dict] = []
-        if metrics["risk_rejections"] > 0:
-            recommendations.append(
-                {
-                    "strategy_id": None,
-                    "recommendation": "Review rejected signals and tighten scanner thresholds before increasing size.",
-                    "reason": "Risk rejections occurred during the review window.",
-                }
-            )
-        if metrics["fills"] == 0 and metrics["orders"] > 0:
-            recommendations.append(
-                {
-                    "strategy_id": None,
-                    "recommendation": "Inspect limit prices and stale-order cancellation rules.",
-                    "reason": "Orders existed without reconciled fills.",
-                }
-            )
         if metrics["rule_violations"] > 0:
             recommendations.append(
                 {
                     "strategy_id": None,
-                    "recommendation": "Pause affected strategies until rule violations are reviewed.",
+                    "recommendation": "Review rule violations and document the setup conditions before increasing risk.",
                     "reason": "Journal entries contain rule violations.",
+                }
+            )
+        if metrics["average_slippage_bps"] > 10:
+            recommendations.append(
+                {
+                    "strategy_id": None,
+                    "recommendation": "Review execution timing because average slippage exceeded 10 bps.",
+                    "reason": "Journal lifecycle metrics show elevated slippage.",
+                }
+            )
+        if metrics["losing_trades"] > metrics["winning_trades"] and metrics["journal_entries"] > 0:
+            recommendations.append(
+                {
+                    "strategy_id": None,
+                    "recommendation": "Review losing trade notes and tighten setup qualification criteria.",
+                    "reason": "Journal entries show more losing trades than winning trades.",
                 }
             )
         if not recommendations:
@@ -113,10 +118,50 @@ class LearningRecommendationEngine:
         return recommendations
 
 
-def _count_between(repository: TradingRepository, model: type, start: datetime, end: datetime) -> int:
-    return int(
-        repository.session.scalar(
-            select(func.count()).select_from(model).where(model.created_at >= start, model.created_at <= end)
+class LearningJournalRepository:
+    __slots__ = ("_session", "_store_strategy_recommendation", "_store_weekly_review")
+
+    def __init__(self, repository: TradingRepository) -> None:
+        self._session = repository.session
+        self._store_weekly_review = repository.store_weekly_review
+        self._store_strategy_recommendation = repository.store_strategy_recommendation
+
+    def journal_entries_between(self, start: datetime, end: datetime) -> list[models.TradeJournal]:
+        return list(
+            self._session.scalars(
+                select(models.TradeJournal).where(
+                    models.TradeJournal.created_at >= start,
+                    models.TradeJournal.created_at <= end,
+                )
+            ).all()
         )
-        or 0
-    )
+
+    def store_weekly_review(
+        self,
+        *,
+        week_start: datetime,
+        week_end: datetime,
+        summary: str,
+        metrics: dict[str, Any],
+        reason: str,
+    ) -> models.WeeklyReview:
+        return self._store_weekly_review(
+            week_start=week_start,
+            week_end=week_end,
+            summary=summary,
+            metrics=metrics,
+            reason=reason,
+        )
+
+    def store_strategy_recommendation(
+        self,
+        *,
+        strategy_id: str | None,
+        recommendation: str,
+        reason: str,
+    ) -> models.StrategyRecommendation:
+        return self._store_strategy_recommendation(
+            strategy_id=strategy_id,
+            recommendation=recommendation,
+            reason=reason,
+        )

@@ -7,7 +7,14 @@ from sqlalchemy.orm import sessionmaker
 
 from trading_system.app.catalysts.catalyst_engine import CatalystEngine
 from trading_system.app.core.config import Settings
-from trading_system.app.core.enums import EnvironmentMode, MarketRegime, OrderStatus, ProviderHealthStatus, StrategyStatus
+from trading_system.app.core.enums import (
+    CatalystDirection,
+    EnvironmentMode,
+    MarketRegime,
+    OrderStatus,
+    ProviderHealthStatus,
+    StrategyStatus,
+)
 from trading_system.app.data.collectors.alpaca_bars import AlpacaBarsCollector
 from trading_system.app.db import models
 from trading_system.app.db.base import Base
@@ -20,7 +27,8 @@ from trading_system.app.learning.recommendations import LearningRecommendationEn
 from trading_system.app.monitoring.trade_monitor_service import TradeMonitorService
 from trading_system.app.ops.provider_health import ProviderHealthService
 from trading_system.app.regime.regime_service import MarketRegimeService
-from trading_system.app.scanners.production_scanners import ProductionScannerEngine
+from trading_system.app.scanners.production_scanners import ProductionScannerEngine, REQUIRED_STRATEGY_IDS
+from trading_system.app.strategies.registry import StrategyRegistryService
 
 
 class FakeResponse:
@@ -199,6 +207,26 @@ def _insert_vwap_reclaim_candles(
         )
 
 
+def _insert_catalyst(
+    repo: TradingRepository,
+    *,
+    symbol: str = "AMD",
+    catalyst_type: str = "news_momentum",
+    source_timestamp: datetime | None = None,
+) -> models.Catalyst:
+    return repo.store_catalyst(
+        event_id=f"test-{symbol.lower()}-{catalyst_type}",
+        symbol=symbol,
+        catalyst_type=catalyst_type,
+        direction=CatalystDirection.BULLISH.value,
+        materiality_score=80.0,
+        confidence=90.0,
+        source="test",
+        reason="test catalyst",
+        source_timestamp=source_timestamp or datetime.now(UTC),
+    )
+
+
 def _seed_scanner_preflight(
     repo: TradingRepository,
     *,
@@ -209,6 +237,7 @@ def _seed_scanner_preflight(
     provider_status: str | None = ProviderHealthStatus.HEALTHY.value,
     provider_health_at: datetime | None = None,
     regime: str = MarketRegime.BULL_TREND.value,
+    seed_catalyst: bool = True,
 ) -> None:
     now = datetime.now(UTC)
     if approve_strategy:
@@ -236,6 +265,8 @@ def _seed_scanner_preflight(
         reason="test regime",
         source_timestamp=now,
     )
+    if seed_catalyst:
+        _insert_catalyst(repo, source_timestamp=now)
 
 
 def _latest_scanner_result(repo: TradingRepository, scanner_name: str) -> models.ScannerResult:
@@ -339,6 +370,15 @@ def test_features_regime_catalysts_scanners_and_learning_pipeline():
     assert learning.recommendations_created >= 1
 
 
+def test_production_scanners_register_all_required_strategy_classes():
+    repo = _repo()
+    engine = ProductionScannerEngine(repo, _scanner_settings())
+    registry_ids = {strategy.strategy_id for strategy in StrategyRegistryService().all()}
+
+    assert tuple(scanner.strategy_id for scanner in engine.scanners) == REQUIRED_STRATEGY_IDS
+    assert set(REQUIRED_STRATEGY_IDS).issubset(registry_ids)
+
+
 def test_production_scanner_accepts_opening_range_only_after_preflight_passes():
     repo = _repo()
     _seed_scanner_preflight(repo)
@@ -379,6 +419,7 @@ def test_production_scanner_includes_vwap_reclaim_with_preflight_gates():
         reason="test regime",
         source_timestamp=now,
     )
+    _insert_catalyst(repo, source_timestamp=now)
 
     result = ProductionScannerEngine(repo, _scanner_settings()).run_once(["AMD"])
     row = _latest_scanner_result(repo, "VWAP_RECLAIM")
@@ -426,6 +467,50 @@ def test_production_scanner_rejects_stale_alpaca_data():
     assert kill_switch["event_type"] == "STALE_MARKET_DATA"
     assert kill_switch["payload"]["symbol"] == "AMD"
     assert kill_switch["payload"]["timeframe"] == "1Min"
+
+
+def test_production_scanner_blocks_signal_creation_for_stale_data_unhealthy_provider_and_cooldown():
+    repo = _repo()
+    _seed_scanner_preflight(repo, data_latest_at=datetime.now(UTC) - timedelta(minutes=30))
+    ProductionScannerEngine(repo, _scanner_settings()).run_once(["AMD"])
+    stale = _latest_scanner_result(repo, "OPENING_RANGE_BREAKOUT")
+
+    repo = _repo()
+    _seed_scanner_preflight(repo, provider_status=ProviderHealthStatus.DOWN.value)
+    ProductionScannerEngine(repo, _scanner_settings()).run_once(["AMD"])
+    unhealthy = _latest_scanner_result(repo, "OPENING_RANGE_BREAKOUT")
+
+    repo = _repo()
+    _seed_scanner_preflight(repo)
+    repo.store_strategy_cooldown(
+        symbol="AMD",
+        strategy_id="OPENING_RANGE_BREAKOUT",
+        cooldown_until=datetime.now(UTC) + timedelta(minutes=20),
+        reason="test cooldown",
+    )
+    ProductionScannerEngine(repo, _scanner_settings()).run_once(["AMD"])
+    cooldown = _latest_scanner_result(repo, "OPENING_RANGE_BREAKOUT")
+
+    assert stale.accepted is False
+    assert stale.reason == "Clean Alpaca market data is stale for scanner timeframe."
+    assert unhealthy.accepted is False
+    assert unhealthy.reason == "Alpaca market-data provider health is DOWN."
+    assert cooldown.accepted is False
+    assert "Strategy cooldown active" in cooldown.reason
+
+
+def test_production_scanner_trigger_cooldown_blocks_repeated_signal_emission():
+    repo = _repo()
+    _seed_scanner_preflight(repo)
+
+    ProductionScannerEngine(repo, _scanner_settings()).run_once(["AMD"])
+    first = _latest_scanner_result(repo, "OPENING_RANGE_BREAKOUT")
+    ProductionScannerEngine(repo, _scanner_settings()).run_once(["AMD"])
+    second = _latest_scanner_result(repo, "OPENING_RANGE_BREAKOUT")
+
+    assert first.accepted is True
+    assert second.accepted is False
+    assert "Strategy cooldown active" in second.reason
 
 
 def test_production_scanner_stale_provider_health_and_regime_trigger_kill_switches():
