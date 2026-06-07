@@ -489,6 +489,13 @@ class StrategyRegistry(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     paused_reason: Mapped[str | None] = mapped_column(Text)
     changed_reason: Mapped[str | None] = mapped_column(Text)
     logic_version: Mapped[str] = mapped_column(String(32), default="v1")
+    minimum_trade_count_required: Mapped[int] = mapped_column(Integer, default=30)
+    backtest_trade_count: Mapped[int] = mapped_column(Integer, default=0)
+    out_of_sample_tested: Mapped[bool] = mapped_column(Boolean, default=False)
+    walk_forward_tested: Mapped[bool] = mapped_column(Boolean, default=False)
+    parameter_sensitivity_score: Mapped[float | None] = mapped_column(Float)
+    paper_forward_test_days: Mapped[int | None] = mapped_column(Integer)
+    evidence_quality_score: Mapped[float | None] = mapped_column(Float)
 
 
 class StrategyCooldown(IdMixin, TimestampMixin, SourceTimestampMixin, Base):

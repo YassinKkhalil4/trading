@@ -15,6 +15,7 @@ from trading_system.app.execution.order_manager import OrderManager
 from trading_system.app.execution.paper_execution import PaperExecutionEngine
 from trading_system.app.execution.reconciliation import PositionSnapshot, reconcile_positions
 from trading_system.app.features.calculations import LiquidityGates
+from trading_system.app.risk.live_readiness import LiveReadinessService
 from trading_system.app.risk.risk_engine import PortfolioState, RiskEngine
 from trading_system.app.scanners.vwap_reclaim import VwapReclaimScanner, VwapReclaimSnapshot
 from trading_system.app.services.runtime import TradingRuntimeService
@@ -1578,6 +1579,20 @@ def live_readiness_reports(
     try:
         service.bootstrap()
         return {"live_readiness_reports": service.repository.latest_live_readiness_reports(limit)}
+    finally:
+        session.close()
+
+
+
+@app.get("/live-readiness/detail")
+def live_readiness_detail(
+    _principal: AdminPrincipal = Depends(require_principal),
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        detail = LiveReadinessService(service.repository, service.settings).get_detail_report()
+        return detail.to_dict()
     finally:
         session.close()
 

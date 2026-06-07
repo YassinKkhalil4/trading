@@ -7,6 +7,7 @@ from sqlalchemy import desc, select
 from trading_system.app.core.enums import StrategyStatus
 from trading_system.app.db import models
 from trading_system.app.db.repositories import TradingRepository
+from trading_system.app.strategies.research_evidence import research_evidence_allows_approval
 
 
 STRATEGY_APPROVAL_WORKFLOW_VERSION = "strategy_approval_workflow_v1"
@@ -74,6 +75,13 @@ class StrategyApprovalWorkflow:
                 None,
                 "Strategy promotion is blocked by missing evidence: " + ", ".join(missing),
             )
+        if requested_status in {
+            StrategyStatus.APPROVED_SMALL_SIZE.value,
+            StrategyStatus.APPROVED_FULL_SIZE.value,
+        }:
+            allowed, research_reason = research_evidence_allows_approval(strategy)
+            if not allowed:
+                return StrategyStatusRequestResult(False, None, research_reason)
         row = self.repository.request_strategy_status_change(
             strategy_id=strategy_id,
             strategy_version=strategy_version,
@@ -191,6 +199,10 @@ class StrategyApprovalWorkflow:
                 return False, "Strategy cannot be promoted with recorded rule violations."
             if evidence.get("reconciliation_clean") is not True:
                 return False, "Clean broker/internal reconciliation evidence is required."
+            strategy = self._strategy(request.strategy_id, request.strategy_version)
+            allowed, research_reason = research_evidence_allows_approval(strategy)
+            if not allowed:
+                return False, research_reason
         return True, "Strategy approval evidence passed."
 
     def _strategy(self, strategy_id: str, strategy_version: str) -> models.StrategyRegistry | None:

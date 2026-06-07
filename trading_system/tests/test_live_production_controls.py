@@ -397,6 +397,14 @@ def test_strategy_approval_requires_evidence_then_updates_status():
     )
     assert paper_decision.approved is True
 
+    strategy = repo.session.scalar(
+        select(models.StrategyRegistry).where(models.StrategyRegistry.strategy_id == "VWAP_RECLAIM")
+    )
+    strategy.backtest_trade_count = 30
+    strategy.out_of_sample_tested = True
+    strategy.evidence_quality_score = 0.8
+    repo.session.commit()
+
     request = workflow.request_status_change(
         strategy_id="VWAP_RECLAIM",
         strategy_version="v1",
