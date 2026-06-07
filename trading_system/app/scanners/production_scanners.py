@@ -83,15 +83,7 @@ class ProductionStrategyScanner:
                 {"preflight": preflight.payload, "catalyst_id": None},
             )
 
-        decision = self._evaluate(symbol, preflight, catalyst)
-        if decision["accepted"]:
-            self.engine._mark_strategy_triggered(
-                symbol=symbol,
-                strategy_id=self.strategy_id,
-                reason="Scanner emitted an accepted strategy signal.",
-                source_timestamp=decision["source_timestamp"],
-            )
-        return decision
+        return self._evaluate(symbol, preflight, catalyst)
 
     def _evaluate(self, symbol: str, preflight: ScannerPreflight, catalyst) -> dict:
         raise NotImplementedError
@@ -361,22 +353,6 @@ class ProductionScannerEngine:
             accepted=accepted,
             rejected=rejected,
             reason="Production scanner framework evaluated all configured scanners.",
-        )
-
-    def _mark_strategy_triggered(
-        self,
-        *,
-        symbol: str,
-        strategy_id: str,
-        reason: str,
-        source_timestamp: datetime,
-    ) -> None:
-        self.repository.store_strategy_cooldown(
-            symbol=symbol,
-            strategy_id=strategy_id,
-            cooldown_until=source_timestamp + timedelta(minutes=SCANNER_TRIGGER_COOLDOWN_MINUTES),
-            reason=reason,
-            source_timestamp=source_timestamp,
         )
 
     def _vwap_reclaim(self, symbol: str) -> dict:
@@ -718,6 +694,17 @@ class ProductionScannerEngine:
             return f"Strategy approval status {strategy.status} is not allowed for production scanning."
         if cooldown:
             return f"Strategy cooldown active until {cooldown.cooldown_until.isoformat()}: {cooldown.reason}"
+        symbol = symbol_row.symbol if symbol_row else ""
+        if symbol and self.repository.recent_accepted_scanner_emission(
+            symbol=symbol,
+            strategy_id=strategy.strategy_id if strategy else "",
+            within_minutes=SCANNER_TRIGGER_COOLDOWN_MINUTES,
+            now=now,
+        ):
+            return (
+                f"Recent accepted scanner result within {SCANNER_TRIGGER_COOLDOWN_MINUTES} minutes "
+                "blocks duplicate scanner emission."
+            )
         if not provider_health:
             return "Alpaca market-data provider health is missing."
         if provider_health.status != ProviderHealthStatus.HEALTHY.value:

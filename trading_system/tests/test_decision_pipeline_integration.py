@@ -15,6 +15,7 @@ from trading_system.app.core.config import Settings
 from trading_system.app.core.enums import (
     EnvironmentMode,
     MarketRegime,
+    OrderStatus,
     ProviderHealthStatus,
     StrategyStatus,
 )
@@ -23,6 +24,7 @@ from trading_system.app.db.base import Base
 from trading_system.app.db.repositories import TradingRepository
 from trading_system.app.db.session import build_engine
 from trading_system.app.execution.alpaca_paper_adapter import AlpacaPaperOrderResult, AlpacaPaperSyncResult
+from trading_system.app.execution.paper_execution import PaperOrder
 from trading_system.app.execution.fill_reconciliation import FillReconciliationLoop
 from trading_system.app.journal.review_engine import TradeReviewEngine
 from trading_system.app.monitoring.trade_monitor_service import TradeMonitorService
@@ -229,16 +231,7 @@ def test_full_decision_pipeline_vwap_reclaim_with_mocked_alpaca_paper(monkeypatc
     assert scanner_run.scanners_run >= 1
     assert scanner_result.accepted is True
     assert scanner_result.strategy_id == "VWAP_RECLAIM"
-
-    # Production scanner cooldown blocks immediate bridge retries; expire it for pipeline handoff.
-    trigger_cooldown = repo.active_strategy_cooldown(
-        symbol="AMD",
-        strategy_id="VWAP_RECLAIM",
-        now=now,
-    )
-    if trigger_cooldown is not None:
-        trigger_cooldown.cooldown_until = now - timedelta(minutes=1)
-        repo.session.commit()
+    assert repo.active_strategy_cooldown(symbol="AMD", strategy_id="VWAP_RECLAIM", now=now) is None
 
     ranking_service = OpportunityRankingService(repo, settings)
     ranking = ranking_service.rank_scanner_result(scanner_result, now)
@@ -393,21 +386,19 @@ def test_full_decision_pipeline_vwap_reclaim_with_mocked_alpaca_paper(monkeypatc
     assert fill_result.fills_recorded == 1
     assert repo.counts()["fills"] == 1
 
-    # Paper orders store direction labels (long/short); journal lifecycle matches buy/sell fills.
     persisted_order = repo.session.scalar(
         select(models.Order).where(models.Order.idempotency_key == order["idempotency_key"])
     )
     assert persisted_order is not None
-    if persisted_order.side.lower() == "long":
-        persisted_order.side = "buy"
-        repo.session.commit()
+    assert persisted_order.side == "buy"
 
-    monitor_result = TradeMonitorService(repo).run_once()
-    assert monitor_result.journal_entries_created >= 1
     journal = repo.latest_journal(1)[0]
     assert journal["signal_id"] == bridge_result.signal_id
     assert journal["actual_entry"] == pytest.approx(float(order["limit_price"]))
-    assert journal["change_reason"]
+    assert "entry fill reconciliation" in journal["change_reason"].lower()
+
+    monitor_result = TradeMonitorService(repo).run_once()
+    assert monitor_result.journal_entries_updated >= 0
 
     review_result = TradeReviewEngine(repo).run_once()
     assert review_result.reviews_created == 1
@@ -428,3 +419,108 @@ def test_full_decision_pipeline_vwap_reclaim_with_mocked_alpaca_paper(monkeypatc
         },
     )
     assert attribution.by_strategy["VWAP_RECLAIM"].trade_count == 1
+
+
+def test_duplicate_scanner_emission_blocked_after_acceptance():
+    repo = _repo()
+    settings = _settings()
+    now = datetime.now(UTC)
+    _seed_scanner_environment(repo, now=now)
+
+    ProductionScannerEngine(repo, settings).run_once(["AMD"])
+    first = _latest_scanner_result(repo, "VWAP_RECLAIM")
+    ProductionScannerEngine(repo, settings).run_once(["AMD"])
+    second = _latest_scanner_result(repo, "VWAP_RECLAIM")
+
+    assert first.accepted is True
+    assert second.accepted is False
+    assert "duplicate scanner emission" in second.reason.lower()
+
+
+def test_journal_lifecycle_records_buy_sell_for_long_entry_exit(monkeypatch):
+    repo = _repo()
+    settings = _settings()
+    now = datetime.now(UTC)
+    _seed_scanner_environment(repo, now=now)
+
+    ProductionScannerEngine(repo, settings).run_once(["AMD"])
+    scanner_result = _latest_scanner_result(repo, "VWAP_RECLAIM")
+    ranking = OpportunityRankingService(repo, settings).rank_scanner_result(scanner_result, now)
+    bridge_result = ScannerSignalBridgeService(repo, settings).try_create_signal(
+        scanner_result.id,
+        ranking=ranking,
+        now=now,
+    )
+    assert bridge_result.signal_id is not None
+
+    monkeypatch.setattr(
+        "trading_system.app.services.runtime.AlpacaPaperAdapter",
+        FakePaperSubmitAdapter,
+    )
+    runtime = TradingRuntimeService(repo, settings=settings)
+    runtime.submit_signal_to_paper(
+        signal_id=bridge_result.signal_id,
+        account_equity=100_000,
+        open_positions=0,
+        daily_loss_pct=0.0,
+        weekly_loss_pct=0.0,
+        sector_exposure_pct=0.0,
+        trades_today=0,
+        strategy_trades_today=0,
+    )
+    entry_order = repo.latest_orders(1)[0]
+    assert entry_order["side"] == "buy"
+
+    entry_at = now
+    exit_at = now + timedelta(hours=1)
+    repo.session.add(
+        models.Fill(
+            order_id=entry_order["id"],
+            broker_fill_id="journal-entry-buy",
+            symbol="AMD",
+            quantity=entry_order["quantity"],
+            price=entry_order["limit_price"],
+            slippage_bps=5.0,
+            commission=0.0,
+            source_timestamp=entry_at,
+        )
+    )
+    exit_order = repo.store_order(
+        PaperOrder(
+            symbol="AMD",
+            side="sell",
+            quantity=entry_order["quantity"],
+            order_type="limit",
+            limit_price=105.0,
+            stop_loss=98.0,
+            idempotency_key="journal-exit-sell",
+            status=OrderStatus.FILLED,
+            reason="long exit sell fill",
+            created_at=exit_at,
+        ),
+        signal_id=bridge_result.signal_id,
+        strategy_id="VWAP_RECLAIM",
+        environment_mode=EnvironmentMode.PAPER.value,
+        source_timestamp=exit_at,
+    )
+    repo.session.add(
+        models.Fill(
+            order_id=exit_order.id,
+            broker_fill_id="journal-exit-sell",
+            symbol="AMD",
+            quantity=entry_order["quantity"],
+            price=105.0,
+            slippage_bps=4.0,
+            commission=0.0,
+            source_timestamp=exit_at,
+        )
+    )
+    repo.session.commit()
+
+    lifecycle = repo.persist_journal_lifecycle_for_signal(signal_id=bridge_result.signal_id)
+    journal = repo.latest_journal(1)[0]
+
+    assert lifecycle["created"] is True
+    assert journal["actual_entry"] == entry_order["limit_price"]
+    assert journal["actual_exit"] == 105.0
+    assert journal["pnl"] == (105.0 - entry_order["limit_price"]) * entry_order["quantity"]

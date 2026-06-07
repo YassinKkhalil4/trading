@@ -10,6 +10,11 @@ from trading_system.app.core.enums import DecisionOutcome, DecisionType, Directi
 from trading_system.app.db import models
 from trading_system.app.db.repositories import TradingRepository
 from trading_system.app.execution.order_manager import OrderManager
+from trading_system.app.execution.order_side import (
+    entry_side_from_direction,
+    exit_side_from_direction,
+    normalize_order_side,
+)
 from trading_system.app.monitoring.trade_monitor import evaluate_day_trade_to_swing_conversion
 
 
@@ -155,7 +160,11 @@ class TradeMonitorService:
             return None
         symbol = signal.symbol if signal else signal_fills[0][1].symbol
         entry_side = self._entry_side(signal=signal, fallback_side=signal_fills[0][1].side)
-        exit_side = "buy" if entry_side == "sell" else "sell"
+        exit_side = (
+            exit_side_from_direction(signal.direction)
+            if signal
+            else ("buy" if entry_side == "sell" else "sell")
+        )
         entry_fills = [(fill, order) for fill, order in signal_fills if order.side.lower() == entry_side]
         exit_fills = [(fill, order) for fill, order in signal_fills if order.side.lower() == exit_side]
         if not entry_fills:
@@ -347,11 +356,9 @@ class TradeMonitorService:
 
     @staticmethod
     def _entry_side(*, signal: models.Signal | None, fallback_side: str) -> str:
-        if signal and signal.direction == Direction.SHORT.value:
-            return "sell"
-        if signal and signal.direction == Direction.LONG.value:
-            return "buy"
-        return fallback_side.lower()
+        if signal:
+            return entry_side_from_direction(signal.direction)
+        return normalize_order_side(fallback_side)
 
     @staticmethod
     def _journal_changed(journal: models.TradeJournal, metrics: dict[str, Any]) -> bool:

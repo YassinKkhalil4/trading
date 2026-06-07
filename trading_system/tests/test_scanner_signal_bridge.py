@@ -183,6 +183,31 @@ def test_b_or_watch_grade_cannot_create_signal():
     assert "below bridge threshold" in result.blocked_reason
 
 
+def test_signal_creation_stores_strategy_cooldown():
+    repo = _repo()
+    now = _seed_common(repo)
+    _store_intraday_features(repo, now=now)
+    scanner_result = _store_scanner_result(
+        repo,
+        strategy_id="VWAP_RECLAIM",
+        now=now,
+        scanner_score=95.0,
+        relative_strength_20d=4.5,
+    )
+    ranking = OpportunityRankingService(repo, _settings()).rank_scanner_result(scanner_result, now)
+
+    result = _bridge(repo).try_create_signal(scanner_result.id, ranking=ranking, now=now)
+
+    assert result.created is True
+    cooldown = repo.active_strategy_cooldown(
+        symbol="AMD",
+        strategy_id="VWAP_RECLAIM",
+        now=now,
+    )
+    assert cooldown is not None
+    assert "Signal created from ranked scanner opportunity" in cooldown.reason
+
+
 def test_a_or_a_plus_grade_can_create_signal():
     repo = _repo()
     now = _seed_common(repo)

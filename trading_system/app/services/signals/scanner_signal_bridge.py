@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, TYPE_CHECKING
 
 from sqlalchemy import desc, select
@@ -11,7 +11,10 @@ from trading_system.app.core.config import Settings
 from trading_system.app.core.enums import DecisionOutcome, DecisionType, Direction, SignalStatus, TradeType
 from trading_system.app.db import models
 from trading_system.app.db.repositories import TradingRepository
-from trading_system.app.scanners.production_scanners import SCANNER_APPROVED_STATUSES
+from trading_system.app.scanners.production_scanners import (
+    SCANNER_APPROVED_STATUSES,
+    SCANNER_TRIGGER_COOLDOWN_MINUTES,
+)
 from trading_system.app.services.ranking.opportunity_ranking import (
     OpportunityGrade,
     OpportunityRankingResult,
@@ -206,6 +209,13 @@ class ScannerSignalBridgeService:
             bridge_signal=bridge_signal,
             source_timestamp=bridge_signal.source_timestamp,
         )
+        self.repository.store_strategy_cooldown(
+            symbol=bridge_signal.symbol,
+            strategy_id=bridge_signal.strategy_id,
+            cooldown_until=now + timedelta(minutes=SCANNER_TRIGGER_COOLDOWN_MINUTES),
+            reason="Signal created from ranked scanner opportunity; strategy cooldown active.",
+            source_timestamp=bridge_signal.source_timestamp,
+        )
         return ScannerBridgeResult(
             created=True,
             signal=bridge_signal,
@@ -241,6 +251,14 @@ class ScannerSignalBridgeService:
                 f"(requires A_PLUS or A)."
             )
 
+        idempotency_key = build_scanner_bridge_idempotency_key(
+            scanner_result_id=scanner_result.id,
+            symbol=scanner_result.symbol,
+            strategy_id=strategy_id,
+        )
+        if self._idempotency_exists(idempotency_key):
+            return f"Duplicate idempotency key rejected: {idempotency_key}"
+
         cooldown = self.repository.active_strategy_cooldown(
             symbol=scanner_result.symbol,
             strategy_id=strategy_id,
@@ -251,14 +269,6 @@ class ScannerSignalBridgeService:
                 f"Strategy cooldown active until {cooldown.cooldown_until.isoformat()}: "
                 f"{cooldown.reason}"
             )
-
-        idempotency_key = build_scanner_bridge_idempotency_key(
-            scanner_result_id=scanner_result.id,
-            symbol=scanner_result.symbol,
-            strategy_id=strategy_id,
-        )
-        if self._idempotency_exists(idempotency_key):
-            return f"Duplicate idempotency key rejected: {idempotency_key}"
         return None
 
     def _build_bridge_signal(

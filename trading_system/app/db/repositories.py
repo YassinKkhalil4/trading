@@ -33,6 +33,7 @@ from trading_system.app.db.seed import (
     DEFAULT_STRATEGIES,
     DEFAULT_SYMBOLS,
 )
+from trading_system.app.execution.order_side import entry_side_from_direction, normalize_order_side
 from trading_system.app.execution.paper_execution import PaperOrder
 from trading_system.app.risk.risk_engine import RiskDecision
 from trading_system.app.scanners.vwap_reclaim import ScannerDecision
@@ -1062,6 +1063,28 @@ class TradingRepository:
             .limit(1)
         )
 
+    def recent_accepted_scanner_emission(
+        self,
+        *,
+        symbol: str,
+        strategy_id: str,
+        within_minutes: int,
+        now: datetime | None = None,
+    ) -> models.ScannerResult | None:
+        now = now or _now()
+        cutoff = now - timedelta(minutes=within_minutes)
+        return self.session.scalar(
+            select(models.ScannerResult)
+            .where(
+                models.ScannerResult.symbol == symbol.upper(),
+                models.ScannerResult.strategy_id == strategy_id,
+                models.ScannerResult.accepted.is_(True),
+                models.ScannerResult.source_timestamp >= cutoff,
+            )
+            .order_by(desc(models.ScannerResult.source_timestamp))
+            .limit(1)
+        )
+
     def store_scanner_result(
         self,
         decision: ScannerDecision,
@@ -1370,7 +1393,7 @@ class TradingRepository:
             execution_environment=execution_environment,
             broker=broker,
             symbol=order.symbol,
-            side=order.side,
+            side=normalize_order_side(order.side),
             quantity=order.quantity,
             order_type=order.order_type,
             limit_price=order.limit_price,
@@ -1456,7 +1479,7 @@ class TradingRepository:
                 broker="alpaca_live" if environment_mode == "live" else "alpaca_paper",
                 broker_order_id=broker_order_id or None,
                 symbol=symbol,
-                side=str(broker_order.get("side") or ""),
+                side=normalize_order_side(str(broker_order.get("side") or "")),
                 quantity=float(broker_order.get("qty") or 0),
                 order_type=str(broker_order.get("type") or ""),
                 limit_price=_float_or_none(broker_order.get("limit_price")),
@@ -2553,11 +2576,9 @@ class TradingRepository:
 
     @staticmethod
     def _journal_entry_side(*, signal: models.Signal | None, fallback_side: str) -> str:
-        if signal and signal.direction == Direction.SHORT.value:
-            return "sell"
-        if signal and signal.direction == Direction.LONG.value:
-            return "buy"
-        return fallback_side.lower()
+        if signal:
+            return entry_side_from_direction(signal.direction)
+        return normalize_order_side(fallback_side)
 
     @staticmethod
     def _journal_lifecycle_changed(journal: models.TradeJournal, metrics: dict[str, Any]) -> bool:

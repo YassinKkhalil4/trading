@@ -510,7 +510,7 @@ def test_production_scanner_trigger_cooldown_blocks_repeated_signal_emission():
 
     assert first.accepted is True
     assert second.accepted is False
-    assert "Strategy cooldown active" in second.reason
+    assert "duplicate scanner emission" in second.reason.lower()
 
 
 def test_production_scanner_stale_provider_health_and_regime_trigger_kill_switches():

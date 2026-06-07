@@ -1,0 +1,208 @@
+{
+  "passed": [
+    {
+      "name": "Python compileall",
+      "status": "PASS",
+      "detail": "trading_system package compiles cleanly",
+      "command": "/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m compileall -q trading_system"
+    },
+    {
+      "name": "Full pytest suite",
+      "status": "PASS",
+      "detail": "235 passed, 1 warning in 12.95s",
+      "command": "/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m pytest trading_system/tests -q --tb=no"
+    },
+    {
+      "name": "Alembic upgrade head (clean PostgreSQL)",
+      "status": "PASS",
+      "detail": "Database trading_validation_1780846762 migrated to head",
+      "command": "/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m alembic -c trading_system/alembic.ini upgrade head"
+    },
+    {
+      "name": "Seed data loads",
+      "status": "PASS",
+      "detail": "{'symbols': 5, 'raw_ingestion_events': 0, 'raw_trade_ticks': 0, 'clean_candles': 0, 'stream_events': 0, 'provider_health': 0, 'provider_rate_limits': 0, 'worker_heartbeats': 0, 'clean_news': 0, 'filings': 0, 'scanner_results': 0, 'signals': 0, 'risk_checks': 0, 'broker_account_snapshots': 0, 'orders': 0, 'fills': 0, 'positions': 0, 'execution_errors': 0, 'journal_entries': 0, 'scheduler_runs': 0, 'live_readiness_reports': 0, 'strategy_approval_requests': 0, 'kill_switches': 0, 'weekly_reviews': 0, 'recommendations': 0}",
+      "command": ""
+    },
+    {
+      "name": "Strategy registry has 7 strategies",
+      "status": "PASS",
+      "detail": "7",
+      "command": ""
+    },
+    {
+      "name": "Provider capabilities seeded (8)",
+      "status": "PASS",
+      "detail": "8",
+      "command": ""
+    },
+    {
+      "name": "Admin bootstrap with configured password",
+      "status": "PASS",
+      "detail": "admin=True login=True",
+      "command": ""
+    },
+    {
+      "name": "Admin bootstrap rejects default unsafe session secret",
+      "status": "PASS",
+      "detail": "default=False",
+      "command": ""
+    },
+    {
+      "name": "research starts without broker execution",
+      "status": "PASS",
+      "detail": "Paper execution requires ENVIRONMENT_MODE=paper.",
+      "command": ""
+    },
+    {
+      "name": "paper starts with Alpaca paper config only",
+      "status": "PASS",
+      "detail": "live_order_path_enabled=False in paper mode",
+      "command": ""
+    },
+    {
+      "name": "paper adapter requires paper credentials",
+      "status": "PASS",
+      "detail": "configured only when paper keys present",
+      "command": ""
+    },
+    {
+      "name": "live_disabled blocks live order path",
+      "status": "PASS",
+      "detail": "environment_mode_live, allow_live_trading, confirm_live_trading, live_order_path_enabled, live_keys_present, active_human_approval, latest_readiness_passed, alpaca_market_data_healthy, alpaca_live_healthy, live_account_snapshot_usable, live_reconciliation_clean, strategy_approved",
+      "command": ""
+    },
+    {
+      "name": "live remains blocked without every gate",
+      "status": "PASS",
+      "detail": "ENVIRONMENT_MODE=live requires explicit live confirmation. Live trading is not wired unless every live gate is explicitly enabled.",
+      "command": ""
+    },
+    {
+      "name": "worker scheduler imports and starts",
+      "status": "PASS",
+      "detail": "completed one cycle",
+      "command": "/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker scheduler --once"
+    },
+    {
+      "name": "worker market-stream imports and starts",
+      "status": "PASS",
+      "detail": "completed one cycle",
+      "command": "/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker market-stream --once"
+    },
+    {
+      "name": "worker reconciliation imports and starts",
+      "status": "PASS",
+      "detail": "completed one cycle",
+      "command": "/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker reconciliation --once"
+    },
+    {
+      "name": "worker trade-monitor imports and starts",
+      "status": "PASS",
+      "detail": "completed one cycle",
+      "command": "/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker trade-monitor --once"
+    },
+    {
+      "name": "worker review imports and starts",
+      "status": "PASS",
+      "detail": "completed one cycle",
+      "command": "/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker review --once"
+    },
+    {
+      "name": "worker learning imports and starts",
+      "status": "PASS",
+      "detail": "completed one cycle",
+      "command": "/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker learning --once"
+    },
+    {
+      "name": "dashboard/API show no fake positions/orders/fills on fresh bootstrap",
+      "status": "PASS",
+      "detail": "{'symbols': 5, 'raw_ingestion_events': 0, 'raw_trade_ticks': 0, 'clean_candles': 0, 'stream_events': 0, 'provider_health': 0, 'provider_rate_limits': 0, 'worker_heartbeats': 0, 'clean_news': 0, 'filings': 0, 'scanner_results': 0, 'signals': 0, 'risk_checks': 0, 'broker_account_snapshots': 0, 'orders': 0, 'fills': 0, 'positions': 0, 'execution_errors': 0, 'journal_entries': 0, 'scheduler_runs': 0, 'live_readiness_reports': 0, 'strategy_approval_requests': 0, 'kill_switches': 0, 'weekly_reviews': 0, 'recommendations': 0}",
+      "command": ""
+    },
+    {
+      "name": "missing paper credentials show unconfigured status",
+      "status": "PASS",
+      "detail": "Alpaca paper keys are not configured.",
+      "command": ""
+    },
+    {
+      "name": "missing provider credentials show blocked/unconfigured health",
+      "status": "PASS",
+      "detail": "8 non-healthy snapshots",
+      "command": ""
+    },
+    {
+      "name": "API /health advertises gated live path",
+      "status": "PASS",
+      "detail": "Production-gated platform. Live trading path is disabled unless every live gate passes.",
+      "command": ""
+    }
+  ],
+  "failed": [],
+  "skipped": [
+    {
+      "name": "docker available",
+      "status": "SKIP",
+      "detail": "docker not installed on this host",
+      "command": ""
+    },
+    {
+      "name": "terraform available",
+      "status": "SKIP",
+      "detail": "terraform not installed on this host",
+      "command": ""
+    },
+    {
+      "name": "Docker image build (API)",
+      "status": "SKIP",
+      "detail": "Docker not installed",
+      "command": ""
+    },
+    {
+      "name": "Docker image build (dashboard)",
+      "status": "SKIP",
+      "detail": "Docker not installed",
+      "command": ""
+    },
+    {
+      "name": "docker-compose config validation",
+      "status": "SKIP",
+      "detail": "Docker not installed",
+      "command": ""
+    },
+    {
+      "name": "docker-compose startup health check",
+      "status": "SKIP",
+      "detail": "Docker not installed",
+      "command": ""
+    }
+  ],
+  "commands": [
+    "/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m compileall -q trading_system",
+    "/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m pytest trading_system/tests -q --tb=no",
+    "/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m alembic -c trading_system/alembic.ini upgrade head",
+    "/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker scheduler --once",
+    "/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker market-stream --once",
+    "/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker reconciliation --once",
+    "/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker trade-monitor --once",
+    "/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker review --once",
+    "/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker learning --once"
+  ],
+  "missing_dependencies": [
+    "docker",
+    "terraform"
+  ],
+  "aws_next_steps": [
+    "Install and configure AWS CLI credentials for the target account/region (default us-east-1).",
+    "Review infra/aws/main.tf and set required variables (VPC CIDR, secrets ARNs, image tags).",
+    "Run `terraform -chdir=infra/aws init` and `terraform -chdir=infra/aws plan` before any apply.",
+    "Build and push the application image to the ECR repository declared in Terraform.",
+    "Run the Alembic migration ECS task against the RDS endpoint (see .github/workflows/ci-cd.yml).",
+    "Set runtime secrets in AWS Secrets Manager: DATABASE_URL, ADMIN_PASSWORD, ADMIN_SESSION_SECRET, ALPACA_PAPER_*.",
+    "Deploy ECS services in order: api, dashboard, scheduler, market_stream, reconciliation, trade_monitor, reviews, learning.",
+    "Verify ALB /health on the API service and authenticated /ops/health after deployment.",
+    "Confirm ENVIRONMENT_MODE=paper, ALLOW_LIVE_TRADING=false, ENABLE_LIVE_ORDER_PATH=false in task definitions.",
+    "Generate a live-readiness report only after all provider health and admin-secret gates pass in the target environment."
+  ]
+}

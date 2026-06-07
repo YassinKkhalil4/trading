@@ -14,7 +14,6 @@ from trading_system.app.db.session import build_engine
 from trading_system.app.scanners.production_scanners import (
     CATALYST_REQUIRED_STRATEGY_IDS,
     REQUIRED_STRATEGY_IDS,
-    SCANNER_TRIGGER_COOLDOWN_MINUTES,
     ProductionScannerEngine,
 )
 
@@ -256,7 +255,7 @@ def test_cooldown_blocks_all_scanners():
     assert all("Strategy cooldown active" in row.reason for row in results.values())
 
 
-def test_accepted_signal_creates_cooldown():
+def test_accepted_scanner_emission_does_not_create_signal_cooldown():
     repo = _repo()
     _seed_common(repo, seed_catalysts=False)
 
@@ -269,7 +268,26 @@ def test_accepted_signal_creates_cooldown():
     )
 
     assert result.accepted is True
-    assert cooldown is not None
-    assert cooldown.cooldown_until == result.source_timestamp + timedelta(
-        minutes=SCANNER_TRIGGER_COOLDOWN_MINUTES
+    assert cooldown is None
+
+
+def test_duplicate_scanner_emission_is_blocked_before_signal_cooldown():
+    repo = _repo()
+    _seed_common(repo, seed_catalysts=False)
+
+    ProductionScannerEngine(repo, _settings()).run_once(["AMD"])
+    first = _latest_results(repo)["OPENING_RANGE_BREAKOUT"]
+    ProductionScannerEngine(repo, _settings()).run_once(["AMD"])
+    second = _latest_results(repo)["OPENING_RANGE_BREAKOUT"]
+
+    assert first.accepted is True
+    assert second.accepted is False
+    assert "duplicate scanner emission" in second.reason.lower()
+    assert (
+        repo.active_strategy_cooldown(
+            symbol="AMD",
+            strategy_id="OPENING_RANGE_BREAKOUT",
+            now=second.source_timestamp,
+        )
+        is None
     )

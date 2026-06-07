@@ -21,6 +21,7 @@ from trading_system.app.execution.alpaca_live_adapter import (
     AlpacaLiveOrderResult,
 )
 from trading_system.app.execution.order_manager import OrderManager
+from trading_system.app.execution.order_side import entry_side_from_direction
 from trading_system.app.execution.paper_execution import PaperOrder
 from trading_system.app.execution.reconciliation import ReconciliationResult
 from trading_system.app.risk.live_gates import LIVE_GATE_VERSION, LiveGateService
@@ -75,7 +76,7 @@ class LiveExecutionService:
             symbol=signal.symbol,
             strategy_id=signal.strategy_id,
             source_timestamp=signal.source_timestamp,
-            side=signal.direction.value,
+            side=entry_side_from_direction(signal.direction),
             leg="entry",
         )
         existing_order = self.repository.session.scalar(
@@ -109,7 +110,7 @@ class LiveExecutionService:
             )
         local_order = PaperOrder(
             symbol=signal.symbol,
-            side=signal.direction.value.lower(),
+            side=entry_side_from_direction(signal.direction),
             quantity=risk_decision.position_size,
             order_type="limit",
             limit_price=signal.entry_zone[0],
@@ -259,7 +260,7 @@ class LiveExecutionService:
     ) -> LiveExecutionResult:
         blocked_order = PaperOrder(
             symbol=signal.symbol,
-            side=signal.direction.value.lower(),
+            side=entry_side_from_direction(signal.direction),
             quantity=0,
             order_type="limit",
             limit_price=signal.entry_zone[0],

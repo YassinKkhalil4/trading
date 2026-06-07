@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from trading_system.app.audit.logger import InMemoryDecisionLogger
 from trading_system.app.core.config import Settings, get_settings
 from trading_system.app.core.enums import DecisionOutcome, DecisionType, EnvironmentMode, OrderStatus
+from trading_system.app.execution.order_side import entry_side_from_direction
 from trading_system.app.execution.reconciliation import ReconciliationResult
 from trading_system.app.risk.risk_engine import RiskDecision
 from trading_system.app.signals.idempotency import IdempotencyRegistry, build_idempotency_key
@@ -65,7 +66,7 @@ class PaperExecutionEngine:
         self.idempotency_registry.reserve(order_key)
         order = PaperOrder(
             symbol=signal.symbol,
-            side=signal.direction.value.lower(),
+            side=entry_side_from_direction(signal.direction),
             quantity=risk_decision.position_size,
             order_type="limit",
             limit_price=signal.entry_zone[0],
@@ -88,7 +89,7 @@ class PaperExecutionEngine:
     def _blocked_order(self, signal: TradeSignal, reason: str) -> PaperOrder:
         order = PaperOrder(
             symbol=signal.symbol,
-            side=signal.direction.value.lower(),
+            side=entry_side_from_direction(signal.direction),
             quantity=0,
             order_type="limit",
             limit_price=signal.entry_zone[0],
