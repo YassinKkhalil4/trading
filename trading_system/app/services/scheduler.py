@@ -14,6 +14,7 @@ from trading_system.app.data.collectors.sec_edgar import SecEdgarCollector
 from trading_system.app.data.collectors.yahoo_chart import YahooChartCollector
 from trading_system.app.data.quality_repair import MissingCandleRepairService
 from trading_system.app.data.universe import LiquidUniverseBuilder
+from trading_system.app.services.universe import MasterUniverseRefreshWorker
 from trading_system.app.db.repositories import TradingRepository
 from trading_system.app.execution.fill_reconciliation import FillReconciliationLoop
 from trading_system.app.features.production_features import ProductionFeatureEngine
@@ -208,6 +209,17 @@ class ScheduledCollectorRunner:
             result = ProviderHealthService(self.repository, self.settings).run_once()
             return ScheduledJobResult(job_name, True, result.reason, {"result": asdict(result)})
         if job_name == "universe":
+            if self.settings.scheduler_use_master_universe_refresh:
+                result = MasterUniverseRefreshWorker(
+                    self.repository,
+                    settings=self.settings,
+                ).run_once()
+                return ScheduledJobResult(
+                    job_name,
+                    result.success,
+                    result.reason,
+                    {"result": asdict(result)},
+                )
             result = LiquidUniverseBuilder(self.repository, self.settings).refresh(symbols)
             return ScheduledJobResult(job_name, True, result.reason, {"result": asdict(result)})
         if job_name == "missing_candle_repair":

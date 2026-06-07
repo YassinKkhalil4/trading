@@ -77,6 +77,8 @@ class Settings:
     max_strategy_exposure_pct: float = 40.0
     max_correlated_exposure_pct: float = 50.0
     max_overnight_exposure_pct: float = 50.0
+    min_cash_buffer_pct: float = 10.0
+    max_same_sector_new_signals: int = 2
     max_trades_per_day: int = 5
     max_trades_per_strategy_per_day: int = 2
     max_slippage_bps: float = 25.0
@@ -104,6 +106,7 @@ class Settings:
     provider_health_max_age_seconds: int = 180
     worker_sleep_seconds: int = 5
     scheduler_lock_ttl_seconds: int = 300
+    scheduler_use_master_universe_refresh: bool = True
 
     @property
     def live_order_path_enabled(self) -> bool:
@@ -199,6 +202,8 @@ def get_settings() -> Settings:
         max_strategy_exposure_pct=_env_float("MAX_STRATEGY_EXPOSURE_PCT", 40.0),
         max_correlated_exposure_pct=_env_float("MAX_CORRELATED_EXPOSURE_PCT", 50.0),
         max_overnight_exposure_pct=_env_float("MAX_OVERNIGHT_EXPOSURE_PCT", 50.0),
+        min_cash_buffer_pct=_env_float("MIN_CASH_BUFFER_PCT", 10.0),
+        max_same_sector_new_signals=_env_int("MAX_SAME_SECTOR_NEW_SIGNALS", 2),
         max_trades_per_day=_env_int("MAX_TRADES_PER_DAY", 5),
         max_trades_per_strategy_per_day=_env_int("MAX_TRADES_PER_STRATEGY_PER_DAY", 2),
         max_slippage_bps=_env_float("MAX_SLIPPAGE_BPS", 25.0),
@@ -228,4 +233,5 @@ def get_settings() -> Settings:
         provider_health_max_age_seconds=_env_int("PROVIDER_HEALTH_MAX_AGE_SECONDS", 180),
         worker_sleep_seconds=_env_int("WORKER_SLEEP_SECONDS", 5),
         scheduler_lock_ttl_seconds=_env_int("SCHEDULER_LOCK_TTL_SECONDS", 300),
+        scheduler_use_master_universe_refresh=_env_bool("SCHEDULER_USE_MASTER_UNIVERSE_REFRESH", True),
     )
