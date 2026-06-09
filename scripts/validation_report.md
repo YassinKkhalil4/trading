@@ -1,67 +1,76 @@
-# Platform Validation Report
+# Docker Validation Report
 
-- Report version: 1.0.0
-- Started: 2026-06-07T15:39:07.779373+00:00
-- Finished: 2026-06-07T15:41:20.651188+00:00
+- Report version: 1.1.0
+- Started: 2026-06-07T16:18:29.520102+00:00
+- Finished: 2026-06-07T16:21:16.846169+00:00
 - Root: `/Users/yassinkhalil/Documents/Trading`
 
 ## Passed checks
 
-- **Python compileall** — PASS
-  - trading_system package compiles cleanly
-  - Command: `/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m compileall -q trading_system`
-- **Full pytest suite** — PASS
-  - 235 passed, 1 warning in 12.95s
-  - Command: `/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m pytest trading_system/tests -q --tb=no`
-- **Alembic upgrade head (clean PostgreSQL)** — PASS
-  - Database trading_validation_1780846762 migrated to head
-  - Command: `/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m alembic -c trading_system/alembic.ini upgrade head`
-- **Seed data loads** — PASS
-  - {'symbols': 5, 'raw_ingestion_events': 0, 'raw_trade_ticks': 0, 'clean_candles': 0, 'stream_events': 0, 'provider_health': 0, 'provider_rate_limits': 0, 'worker_heartbeats': 0, 'clean_news': 0, 'filings': 0, 'scanner_results': 0, 'signals': 0, 'risk_checks': 0, 'broker_account_snapshots': 0, 'orders': 0, 'fills': 0, 'positions': 0, 'execution_errors': 0, 'journal_entries': 0, 'scheduler_runs': 0, 'live_readiness_reports': 0, 'strategy_approval_requests': 0, 'kill_switches': 0, 'weekly_reviews': 0, 'recommendations': 0}
-- **Strategy registry has 7 strategies** — PASS
-  - 7
-- **Provider capabilities seeded (8)** — PASS
-  - 8
-- **Admin bootstrap with configured password** — PASS
-  - admin=True login=True
-- **Admin bootstrap rejects default unsafe session secret** — PASS
-  - default=False
-- **research starts without broker execution** — PASS
-  - Paper execution requires ENVIRONMENT_MODE=paper.
-- **paper starts with Alpaca paper config only** — PASS
-  - live_order_path_enabled=False in paper mode
-- **paper adapter requires paper credentials** — PASS
-  - configured only when paper keys present
-- **live_disabled blocks live order path** — PASS
-  - environment_mode_live, allow_live_trading, confirm_live_trading, live_order_path_enabled, live_keys_present, active_human_approval, latest_readiness_passed, alpaca_market_data_healthy, alpaca_live_healthy, live_account_snapshot_usable, live_reconciliation_clean, strategy_approved
-- **live remains blocked without every gate** — PASS
-  - ENVIRONMENT_MODE=live requires explicit live confirmation. Live trading is not wired unless every live gate is explicitly enabled.
-- **worker scheduler imports and starts** — PASS
-  - completed one cycle
-  - Command: `/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker scheduler --once`
-- **worker market-stream imports and starts** — PASS
-  - completed one cycle
-  - Command: `/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker market-stream --once`
-- **worker reconciliation imports and starts** — PASS
-  - completed one cycle
-  - Command: `/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker reconciliation --once`
-- **worker trade-monitor imports and starts** — PASS
-  - completed one cycle
-  - Command: `/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker trade-monitor --once`
-- **worker review imports and starts** — PASS
-  - completed one cycle
-  - Command: `/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker review --once`
-- **worker learning imports and starts** — PASS
-  - completed one cycle
-  - Command: `/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker learning --once`
-- **dashboard/API show no fake positions/orders/fills on fresh bootstrap** — PASS
-  - {'symbols': 5, 'raw_ingestion_events': 0, 'raw_trade_ticks': 0, 'clean_candles': 0, 'stream_events': 0, 'provider_health': 0, 'provider_rate_limits': 0, 'worker_heartbeats': 0, 'clean_news': 0, 'filings': 0, 'scanner_results': 0, 'signals': 0, 'risk_checks': 0, 'broker_account_snapshots': 0, 'orders': 0, 'fills': 0, 'positions': 0, 'execution_errors': 0, 'journal_entries': 0, 'scheduler_runs': 0, 'live_readiness_reports': 0, 'strategy_approval_requests': 0, 'kill_switches': 0, 'weekly_reviews': 0, 'recommendations': 0}
-- **missing paper credentials show unconfigured status** — PASS
-  - Alpaca paper keys are not configured.
-- **missing provider credentials show blocked/unconfigured health** — PASS
-  - 8 non-healthy snapshots
-- **API /health advertises gated live path** — PASS
-  - Production-gated platform. Live trading path is disabled unless every live gate passes.
+- **docker available** — PASS
+  - Docker version 29.5.3, build d1c06ef6b4
+- **Docker image build (API)** — PASS
+  - Image trading-platform-api:validation built
+  - Command: `/opt/homebrew/bin/docker build -t trading-platform-api:validation .`
+- **Docker image build (dashboard)** — PASS
+  - Separate dashboard tag built from shared Dockerfile
+  - Command: `/opt/homebrew/bin/docker build -t trading-platform-dashboard:validation .`
+- **docker-compose config validation** — PASS
+  - docker-compose.yml is valid
+  - Command: `/opt/homebrew/bin/docker-compose -f docker-compose.yml config`
+- **docker compose up (postgres, redis, api, dashboard, workers)** — PASS
+  - All compose services started
+  - Command: `/opt/homebrew/bin/docker-compose -f docker-compose.yml up -d --build postgres redis api dashboard scheduler-worker market-stream-worker reconciliation-worker trade-monitor-worker review-worker learning-worker`
+- **Docker service api running** — PASS
+  - {"Command":"\"uvicorn trading_sys…\"","CreatedAt":"2026-06-07 19:20:36 +0300 EEST","ExitCode":0,"Health":"","ID":"7fb73ceab948","Image":"trading-api","Labels":"com.docker.compose.image.builder=classic,com.docker.compose.project.config_files=/Users/yassinkhalil/Documents/Trading/docker-compose.yml,co
+- **Docker service dashboard running** — PASS
+  - {"Command":"\"streamlit run tradi…\"","CreatedAt":"2026-06-07 19:20:36 +0300 EEST","ExitCode":0,"Health":"","ID":"3f5d052894ca","Image":"trading-dashboard","Labels":"com.docker.compose.project.working_dir=/Users/yassinkhalil/Documents/Trading,com.docker.compose.service=dashboard,com.docker.compose.v
+- **Docker service scheduler-worker running** — PASS
+  - {"Command":"\"python -m trading_s…\"","CreatedAt":"2026-06-07 19:20:36 +0300 EEST","ExitCode":0,"Health":"","ID":"aa820f3d57ff","Image":"trading-scheduler-worker","Labels":"com.docker.compose.image=sha256:368e6e3af1b529b3b76af11b5d1335f5de532e98dd501d10130341f6e1beb555,com.docker.compose.oneoff=Fals
+- **Docker service market-stream-worker running** — PASS
+  - {"Command":"\"python -m trading_s…\"","CreatedAt":"2026-06-07 19:20:36 +0300 EEST","ExitCode":0,"Health":"","ID":"2b3e13f4e36c","Image":"trading-market-stream-worker","Labels":"com.docker.compose.config-hash=e284dc01f7017f6d016d4a7209d67b5f0d32d83f726c3b12b32e3b8609562697,com.docker.compose.containe
+- **Docker service reconciliation-worker running** — PASS
+  - {"Command":"\"python -m trading_s…\"","CreatedAt":"2026-06-07 19:20:36 +0300 EEST","ExitCode":0,"Health":"","ID":"fd0fe1f3ecf8","Image":"trading-reconciliation-worker","Labels":"com.docker.compose.config-hash=cfbba41dea839b78c4b9b23c4d758c57cb9d88ef75feded9e0c1fecf7056bb24,com.docker.compose.project
+- **Docker service trade-monitor-worker running** — PASS
+  - {"Command":"\"python -m trading_s…\"","CreatedAt":"2026-06-07 19:20:36 +0300 EEST","ExitCode":0,"Health":"","ID":"f5354c30ef48","Image":"trading-trade-monitor-worker","Labels":"com.docker.compose.image=sha256:368e6e3af1b529b3b76af11b5d1335f5de532e98dd501d10130341f6e1beb555,com.docker.compose.image.b
+- **Docker service review-worker running** — PASS
+  - {"Command":"\"python -m trading_s…\"","CreatedAt":"2026-06-07 19:20:36 +0300 EEST","ExitCode":0,"Health":"","ID":"6d4bf4a0b82e","Image":"trading-review-worker","Labels":"com.docker.compose.service=review-worker,com.docker.compose.container-number=1,com.docker.compose.image=sha256:368e6e3af1b529b3b76
+- **Docker service learning-worker running** — PASS
+  - {"Command":"\"python -m trading_s…\"","CreatedAt":"2026-06-07 19:20:36 +0300 EEST","ExitCode":0,"Health":"","ID":"761fbbc6c55a","Image":"trading-learning-worker","Labels":"com.docker.compose.container-number=1,com.docker.compose.depends_on=postgres:service_started:false,com.docker.compose.image=sha2
+- **Alembic upgrade head inside Docker** — PASS
+  - head
+  - Command: `/opt/homebrew/bin/docker-compose run --rm --no-deps api alembic -c trading_system/alembic.ini upgrade head`
+- **API /health responds through Docker** — PASS
+  - {"status":"ok","message":"Production-gated platform. Live trading path is disabled unless every live gate passes."}
+  - Command: `curl -fsS http://localhost:8000/health`
+- **Dashboard container HTTP responds through Docker** — PASS
+  - Streamlit HTTP endpoint responded
+  - Command: `curl -fsS http://localhost:8501/`
+- **Dashboard container starts without fake trading data** — PASS
+  - counts orders=0 fills=0 positions=0
+- **Docker ENVIRONMENT_MODE=paper with live gates disabled** — PASS
+  - mode=paper live_order_path_enabled=False
+- **Docker live order path not reachable** — PASS
+  - ACCEPTED False
+BLOCKERS environment_mode_live,allow_live_trading,confirm_live_trading,live_order_path_enabled,live_keys_present,active_human_approval,latest_readiness_passed,alpaca_market_data_healthy,alpaca_live_healthy,live_account_snapshot_usable,live_reconciliation_clean,strategy_approved
+- **Docker worker scheduler --once cycle** — PASS
+  - completed one cycle in container
+  - Command: `/opt/homebrew/bin/docker-compose run --rm --no-deps scheduler-worker python -m trading_system.app.services.worker scheduler --once`
+- **Docker worker market-stream --once cycle** — PASS
+  - completed one cycle in container
+  - Command: `/opt/homebrew/bin/docker-compose run --rm --no-deps market-stream-worker python -m trading_system.app.services.worker market-stream --once`
+- **Docker worker reconciliation --once cycle** — PASS
+  - completed one cycle in container
+  - Command: `/opt/homebrew/bin/docker-compose run --rm --no-deps reconciliation-worker python -m trading_system.app.services.worker reconciliation --once`
+- **Docker worker trade-monitor --once cycle** — PASS
+  - completed one cycle in container
+  - Command: `/opt/homebrew/bin/docker-compose run --rm --no-deps trade-monitor-worker python -m trading_system.app.services.worker trade-monitor --once`
+- **Docker worker review --once cycle** — PASS
+  - completed one cycle in container
+  - Command: `/opt/homebrew/bin/docker-compose run --rm --no-deps review-worker python -m trading_system.app.services.worker review --once`
+- **Docker worker learning --once cycle** — PASS
+  - completed one cycle in container
+  - Command: `/opt/homebrew/bin/docker-compose run --rm --no-deps learning-worker python -m trading_system.app.services.worker learning --once`
 
 ## Failed checks
 
@@ -69,34 +78,27 @@ _None._
 
 ## Skipped checks
 
-- **docker available** — SKIP
-  - docker not installed on this host
 - **terraform available** — SKIP
   - terraform not installed on this host
-- **Docker image build (API)** — SKIP
-  - Docker not installed
-- **Docker image build (dashboard)** — SKIP
-  - Docker not installed
-- **docker-compose config validation** — SKIP
-  - Docker not installed
-- **docker-compose startup health check** — SKIP
-  - Docker not installed
 
 ## Commands run
 
-- `/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m compileall -q trading_system`
-- `/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m pytest trading_system/tests -q --tb=no`
-- `/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m alembic -c trading_system/alembic.ini upgrade head`
-- `/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker scheduler --once`
-- `/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker market-stream --once`
-- `/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker reconciliation --once`
-- `/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker trade-monitor --once`
-- `/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker review --once`
-- `/Users/yassinkhalil/Documents/Trading/.venv/bin/python -m trading_system.app.services.worker learning --once`
+- `/opt/homebrew/bin/docker build -t trading-platform-api:validation .`
+- `/opt/homebrew/bin/docker build -t trading-platform-dashboard:validation .`
+- `/opt/homebrew/bin/docker-compose -f docker-compose.yml config`
+- `/opt/homebrew/bin/docker-compose -f docker-compose.yml up -d --build postgres redis api dashboard scheduler-worker market-stream-worker reconciliation-worker trade-monitor-worker review-worker learning-worker`
+- `/opt/homebrew/bin/docker-compose run --rm --no-deps api alembic -c trading_system/alembic.ini upgrade head`
+- `curl -fsS http://localhost:8000/health`
+- `curl -fsS http://localhost:8501/`
+- `/opt/homebrew/bin/docker-compose run --rm --no-deps scheduler-worker python -m trading_system.app.services.worker scheduler --once`
+- `/opt/homebrew/bin/docker-compose run --rm --no-deps market-stream-worker python -m trading_system.app.services.worker market-stream --once`
+- `/opt/homebrew/bin/docker-compose run --rm --no-deps reconciliation-worker python -m trading_system.app.services.worker reconciliation --once`
+- `/opt/homebrew/bin/docker-compose run --rm --no-deps trade-monitor-worker python -m trading_system.app.services.worker trade-monitor --once`
+- `/opt/homebrew/bin/docker-compose run --rm --no-deps review-worker python -m trading_system.app.services.worker review --once`
+- `/opt/homebrew/bin/docker-compose run --rm --no-deps learning-worker python -m trading_system.app.services.worker learning --once`
 
 ## Missing local dependencies
 
-- docker
 - terraform
 
 ## Exact next steps for AWS validation

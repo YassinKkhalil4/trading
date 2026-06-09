@@ -7,7 +7,8 @@ worker startup smoke tests, and optional Docker/Terraform checks.
 Usage:
     .venv/bin/python scripts/validate_platform.py
     .venv/bin/python scripts/validate_platform.py --skip-pytest
-    .venv/bin/python scripts/validate_platform.py --report /tmp/validation_report.md
+    .venv/bin/python scripts/validate_platform.py --docker-only
+    .venv/bin/python scripts/validate_platform.py --report scripts/validation_report.md
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-REPORT_VERSION = "1.0.0"
+REPORT_VERSION = "1.1.0"
 WORKERS = (
     "scheduler",
     "market-stream",
@@ -40,6 +41,41 @@ WORKERS = (
     "review",
     "learning",
 )
+DOCKER_COMPOSE_SERVICES = (
+    "postgres",
+    "redis",
+    "api",
+    "dashboard",
+    "scheduler-worker",
+    "market-stream-worker",
+    "reconciliation-worker",
+    "trade-monitor-worker",
+    "review-worker",
+    "learning-worker",
+)
+DOCKER_WORKER_SERVICES = {
+    "scheduler": "scheduler-worker",
+    "market-stream": "market-stream-worker",
+    "reconciliation": "reconciliation-worker",
+    "trade-monitor": "trade-monitor-worker",
+    "review": "review-worker",
+    "learning": "learning-worker",
+}
+DOCKER_CANDIDATE_PATHS = (
+    "/opt/homebrew/bin/docker",
+    "/usr/local/bin/docker",
+    "/Applications/Docker.app/Contents/Resources/bin/docker",
+)
+
+
+def _tail_error_output(output: str, *, max_lines: int = 12) -> str:
+    lines = [line for line in (output or "").splitlines() if line.strip()]
+    if not lines:
+        return output or ""
+    interesting = [line for line in lines if any(token in line.lower() for token in ("error", "failed", "fatal", "timeout", "denied", "cannot", "not found"))]
+    if interesting:
+        return "\n".join(interesting[-max_lines:])
+    return "\n".join(lines[-max_lines:])
 EXPECTED_STRATEGIES = 7
 EXPECTED_PROVIDERS = len(
     __import__("trading_system.app.db.seed", fromlist=["DEFAULT_PROVIDER_CAPABILITIES"]).DEFAULT_PROVIDER_CAPABILITIES
@@ -56,6 +92,7 @@ class CheckResult:
 
 @dataclass
 class ValidationReport:
+    scope: str = "platform"
     started_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     finished_at: str = ""
     passed: list[CheckResult] = field(default_factory=list)
@@ -97,14 +134,188 @@ def _skip(report: ValidationReport, name: str, detail: str = "", command: str = 
     report.record(CheckResult(name, "SKIP", detail, command))
 
 
-def check_tooling(report: ValidationReport) -> None:
-    for tool in ("docker", "terraform"):
-        if shutil.which(tool):
-            proc = _run([tool, "--version"])
-            _pass(report, f"{tool} available", proc.stdout.splitlines()[0] if proc.stdout else "ok")
+def _docker_unavailable_reason() -> str:
+    which = shutil.which("docker")
+    if which:
+        proc = _run([which, "info"])
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout).strip().splitlines()
+            return detail[0] if detail else "Docker CLI found but daemon is not running."
+    for candidate in DOCKER_CANDIDATE_PATHS:
+        path = Path(candidate)
+        if path.is_symlink() and not path.exists():
+            target = os.readlink(path)
+            return (
+                f"Docker CLI symlink at {candidate} points to missing bundle ({target}). "
+                "Install Docker Desktop or Colima and start the daemon."
+            )
+    return "Docker CLI not found on PATH and no usable Docker binary detected."
+
+
+def _resolve_docker() -> tuple[str | None, str]:
+    candidates: list[str] = []
+    if shutil.which("docker"):
+        candidates.append(shutil.which("docker") or "")
+    candidates.extend(DOCKER_CANDIDATE_PATHS)
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        path = Path(candidate)
+        if not path.exists():
+            continue
+        proc = _run([candidate, "version"])
+        if proc.returncode != 0:
+            continue
+        info = _run([candidate, "info"])
+        if info.returncode == 0:
+            return candidate, ""
+        return None, _docker_unavailable_reason()
+    return None, _docker_unavailable_reason()
+
+
+def _docker_env() -> dict[str, str]:
+    config_dir = ROOT / ".validation-docker"
+    config_dir.mkdir(exist_ok=True)
+    user_docker = Path.home() / ".docker"
+    contexts_link = config_dir / "contexts"
+    if not contexts_link.exists() and (user_docker / "contexts").exists():
+        contexts_link.symlink_to(user_docker / "contexts", target_is_directory=True)
+    config_file = config_dir / "config.json"
+    payload: dict[str, str] = {"auths": {}}
+    user_config = user_docker / "config.json"
+    if user_config.exists():
+        try:
+            user_payload = json.loads(user_config.read_text(encoding="utf-8"))
+            if user_payload.get("currentContext"):
+                payload["currentContext"] = user_payload["currentContext"]
+        except json.JSONDecodeError:
+            pass
+    config_file.write_text(json.dumps(payload), encoding="utf-8")
+    return {"DOCKER_CONFIG": str(config_dir)}
+
+
+def _docker_compose_cmd(docker_bin: str) -> list[str]:
+    compose_plugin = Path("/opt/homebrew/lib/docker/cli-plugins/docker-compose")
+    if compose_plugin.exists():
+        proc = _run([docker_bin, "compose", "version"], env={"DOCKER_CLI_PLUGIN_EXTRA_DIRS": str(compose_plugin.parent)})
+        if proc.returncode == 0:
+            return [docker_bin, "compose"]
+
+    for candidate in (shutil.which("docker-compose"), "/opt/homebrew/bin/docker-compose"):
+        if candidate and Path(candidate).exists():
+            proc = _run([candidate, "version"])
+            if proc.returncode == 0:
+                return [candidate]
+
+    compose = _run([docker_bin, "compose", "version"])
+    if compose.returncode == 0:
+        return [docker_bin, "compose"]
+    return [docker_bin, "compose"]
+
+
+def _validation_env_file() -> Path:
+    example = ROOT / ".env.example"
+    target = ROOT / ".env"
+    if target.exists():
+        return target
+    if not example.exists():
+        raise FileNotFoundError("Missing .env and .env.example for docker-compose validation.")
+    content = example.read_text(encoding="utf-8")
+    overrides = {
+        "ENVIRONMENT_MODE": "paper",
+        "ALLOW_LIVE_TRADING": "false",
+        "ENABLE_LIVE_ORDER_PATH": "false",
+        "ADMIN_PASSWORD": "docker-validation-password",
+        "ADMIN_SESSION_SECRET": "docker-validation-session-secret",
+    }
+    lines = []
+    for line in content.splitlines():
+        key = line.split("=", 1)[0].strip() if "=" in line and not line.strip().startswith("#") else ""
+        if key in overrides:
+            lines.append(f"{key}={overrides[key]}")
+            overrides.pop(key, None)
         else:
-            report.missing_dependencies.append(tool)
-            _skip(report, f"{tool} available", f"{tool} not installed on this host")
+            lines.append(line)
+    for key, value in overrides.items():
+        lines.append(f"{key}={value}")
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return target
+
+
+def _remaining_docker_checks() -> list[str]:
+    checks = [
+        "docker compose up (postgres, redis, api, dashboard, workers)",
+        "Docker service api running",
+        "Docker service dashboard running",
+        "Docker service scheduler-worker running",
+        "Docker service market-stream-worker running",
+        "Docker service reconciliation-worker running",
+        "Docker service trade-monitor-worker running",
+        "Docker service review-worker running",
+        "Docker service learning-worker running",
+        "Alembic upgrade head inside Docker",
+        "API /health responds through Docker",
+        "Dashboard container HTTP responds through Docker",
+        "Dashboard container starts without fake trading data",
+        "Docker ENVIRONMENT_MODE=paper with live gates disabled",
+        "Docker live order path not reachable",
+    ]
+    checks.extend(f"Docker worker {worker} --once cycle" for worker in WORKERS)
+    return checks
+
+
+def _skip_docker_checks(report: ValidationReport, reason: str) -> None:
+    report.missing_dependencies.append("docker")
+    checks = [
+        "Docker image build (API)",
+        "Docker image build (dashboard)",
+        "docker-compose config validation",
+        "docker compose up (postgres, redis, api, dashboard, workers)",
+        "Docker service api running",
+        "Docker service dashboard running",
+        "Docker service scheduler-worker running",
+        "Docker service market-stream-worker running",
+        "Docker service reconciliation-worker running",
+        "Docker service trade-monitor-worker running",
+        "Docker service review-worker running",
+        "Docker service learning-worker running",
+        "Alembic upgrade head inside Docker",
+        "API /health responds through Docker",
+        "Dashboard container HTTP responds through Docker",
+        "Dashboard container starts without fake trading data",
+        "Docker ENVIRONMENT_MODE=paper with live gates disabled",
+        "Docker live order path not reachable",
+    ]
+    for worker in WORKERS:
+        checks.append(f"Docker worker {worker} --once cycle")
+    for name in checks:
+        _skip(report, name, reason)
+
+
+def _skip_remaining_docker_checks(report: ValidationReport, reason: str, *, after: str | None = None) -> None:
+    remaining = _remaining_docker_checks()
+    if after and after in remaining:
+        remaining = remaining[remaining.index(after) + 1 :]
+    for name in remaining:
+        _skip(report, name, reason)
+
+
+def check_tooling(report: ValidationReport) -> None:
+    docker_bin, docker_reason = _resolve_docker()
+    if docker_bin:
+        proc = _run([docker_bin, "--version"])
+        _pass(report, "docker available", proc.stdout.splitlines()[0] if proc.stdout else "ok")
+    else:
+        _skip(report, "docker available", docker_reason)
+
+    if shutil.which("terraform"):
+        proc = _run(["terraform", "--version"])
+        _pass(report, "terraform available", proc.stdout.splitlines()[0] if proc.stdout else "ok")
+    else:
+        report.missing_dependencies.append("terraform")
+        _skip(report, "terraform available", "terraform not installed on this host")
 
 
 def check_compileall(report: ValidationReport) -> None:
@@ -275,72 +486,336 @@ def check_alembic_and_seed(report: ValidationReport) -> str | None:
     return db_url
 
 
+def _docker_exec(
+    compose_cmd: list[str],
+    service: str,
+    args: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    command = [*compose_cmd, "exec", "-T", service, *args]
+    return _run(command, env=env)
+
+
+def _docker_run(
+    compose_cmd: list[str],
+    service: str,
+    args: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    command = [*compose_cmd, "run", "--rm", "--no-deps", service, *args]
+    return _run(command, env=env)
+
+
+def _service_running(compose_cmd: list[str], service: str, *, env: dict[str, str] | None = None) -> tuple[bool, str]:
+    proc = _run([*compose_cmd, "ps", "--status", "running", "--format", "json", service], env=env)
+    if proc.returncode != 0:
+        return False, proc.stderr or proc.stdout
+    output = (proc.stdout or "").strip()
+    if not output:
+        return False, f"{service} is not running"
+    return True, output.splitlines()[0]
+
+
 def check_docker(report: ValidationReport) -> None:
-    if not shutil.which("docker"):
-        for name in (
-            "Docker image build (API)",
-            "Docker image build (dashboard)",
-            "docker-compose config validation",
-            "docker-compose startup health check",
-        ):
-            _skip(report, name, "Docker not installed")
+    docker_bin, reason = _resolve_docker()
+    if not docker_bin:
+        _skip_docker_checks(report, reason)
         return
 
-    api_cmd = ["docker", "build", "-t", "trading-platform-api:validation", "."]
-    api_proc = _run(api_cmd)
+    docker_env = _docker_env()
+    compose_cmd = _docker_compose_cmd(docker_bin)
+    try:
+        _validation_env_file()
+    except FileNotFoundError as exc:
+        _skip_docker_checks(report, str(exc))
+        return
+
+    api_cmd = [docker_bin, "build", "-t", "trading-platform-api:validation", "."]
+    api_proc = _run(api_cmd, env=docker_env)
     if api_proc.returncode == 0:
         _pass(report, "Docker image build (API)", "Image trading-platform-api:validation built", " ".join(api_cmd))
     else:
         _fail(report, "Docker image build (API)", (api_proc.stderr or api_proc.stdout)[-2000:], " ".join(api_cmd))
-
-    dash_cmd = [
-        "docker",
-        "build",
-        "-t",
-        "trading-platform-dashboard:validation",
-        "--build-arg",
-        "VALIDATION_TARGET=dashboard",
-        ".",
-    ]
-    dash_proc = _run(dash_cmd)
-    if dash_proc.returncode == 0:
-        _pass(report, "Docker image build (dashboard)", "Image trading-platform-dashboard:validation built", " ".join(dash_cmd))
-    else:
-        _fail(
-            report,
-            "Docker image build (dashboard)",
-            "Dashboard uses the same Dockerfile as API; separate tag build attempted. "
-            + (dash_proc.stderr or dash_proc.stdout)[-1500:],
-            " ".join(dash_cmd),
-        )
-
-    compose_cmd = ["docker", "compose", "-f", "docker-compose.yml", "config"]
-    compose_proc = _run(compose_cmd)
-    if compose_proc.returncode == 0:
-        _pass(report, "docker-compose config validation", "docker-compose.yml is valid", " ".join(compose_cmd))
-    else:
-        _fail(report, "docker-compose config validation", compose_proc.stderr or compose_proc.stdout, " ".join(compose_cmd))
-
-    up_cmd = ["docker", "compose", "up", "-d", "postgres", "redis", "api"]
-    up_proc = _run(up_cmd)
-    if up_proc.returncode != 0:
-        _fail(report, "docker-compose startup health check", up_proc.stderr or up_proc.stdout, " ".join(up_cmd))
+        _skip_remaining_docker_checks(report, "Skipped because API image build failed.")
         return
 
-    health_cmd = ["docker", "compose", "exec", "-T", "api", "curl", "-fsS", "http://localhost:8000/health"]
-    healthy = False
-    for _ in range(12):
-        health_proc = _run(health_cmd)
-        if health_proc.returncode == 0 and '"status"' in (health_proc.stdout or ""):
-            healthy = True
-            break
-        time.sleep(5)
-    down_cmd = ["docker", "compose", "down"]
-    _run(down_cmd)
-    if healthy:
-        _pass(report, "docker-compose startup health check", health_proc.stdout.strip(), " ".join(health_cmd))
+    dash_cmd = [docker_bin, "build", "-t", "trading-platform-dashboard:validation", "."]
+    dash_proc = _run(dash_cmd, env=docker_env)
+    if dash_proc.returncode == 0:
+        _pass(
+            report,
+            "Docker image build (dashboard)",
+            "Separate dashboard tag built from shared Dockerfile",
+            " ".join(dash_cmd),
+        )
     else:
-        _fail(report, "docker-compose startup health check", health_proc.stderr or health_proc.stdout, " ".join(health_cmd))
+        _fail(report, "Docker image build (dashboard)", (dash_proc.stderr or dash_proc.stdout)[-2000:], " ".join(dash_cmd))
+        _skip_remaining_docker_checks(report, "Skipped because dashboard image build failed.")
+        return
+
+    config_cmd = [*compose_cmd, "-f", "docker-compose.yml", "config"]
+    config_proc = _run(config_cmd, env=docker_env)
+    if config_proc.returncode == 0:
+        _pass(report, "docker-compose config validation", "docker-compose.yml is valid", " ".join(config_cmd))
+    else:
+        _fail(report, "docker-compose config validation", config_proc.stderr or config_proc.stdout, " ".join(config_cmd))
+        _skip_remaining_docker_checks(report, "Skipped because docker-compose config validation failed.")
+        return
+
+    for base_image in ("postgres:16", "redis:7"):
+        pull_proc = _run([docker_bin, "pull", base_image], env=docker_env)
+        if pull_proc.returncode != 0:
+            _fail(
+                report,
+                "docker compose up (postgres, redis, api, dashboard, workers)",
+                f"Failed to prefetch {base_image}: {_tail_error_output(pull_proc.stderr or pull_proc.stdout)}",
+                f"{docker_bin} pull {base_image}",
+            )
+            _skip_remaining_docker_checks(report, f"Skipped because prefetch for {base_image} failed.")
+            return
+
+    up_cmd = [*compose_cmd, "-f", "docker-compose.yml", "up", "-d", "--build", *DOCKER_COMPOSE_SERVICES]
+    up_proc = _run(up_cmd, env=docker_env)
+    if up_proc.returncode != 0:
+        _fail(
+            report,
+            "docker compose up (postgres, redis, api, dashboard, workers)",
+            _tail_error_output(up_proc.stderr or up_proc.stdout),
+            " ".join(up_cmd),
+        )
+        _skip_remaining_docker_checks(report, "Skipped because docker compose up failed.", after="docker compose up (postgres, redis, api, dashboard, workers)")
+        _run([*compose_cmd, "-f", "docker-compose.yml", "down", "--remove-orphans"], env=docker_env)
+        return
+    _pass(report, "docker compose up (postgres, redis, api, dashboard, workers)", "All compose services started", " ".join(up_cmd))
+
+    try:
+        time.sleep(8)
+        for service in ("api", "dashboard", *DOCKER_WORKER_SERVICES.values()):
+            running, detail = _service_running(compose_cmd, service, env=docker_env)
+            label = f"Docker service {service} running"
+            if running:
+                _pass(report, label, detail[:300])
+            else:
+                _fail(report, label, detail[:2000])
+
+        migrate_cmd = [
+            *compose_cmd,
+            "run",
+            "--rm",
+            "--no-deps",
+            "api",
+            "alembic",
+            "-c",
+            "trading_system/alembic.ini",
+            "upgrade",
+            "head",
+        ]
+        migrate_proc = _run(migrate_cmd, env=docker_env)
+        if migrate_proc.returncode == 0:
+            _pass(report, "Alembic upgrade head inside Docker", (migrate_proc.stdout or "head").strip()[-500:], " ".join(migrate_cmd))
+        else:
+            _fail(report, "Alembic upgrade head inside Docker", migrate_proc.stderr or migrate_proc.stdout, " ".join(migrate_cmd))
+
+        health_ok = False
+        health_detail = ""
+        health_cmd = ["curl", "-fsS", "http://localhost:8000/health"]
+        for _ in range(18):
+            host_proc = _run(health_cmd)
+            if host_proc.returncode == 0 and '"status"' in (host_proc.stdout or ""):
+                health_ok = True
+                health_detail = host_proc.stdout.strip()
+                _pass(report, "API /health responds through Docker", health_detail, " ".join(health_cmd))
+                break
+            container_proc = _docker_exec(
+                compose_cmd,
+                "api",
+                ["curl", "-fsS", "http://localhost:8000/health"],
+                env=docker_env,
+            )
+            if container_proc.returncode == 0 and '"status"' in (container_proc.stdout or ""):
+                health_ok = True
+                health_detail = container_proc.stdout.strip()
+                _pass(
+                    report,
+                    "API /health responds through Docker",
+                    health_detail,
+                    " ".join([*compose_cmd, "exec", "-T", "api", "curl", "-fsS", "http://localhost:8000/health"]),
+                )
+                break
+            time.sleep(5)
+        if not health_ok:
+            _fail(report, "API /health responds through Docker", host_proc.stderr or host_proc.stdout, " ".join(health_cmd))
+
+        dashboard_cmd = ["curl", "-fsS", "http://localhost:8501/"]
+        dash_health = _run(dashboard_cmd)
+        if dash_health.returncode == 0 and ("streamlit" in dash_health.stdout.lower() or "<html" in dash_health.stdout.lower()):
+            _pass(report, "Dashboard container HTTP responds through Docker", "Streamlit HTTP endpoint responded", " ".join(dashboard_cmd))
+        else:
+            _fail(report, "Dashboard container HTTP responds through Docker", dash_health.stderr or dash_health.stdout, " ".join(dashboard_cmd))
+
+        from trading_system.app.core.enums import EnvironmentMode as _EnvironmentMode
+
+        snapshot_script = textwrap.dedent(
+            """
+            from trading_system.app.core.config import get_settings
+            from trading_system.app.core.enums import EnvironmentMode
+            from trading_system.app.db.session import SessionLocal
+            from trading_system.app.db.repositories import TradingRepository
+            from trading_system.app.services.runtime import TradingRuntimeService
+            settings = get_settings()
+            with SessionLocal() as session:
+                repo = TradingRepository(session)
+                service = TradingRuntimeService(repo, settings=settings)
+                counts = service.bootstrap()
+                snapshot = service.dashboard_snapshot()
+            print("MODE", settings.environment_mode.value)
+            print("LIVE_PATH", settings.live_order_path_enabled)
+            print("ORDERS", counts.get("orders", -1))
+            print("FILLS", counts.get("fills", -1))
+            print("POSITIONS", counts.get("positions", -1))
+            print("SNAPSHOT_ORDERS", snapshot["counts"]["orders"])
+            """
+        )
+        snapshot_proc = _docker_exec(
+            compose_cmd,
+            "api",
+            ["python", "-c", snapshot_script],
+            env=docker_env,
+        )
+        if snapshot_proc.returncode == 0:
+            parsed = {
+                line.split(" ", 1)[0]: line.split(" ", 1)[1]
+                for line in snapshot_proc.stdout.splitlines()
+                if " " in line
+            }
+            mode_ok = parsed.get("MODE") == _EnvironmentMode.PAPER.value
+            live_disabled = parsed.get("LIVE_PATH") == "False"
+            no_fake = (
+                parsed.get("ORDERS") == "0"
+                and parsed.get("FILLS") == "0"
+                and parsed.get("POSITIONS") == "0"
+                and parsed.get("SNAPSHOT_ORDERS") == "0"
+            )
+            if no_fake:
+                _pass(
+                    report,
+                    "Dashboard container starts without fake trading data",
+                    f"counts orders={parsed.get('ORDERS')} fills={parsed.get('FILLS')} positions={parsed.get('POSITIONS')}",
+                )
+            if mode_ok and live_disabled:
+                _pass(
+                    report,
+                    "Docker ENVIRONMENT_MODE=paper with live gates disabled",
+                    f"mode={parsed.get('MODE')} live_order_path_enabled={parsed.get('LIVE_PATH')}",
+                )
+            else:
+                _fail(
+                    report,
+                    "Docker ENVIRONMENT_MODE=paper with live gates disabled",
+                    snapshot_proc.stdout,
+                )
+        else:
+            _fail(report, "Docker ENVIRONMENT_MODE=paper with live gates disabled", snapshot_proc.stderr or snapshot_proc.stdout)
+
+        live_block_script = textwrap.dedent(
+            """
+            from trading_system.app.core.config import Settings, get_settings
+            from trading_system.app.core.enums import EnvironmentMode
+            from trading_system.app.db.session import build_engine
+            from trading_system.app.db.base import Base
+            from trading_system.app.db.repositories import TradingRepository
+            from trading_system.app.services.runtime import TradingRuntimeService
+            from trading_system.app.db import models
+            from datetime import UTC, datetime
+            from sqlalchemy.orm import sessionmaker
+            settings = get_settings()
+            engine = build_engine(settings.database_url)
+            Base.metadata.create_all(engine)
+            repo = TradingRepository(sessionmaker(bind=engine)())
+            repo.seed_defaults()
+            row = models.Signal(
+                idempotency_key="docker-live-blocked",
+                symbol="AMD",
+                strategy_id="VWAP_RECLAIM",
+                strategy_version="v1",
+                trade_type="DAY_TRADE",
+                direction="LONG",
+                entry_zone={"low": 100.0, "high": 101.0},
+                stop_loss=95.0,
+                target_1=110.0,
+                target_2=115.0,
+                risk_reward=2.0,
+                confidence_score=80.0,
+                time_horizon="intraday",
+                invalidation="docker validation",
+                status="APPROVED",
+                signal_rule_version="v1",
+                source_timestamp=datetime.now(UTC),
+            )
+            repo.session.add(row)
+            repo.session.commit()
+            result = TradingRuntimeService(repo, settings=settings).submit_signal_to_live(
+                signal_id=row.id,
+                account_equity=100000,
+                open_positions=0,
+                daily_loss_pct=0.0,
+                weekly_loss_pct=0.0,
+                sector_exposure_pct=0.0,
+            )
+            print("ACCEPTED", result.accepted)
+            print("BLOCKERS", ",".join(result.gate_decision.get("blockers", [])))
+            """
+        )
+        live_proc = _docker_exec(
+            compose_cmd,
+            "api",
+            ["python", "-c", live_block_script],
+            env=docker_env,
+        )
+        accepted_line = next(
+            (line for line in live_proc.stdout.splitlines() if line.startswith("ACCEPTED ")),
+            "",
+        )
+        if live_proc.returncode == 0 and accepted_line.endswith("False"):
+            _pass(report, "Docker live order path not reachable", live_proc.stdout.strip())
+        elif live_proc.returncode == 0:
+            _fail(report, "Docker live order path not reachable", live_proc.stdout)
+        else:
+            _fail(report, "Docker live order path not reachable", live_proc.stderr or live_proc.stdout)
+
+        for worker, service in DOCKER_WORKER_SERVICES.items():
+            worker_cmd = [
+                *compose_cmd,
+                "run",
+                "--rm",
+                "--no-deps",
+                service,
+                "python",
+                "-m",
+                "trading_system.app.services.worker",
+                worker,
+                "--once",
+            ]
+            worker_proc = _run(worker_cmd, env=docker_env)
+            if worker_proc.returncode == 0:
+                _pass(
+                    report,
+                    f"Docker worker {worker} --once cycle",
+                    "completed one cycle in container",
+                    " ".join(worker_cmd),
+                )
+            else:
+                _fail(
+                    report,
+                    f"Docker worker {worker} --once cycle",
+                    (worker_proc.stderr or worker_proc.stdout)[-2000:],
+                    " ".join(worker_cmd),
+                )
+    finally:
+        down_cmd = [*compose_cmd, "-f", "docker-compose.yml", "down", "--remove-orphans"]
+        _run(down_cmd, env=docker_env)
 
 
 def check_environment_modes(report: ValidationReport) -> None:
@@ -587,8 +1062,9 @@ def render_markdown(report: ValidationReport) -> str:
         lines.append("")
         return "\n".join(lines)
 
+    title = "# Docker Validation Report" if report.scope == "docker" else "# Platform Validation Report"
     lines = [
-        "# Platform Validation Report",
+        title,
         "",
         f"- Report version: {REPORT_VERSION}",
         f"- Started: {report.started_at}",
@@ -625,18 +1101,23 @@ def render_markdown(report: ValidationReport) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate trading platform real-environment readiness.")
     parser.add_argument("--skip-pytest", action="store_true", help="Skip the full pytest suite.")
+    parser.add_argument("--docker-only", action="store_true", help="Run Docker/local production validation only.")
     parser.add_argument("--report", type=Path, help="Optional path to write markdown report.")
     args = parser.parse_args()
 
-    report = ValidationReport()
-    check_tooling(report)
-    check_compileall(report)
-    check_pytest(report, skip=args.skip_pytest)
-    check_alembic_and_seed(report)
-    check_environment_modes(report)
-    check_workers(report)
-    check_no_fake_trading_data(report)
-    check_docker(report)
+    report = ValidationReport(scope="docker" if args.docker_only else "platform")
+    if args.docker_only:
+        check_tooling(report)
+        check_docker(report)
+    else:
+        check_tooling(report)
+        check_compileall(report)
+        check_pytest(report, skip=args.skip_pytest)
+        check_alembic_and_seed(report)
+        check_environment_modes(report)
+        check_workers(report)
+        check_no_fake_trading_data(report)
+        check_docker(report)
     build_aws_next_steps(report)
 
     report.finished_at = datetime.now(UTC).isoformat()
@@ -649,6 +1130,10 @@ def main() -> int:
     summary_path.write_text(
         json.dumps(
             {
+                "scope": report.scope,
+                "report_version": REPORT_VERSION,
+                "started_at": report.started_at,
+                "finished_at": report.finished_at,
                 "passed": [item.__dict__ for item in report.passed],
                 "failed": [item.__dict__ for item in report.failed],
                 "skipped": [item.__dict__ for item in report.skipped],
