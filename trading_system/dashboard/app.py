@@ -13,6 +13,12 @@ from trading_system.app.core.enums import AdminRole, EnvironmentMode
 from trading_system.app.db.repositories import TradingRepository
 from trading_system.app.db.session import SessionLocal
 from trading_system.app.security.auth import AdminPrincipal, AuthService, hash_password
+from trading_system.app.services.ranking.expectancy import (
+    ExpectancyService,
+    empty_stats,
+    latest_market_regime,
+    stats_to_dict,
+)
 from trading_system.app.services.ranking.opportunity_ranking import OpportunityRankingService
 from trading_system.app.services.runtime import TradingRuntimeService
 
@@ -739,16 +745,38 @@ with tabs[2]:
         st.caption("Ranking-gated signal path is ENABLED: A_PLUS / A grades route to live signals.")
     else:
         st.caption("Ranking-gated signal path is disabled; rankings are advisory only.")
+    expectancy_view = None
+    expectancy_error: Exception | None = None
+    try:
+        expectancy_view = ExpectancyService(service.repository).load()
+    except Exception as exc:  # noqa: BLE001 - degrade gracefully; surfaced below
+        expectancy_error = exc
+
     ranking_rows = []
     try:
         ranking_service = OpportunityRankingService(service.repository, settings)
+        current_regime = latest_market_regime(service.repository)
         for result in ranking_service.rank_recent_accepted(50):
+            matched = (
+                expectancy_view.match(
+                    strategy_id=result.strategy_id,
+                    symbol=result.symbol,
+                    regime=current_regime,
+                )
+                if expectancy_view is not None
+                else empty_stats(matched_on="none")
+            )
             ranking_rows.append(
                 {
                     "symbol": result.symbol,
                     "strategy": result.strategy_id,
                     "grade": result.grade.value,
                     "score": result.opportunity_score,
+                    "exp_samples": matched.sample_size,
+                    "exp_win_rate": matched.win_rate,
+                    "exp_avg_r": matched.avg_r,
+                    "exp_failure_pre_1030": matched.failure_rate_before_1030,
+                    "exp_matched_on": matched.matched_on,
                     "blocked_reason": result.blocked_reason or "",
                     "reasons": "; ".join(result.reasons),
                 }
@@ -756,6 +784,49 @@ with tabs[2]:
     except Exception as exc:  # noqa: BLE001 - surface ranking errors without crashing the tab
         st.warning(f"Opportunity ranking is unavailable: {exc}")
     _table(ranking_rows, label="opportunity ranking", height=360)
+
+    st.markdown("**Expectancy layer (historical outcomes of closed trades)**")
+    st.caption(
+        "What happened when trades looked like this before. Real closed trades only; "
+        "empty rows (0 samples) mean no history yet, not a zero result."
+    )
+    if expectancy_view is None:
+        st.warning(f"Expectancy layer is unavailable: {expectancy_error}")
+    else:
+        summary = expectancy_view.summary()
+
+        def _expectancy_row(label: str, stats) -> dict[str, Any]:
+            data = stats_to_dict(stats)
+            return {
+                "cohort": label,
+                "samples": data["sample_size"],
+                "win_rate": data["win_rate"],
+                "avg_r": data["avg_r"],
+                "median_r": data["median_r"],
+                "max_drawdown": data["max_drawdown"],
+                "dd_basis": data["drawdown_basis"],
+                "avg_time_to_target_s": data["avg_time_to_target_seconds"],
+                "failure_pre_1030": data["failure_rate_before_1030"],
+                "avg_pnl": data["expectancy"],
+            }
+
+        overall_rows = [_expectancy_row("OVERALL", summary["overall"])]
+        _table(overall_rows, label="expectancy overall", height=110)
+
+        for dimension, title in (
+            ("by_regime", "By regime"),
+            ("by_sector", "By sector"),
+            ("by_symbol", "By symbol"),
+        ):
+            buckets = summary[dimension]
+            if not buckets:
+                continue
+            st.caption(title)
+            _table(
+                [_expectancy_row(name, stats) for name, stats in buckets.items()],
+                label=f"expectancy {dimension}",
+                height=240,
+            )
 
 with tabs[3]:
     st.subheader("Risk And Execution")

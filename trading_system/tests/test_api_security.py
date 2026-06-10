@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import trading_system.app.api.main as api_main
 from trading_system.app.api.main import app
+from trading_system.app.services.ranking.expectancy import ExpectancyStats, empty_stats
 from trading_system.app.services.ranking.opportunity_ranking import (
     OpportunityGrade,
     OpportunityRankingResult,
@@ -54,6 +55,7 @@ def test_sensitive_read_endpoints_require_authentication():
         "/catalysts/scores",
         "/scanners/results",
         "/rankings/recent",
+        "/expectancy/summary",
         "/signals",
         "/signals/theses",
         "/risk/checks",
@@ -110,6 +112,7 @@ def test_api_exposes_required_dashboard_and_operations_surfaces():
         "/catalysts/scores",
         "/scanners/results",
         "/rankings/recent",
+        "/expectancy/summary",
         "/signals",
         "/signals/theses",
         "/risk/checks",
@@ -803,11 +806,27 @@ def test_recent_rankings_endpoint_returns_ranked_rows(monkeypatch):
                 ),
             ]
 
+    class FakeExpectancyView:
+        def match(self, *, strategy_id, symbol, regime):
+            captured.setdefault("matches", []).append(
+                {"strategy_id": strategy_id, "symbol": symbol, "regime": regime}
+            )
+            return empty_stats(matched_on="overall")
+
+    class FakeExpectancyService:
+        def __init__(self, repository) -> None:
+            captured["expectancy_repository"] = repository
+
+        def load(self, *, start=None, end=None) -> FakeExpectancyView:
+            return FakeExpectancyView()
+
     def fake_runtime():
         return FakeSession(), FakeService()
 
     monkeypatch.setattr(api_main, "_runtime", fake_runtime)
     monkeypatch.setattr(api_main, "OpportunityRankingService", FakeRankingService)
+    monkeypatch.setattr(api_main, "ExpectancyService", FakeExpectancyService)
+    monkeypatch.setattr(api_main, "latest_market_regime", lambda repository: "TRENDING")
     app.dependency_overrides[require_principal] = lambda: AdminPrincipal(username="viewer", role="VIEWER")
     try:
         response = client.get("/rankings/recent", params={"limit": 25})
@@ -823,6 +842,80 @@ def test_recent_rankings_endpoint_returns_ranked_rows(monkeypatch):
     assert rankings[0]["blocked_reason"] is None
     assert rankings[1]["grade"] == "REJECT"
     assert rankings[1]["blocked_reason"] == "Market data is stale for scanner timeframe."
+    assert rankings[0]["expectancy"]["sample_size"] == 0
+    assert rankings[0]["expectancy"]["version"] == "expectancy_v1"
+    assert captured["matches"][0] == {
+        "strategy_id": "VWAP_RECLAIM",
+        "symbol": "AMD",
+        "regime": "TRENDING",
+    }
+
+
+def test_expectancy_summary_endpoint_returns_real_stats(monkeypatch):
+    class FakeSession:
+        def close(self) -> None:
+            pass
+
+    class FakeService:
+        def __init__(self) -> None:
+            self.repository = object()
+
+        def bootstrap(self) -> dict:
+            return {}
+
+    captured: dict = {}
+
+    class FakeView:
+        def summary(self) -> dict:
+            return {
+                "overall": ExpectancyStats(
+                    sample_size=3,
+                    r_sample_size=2,
+                    win_rate=0.6667,
+                    avg_r=1.25,
+                    median_r=1.1,
+                    max_drawdown=-0.8,
+                    drawdown_basis="R",
+                    avg_time_to_target_seconds=4200.0,
+                    failure_rate_before_1030=0.3333,
+                    expectancy=42.0,
+                    matched_on="overall",
+                ),
+                "by_symbol": {},
+                "by_sector": {},
+                "by_regime": {
+                    "TRENDING": empty_stats(matched_on="TRENDING"),
+                },
+            }
+
+    class FakeExpectancyService:
+        def __init__(self, repository) -> None:
+            captured["repository"] = repository
+
+        def load(self, *, start=None, end=None) -> FakeView:
+            captured["start"] = start
+            captured["end"] = end
+            return FakeView()
+
+    def fake_runtime():
+        return FakeSession(), FakeService()
+
+    monkeypatch.setattr(api_main, "_runtime", fake_runtime)
+    monkeypatch.setattr(api_main, "ExpectancyService", FakeExpectancyService)
+    app.dependency_overrides[require_principal] = lambda: AdminPrincipal(username="viewer", role="VIEWER")
+    try:
+        response = client.get("/expectancy/summary")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["overall"]["sample_size"] == 3
+    assert payload["overall"]["avg_r"] == 1.25
+    assert payload["overall"]["drawdown_basis"] == "R"
+    assert payload["overall"]["version"] == "expectancy_v1"
+    assert payload["by_regime"]["TRENDING"]["sample_size"] == 0
+    assert payload["by_regime"]["TRENDING"]["win_rate"] is None
 
 
 def test_recent_rankings_endpoint_rejects_out_of_range_limit():

@@ -18,6 +18,11 @@ from trading_system.app.features.calculations import LiquidityGates
 from trading_system.app.risk.live_readiness import LiveReadinessService
 from trading_system.app.risk.risk_engine import PortfolioState, RiskEngine
 from trading_system.app.scanners.vwap_reclaim import VwapReclaimScanner, VwapReclaimSnapshot
+from trading_system.app.services.ranking.expectancy import (
+    ExpectancyService,
+    latest_market_regime,
+    stats_to_dict,
+)
 from trading_system.app.services.ranking.opportunity_ranking import (
     OpportunityRankingResult,
     OpportunityRankingService,
@@ -745,7 +750,50 @@ def recent_rankings(
         service.bootstrap()
         ranking_service = OpportunityRankingService(service.repository, get_settings())
         ranked = ranking_service.rank_recent_accepted(limit)
-        return {"rankings": [_ranking_to_dict(item) for item in ranked]}
+        expectancy_view = ExpectancyService(service.repository).load()
+        current_regime = latest_market_regime(service.repository)
+        rankings = []
+        for item in ranked:
+            payload = _ranking_to_dict(item)
+            payload["expectancy"] = stats_to_dict(
+                expectancy_view.match(
+                    strategy_id=item.strategy_id,
+                    symbol=item.symbol,
+                    regime=current_regime,
+                )
+            )
+            rankings.append(payload)
+        return {"rankings": rankings}
+    finally:
+        session.close()
+
+
+@app.get("/expectancy/summary")
+def expectancy_summary(
+    _principal: AdminPrincipal = Depends(require_principal),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        view = ExpectancyService(service.repository).load(start=start, end=end)
+        summary = view.summary()
+        return {
+            "overall": stats_to_dict(summary["overall"]),
+            "by_symbol": {
+                bucket: stats_to_dict(stats)
+                for bucket, stats in summary["by_symbol"].items()
+            },
+            "by_sector": {
+                bucket: stats_to_dict(stats)
+                for bucket, stats in summary["by_sector"].items()
+            },
+            "by_regime": {
+                bucket: stats_to_dict(stats)
+                for bucket, stats in summary["by_regime"].items()
+            },
+        }
     finally:
         session.close()
 

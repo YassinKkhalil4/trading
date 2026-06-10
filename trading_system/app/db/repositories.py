@@ -2532,10 +2532,18 @@ class TradingRepository:
             f"Automatic journal entry from reconciled fills for {metrics['symbol']}. "
             f"Entry={metrics['actual_entry']}; exit={metrics['actual_exit']}."
         )
+        regime_snapshot = self.session.scalar(
+            select(models.MarketRegimeSnapshot).order_by(
+                desc(models.MarketRegimeSnapshot.source_timestamp),
+                desc(models.MarketRegimeSnapshot.created_at),
+            )
+        )
+        market_regime = regime_snapshot.market_regime if regime_snapshot else None
         journal = self.store_journal_entry(
             symbol=metrics["symbol"],
             strategy_id=metrics["strategy_id"],
             signal_id=signal_id,
+            market_regime=market_regime,
             entry_thesis=entry_thesis,
             actual_entry=metrics["actual_entry"],
             actual_exit=metrics["actual_exit"],
