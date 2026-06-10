@@ -102,6 +102,8 @@ class Settings:
     scheduler_fill_reconciliation_seconds: int = 30
     scheduler_sec_seconds: int = 3600
     scheduler_news_seconds: int = 300
+    scheduler_news_premarket: bool = True
+    scheduler_news_intraday_pulls: int = 13
     scheduler_regime_seconds: int = 60
     scheduler_catalyst_seconds: int = 300
     scheduler_trade_monitor_seconds: int = 15
@@ -232,6 +234,8 @@ def get_settings() -> Settings:
         scheduler_fill_reconciliation_seconds=_env_int("SCHEDULER_FILL_RECONCILIATION_SECONDS", 30),
         scheduler_sec_seconds=_env_int("SCHEDULER_SEC_SECONDS", 3600),
         scheduler_news_seconds=_env_int("SCHEDULER_NEWS_SECONDS", 300),
+        scheduler_news_premarket=_env_bool("SCHEDULER_NEWS_PREMARKET", True),
+        scheduler_news_intraday_pulls=_env_int("SCHEDULER_NEWS_INTRADAY_PULLS", 13),
         scheduler_regime_seconds=_env_int("SCHEDULER_REGIME_SECONDS", 60),
         scheduler_catalyst_seconds=_env_int("SCHEDULER_CATALYST_SECONDS", 300),
         scheduler_trade_monitor_seconds=_env_int("SCHEDULER_TRADE_MONITOR_SECONDS", 15),

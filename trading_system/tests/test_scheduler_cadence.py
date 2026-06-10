@@ -94,5 +94,8 @@ def test_all_path_runs_everything_on_first_cycle():
     runner.run_once("all")
 
     # With no prior runs persisted, every cadence-gated job is due on the first cycle.
-    for job in ("market_data", "news", "sec", "regime", "reviews", "learning"):
+    # "news" is intentionally excluded: it uses a market-aware schedule (see
+    # test_news_schedule.py) rather than a fixed cadence, so whether it fires on
+    # any given cycle depends on the wall-clock session, not on prior runs.
+    for job in ("market_data", "sec", "regime", "reviews", "learning"):
         assert job in runner.dispatched

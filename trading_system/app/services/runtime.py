@@ -1383,6 +1383,7 @@ class TradingRuntimeService:
             "broker_account_snapshots": self.repository.latest_broker_account_snapshots(100),
             "orders": self.repository.latest_orders(100),
             "positions": self.repository.latest_positions(100),
+            "exposure_snapshots": self.repository.latest_exposure_snapshots(100),
             "execution_errors": self.repository.latest_execution_errors(100),
             "journal": self.repository.latest_journal(100),
             "decisions": self.repository.latest_decisions(200),

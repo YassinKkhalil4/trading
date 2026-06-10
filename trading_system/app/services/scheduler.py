@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
-from trading_system.app.core.enums import EnvironmentMode
+from trading_system.app.core.enums import EnvironmentMode, SessionStatus
 from trading_system.app.core.config import Settings, get_settings
+from trading_system.app.data.market_calendar import get_session, to_eastern
 from trading_system.app.catalysts.catalyst_engine import CatalystEngine
 from trading_system.app.data.collectors.alpaca_bars import AlpacaBarsCollector
 from trading_system.app.data.collectors.alpha_vantage_news import AlphaVantageNewsCollector
@@ -77,6 +78,17 @@ class ScheduledCollectorRunner:
                 "reviews",
                 "learning",
             ]:
+                if child == "news":
+                    due, news_reason = news_pull_due(now, last_runs.get("news"), self.settings)
+                    if not due:
+                        payload["news"] = {"skipped": True, "reason": news_reason}
+                        reasons.append(f"news: skipped ({news_reason})")
+                        continue
+                    result = self.run_once("news", symbols=symbols, actor=actor)
+                    payload["news"] = asdict(result)
+                    success = success and result.success
+                    reasons.append(f"news: {result.reason}")
+                    continue
                 cadence = cadences.get(child)
                 if cadence is not None and not _cadence_elapsed(now, last_runs.get(child), cadence):
                     payload[child] = {"skipped": True, "reason": f"Cadence of {cadence}s has not elapsed."}
@@ -133,15 +145,29 @@ class ScheduledCollectorRunner:
         while True:
             now = time.monotonic()
             for job_name, cadence in cadences.items():
+                if job_name == "news":
+                    due, _reason = news_pull_due(
+                        datetime.now(UTC),
+                        self.repository.last_scheduler_run_times().get("news"),
+                        self.settings,
+                    )
+                    if due:
+                        self.run_once("news")
+                        last_run["news"] = time.monotonic()
+                    continue
                 previous = last_run.get(job_name)
                 if previous is None or (now - previous) >= cadence:
                     self.run_once(job_name)
                     last_run[job_name] = time.monotonic()
             now = time.monotonic()
-            next_due = min(
+            candidates = [
                 (last_run[job_name] + cadence) - now
                 for job_name, cadence in cadences.items()
-            )
+                if job_name in last_run
+            ]
+            # Cap the sleep so the market-aware news schedule is re-evaluated at
+            # least once a minute (to catch premarket/session transitions).
+            next_due = min([*candidates, 60.0]) if candidates else 60.0
             time.sleep(max(1.0, next_due))
 
     def _run_job(
@@ -250,6 +276,60 @@ class ScheduledCollectorRunner:
             result = LearningRecommendationEngine(self.repository).run_weekly_review()
             return ScheduledJobResult(job_name, True, result.reason, {"result": asdict(result)})
         raise ValueError(f"Unknown scheduled job: {job_name}")
+
+
+def _ran_on_eastern_date(last_run: datetime | None, session_date: date) -> bool:
+    if last_run is None:
+        return False
+    if last_run.tzinfo is None:
+        last_run = last_run.replace(tzinfo=UTC)
+    return to_eastern(last_run).date() == session_date
+
+
+def news_pull_due(
+    now: datetime,
+    last_run: datetime | None,
+    settings: Settings,
+) -> tuple[bool, str]:
+    """Decide whether a news pull should run at ``now``.
+
+    News is collected on a market-aware schedule: one pull each morning during
+    premarket (before the open) and then a configurable number of pulls spread
+    evenly across the 6.5-hour regular session. Outside those windows
+    (after-hours, overnight, weekends, holidays) news pulls are paused so the
+    rate-limited Alpha Vantage budget is spent when news actually moves.
+    """
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    if last_run is not None and last_run.tzinfo is None:
+        last_run = last_run.replace(tzinfo=UTC)
+
+    session = get_session(now)
+    status = session.status
+
+    if status == SessionStatus.PREMARKET:
+        if not settings.scheduler_news_premarket:
+            return False, "Premarket news pull is disabled."
+        if _ran_on_eastern_date(last_run, session.session_date):
+            return False, "Premarket news pull already completed today."
+        return True, "Premarket morning news pull."
+
+    if status in (SessionStatus.REGULAR, SessionStatus.EARLY_CLOSE):
+        if session.open_at is None or session.close_at is None:
+            return False, "Session bounds unavailable."
+        pulls = max(1, settings.scheduler_news_intraday_pulls)
+        interval = (session.close_at - session.open_at).total_seconds() / pulls
+        if last_run is None:
+            return True, "First intraday news pull."
+        elapsed = (now - last_run).total_seconds()
+        if elapsed >= interval:
+            return True, (
+                f"Intraday news pull ({pulls} pulls spread every {int(interval)}s "
+                "across the session)."
+            )
+        return False, f"Next intraday news pull in {int(max(0, interval - elapsed))}s."
+
+    return False, f"Market is {status.value}; news pulls are paused."
 
 
 def _cadence_elapsed(now: datetime, last: datetime | None, cadence: int) -> bool:
