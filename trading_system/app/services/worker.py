@@ -68,7 +68,8 @@ def main() -> None:
 
 def _run_worker(worker: str, service: TradingRuntimeService) -> None:
     if worker == "market-stream":
-        asyncio.run(service.run_alpaca_market_data_stream(max_messages=100))
+        max_messages = service.settings.alpaca_stream_max_messages or None
+        asyncio.run(service.run_alpaca_market_data_stream(max_messages=max_messages))
     elif worker == "scheduler":
         service.run_scheduled_job("all")
     elif worker == "reconciliation":

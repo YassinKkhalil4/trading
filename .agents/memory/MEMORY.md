@@ -1,0 +1,1 @@
+- [Scheduler deployed path](scheduler-deployed-path.md) — production scheduler runs via worker `run_once("all")`, NOT `run_forever`; cadence/scheduling logic must live in the `"all"` branch, keyed off persisted last-run times.

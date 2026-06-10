@@ -1,0 +1,22 @@
+Bugs & issues I found (verified in code)
+Higher impact
+
+Scheduler ignores per-job timing (services/scheduler.py:122): run_forever runs every job back-to-back, then sleeps for the shortest configured interval. So low-frequency jobs (news = 5 min, SEC = 1 hr) actually fire as often as the 60s market-data job. Wasteful and hits external APIs far more than intended.
+Day-trade→swing conversion is permanently blocked (monitoring/trade_monitor_service.py:64): three inputs are hardcoded (overnight_risk_approved=False, market_regime_supportive=False), so this feature can never actually convert a trade. It's effectively a stub.
+Position-limit edge case (services/portfolio/portfolio_engine.py:153): max_open_positions is only checked for symbols with no existing position or pending order. Before any orders fill, multiple new-symbol orders can be queued past the limit.
+VIX is hardcoded to 20.0 (regime/regime_service.py): with a "until VIX feed is configured" comment. Consequence: the HIGH_VOLATILITY market regime can never trigger.
+Lower impact / single-node-safe
+
+Redis lock silently falls back to in-memory (ops/coordination.py:45): fine on Replit (one node), but breaks distributed locking guarantees if ever scaled out — with no alert.
+Market-data stream restarts every 100 messages (services/worker.py:71): max_messages=100 forces reconnects; inefficient for a websocket (only matters if you run that worker).
+Spread proxy via Yahoo (features/production_features.py, runtime.py): Yahoo has no bid/ask, so spread is approximated from the candle range — a silently degraded risk metric.
+Stubs / placeholder logic (not "broken", but not production-grade)
+
+News classifier is regex keyword-matching, not real NLP (data/collectors/news_rss.py).
+SEC materiality score is a hardcoded form-type lookup (data/collectors/sec_edgar.py).
+Trade "AI review" is a deterministic string template, not an LLM (journal/review_engine.py).
+Several scanners (post-earnings, news-momentum, catalyst run-up) have placeholder accept logic (scanners/production_scanners.py).
+Signal entry/stop/target are hardcoded ratios and don't use the ATR that's computed (signals/signal_engine.py).
+5. Security notes
+ADMIN_SESSION_SECRET defaults to "change-me" — login tokens are signed with a known key until you change it. (It also blocks live-trading readiness by design.) I'll have you set this too.
+Live trading is safely disabled behind multiple gates (ALLOW_LIVE_TRADING, CONFIRM_LIVE_TRADING="I_UNDERSTAND_RISK", live keys, human approval). The system "fails closed" — good.

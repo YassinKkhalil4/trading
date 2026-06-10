@@ -19,6 +19,7 @@ class LockHandle:
     backend: str
     ttl_seconds: int
     reason: str
+    degraded: bool = False
     version: str = COORDINATION_VERSION
 
 
@@ -42,8 +43,15 @@ class CoordinationLockManager:
                     ttl,
                     "Redis coordination lock acquired." if acquired else "Redis coordination lock is already held.",
                 )
-            except Exception:
+            except Exception as exc:
                 self.client = None
+                return self._acquire_memory(
+                    normalized,
+                    token,
+                    ttl,
+                    degraded=True,
+                    degraded_reason=f"Redis unavailable ({exc}); coordination degraded to single-node in-memory lock.",
+                )
         return self._acquire_memory(normalized, token, ttl)
 
     def release(self, handle: LockHandle) -> bool:
@@ -61,8 +69,17 @@ class CoordinationLockManager:
                 return False
         return self._release_memory(handle)
 
-    def _acquire_memory(self, key: str, token: str, ttl_seconds: int) -> LockHandle:
+    def _acquire_memory(
+        self,
+        key: str,
+        token: str,
+        ttl_seconds: int,
+        *,
+        degraded: bool = False,
+        degraded_reason: str | None = None,
+    ) -> LockHandle:
         now = time.time()
+        prefix = f"{degraded_reason} " if degraded and degraded_reason else ""
         existing = _MEMORY_LOCKS.get(key)
         if existing:
             expires_at, _existing_token = existing
@@ -73,11 +90,20 @@ class CoordinationLockManager:
                     False,
                     "memory",
                     ttl_seconds,
-                    "In-memory coordination lock is already held.",
+                    f"{prefix}In-memory coordination lock is already held.",
+                    degraded=degraded,
                 )
             _MEMORY_LOCKS.pop(key, None)
         _MEMORY_LOCKS[key] = (now + ttl_seconds, token)
-        return LockHandle(key, token, True, "memory", ttl_seconds, "In-memory coordination lock acquired.")
+        return LockHandle(
+            key,
+            token,
+            True,
+            "memory",
+            ttl_seconds,
+            f"{prefix}In-memory coordination lock acquired.",
+            degraded=degraded,
+        )
 
     def _release_memory(self, handle: LockHandle) -> bool:
         existing = _MEMORY_LOCKS.get(handle.key)

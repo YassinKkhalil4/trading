@@ -44,6 +44,7 @@ class Settings:
     alpaca_stream_symbols: str = "SPY,QQQ,AMD,NVDA,TSLA"
     alpaca_stream_channels: str = "bars,quotes,trades,statuses"
     alpaca_stream_max_reconnects: int = 10
+    alpaca_stream_max_messages: int = 0
     alpaca_bars_timeframe: str = "1Min"
     alpaca_bars_limit: int = 1000
     alpaca_order_max_attempts: int = 3
@@ -173,6 +174,7 @@ def get_settings() -> Settings:
         alpaca_stream_symbols=os.getenv("ALPACA_STREAM_SYMBOLS", "SPY,QQQ,AMD,NVDA,TSLA"),
         alpaca_stream_channels=os.getenv("ALPACA_STREAM_CHANNELS", "bars,quotes,trades,statuses"),
         alpaca_stream_max_reconnects=_env_int("ALPACA_STREAM_MAX_RECONNECTS", 10),
+        alpaca_stream_max_messages=_env_int("ALPACA_STREAM_MAX_MESSAGES", 0),
         alpaca_bars_timeframe=os.getenv("ALPACA_BARS_TIMEFRAME", "1Min"),
         alpaca_bars_limit=_env_int("ALPACA_BARS_LIMIT", 1000),
         alpaca_order_max_attempts=_env_int("ALPACA_ORDER_MAX_ATTEMPTS", 3),

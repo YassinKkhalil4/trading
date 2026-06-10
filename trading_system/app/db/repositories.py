@@ -2854,6 +2854,15 @@ class TradingRepository:
     def latest_scheduler_runs(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.list_rows(models.SchedulerRun, limit)
 
+    def last_scheduler_run_times(self) -> dict[str, datetime]:
+        rows = self.session.execute(
+            select(
+                models.SchedulerRun.job_name,
+                func.max(models.SchedulerRun.finished_at),
+            ).group_by(models.SchedulerRun.job_name)
+        ).all()
+        return {job_name: finished for job_name, finished in rows if finished is not None}
+
     def latest_clean_news(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.list_rows(models.CleanNews, limit)
 

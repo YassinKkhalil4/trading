@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import desc, func, select
 
-from trading_system.app.core.enums import DecisionOutcome, DecisionType, Direction, OrderStatus, TradeType
+from trading_system.app.core.enums import DecisionOutcome, DecisionType, Direction, MarketRegime, OrderStatus, TradeType
 from trading_system.app.db import models
 from trading_system.app.db.repositories import TradingRepository
 from trading_system.app.execution.order_manager import OrderManager
@@ -45,6 +45,8 @@ class TradeMonitorService:
             select(models.Position).order_by(desc(models.Position.created_at)).limit(500)
         ).all()
         decisions = journal_entries = 0
+        market_regime_supportive, overnight_risk_approved = self._overnight_conversion_gates()
+        catalyst_cutoff = datetime.now(UTC) - timedelta(days=7)
         for position in positions:
             if position.quantity == 0:
                 continue
@@ -61,9 +63,9 @@ class TradeMonitorService:
                 profitable=bool(unrealized is not None and unrealized > 0),
                 close_near_high_of_day=bool(latest_candle and latest_candle.close >= latest_candle.high * 0.98),
                 volume_confirms=bool(latest_candle and latest_candle.volume > 0),
-                catalyst_still_valid=True,
-                overnight_risk_approved=False,
-                market_regime_supportive=False,
+                catalyst_still_valid=self._catalyst_still_valid(position.symbol, catalyst_cutoff),
+                overnight_risk_approved=overnight_risk_approved,
+                market_regime_supportive=market_regime_supportive,
             )
             self.repository.store_decision_log(
                 decision_type=DecisionType.EXECUTION,
@@ -96,6 +98,49 @@ class TradeMonitorService:
             stop_orders_adjusted=lifecycle["stop_orders_adjusted"],
             reason="Trade monitor cycle recorded position decisions and journal lifecycle metrics.",
         )
+
+    def _overnight_conversion_gates(self) -> tuple[bool, bool]:
+        """Derive market-regime support and overnight-risk approval from live state.
+
+        These replace previously hardcoded ``False`` inputs that made the
+        day-trade-to-swing conversion impossible. A conversion is only allowed in
+        a supportive (bull) regime, and overnight exposure additionally requires
+        that no kill switch is active.
+        """
+        latest_regime = self.repository.session.scalar(
+            select(models.MarketRegimeSnapshot)
+            .order_by(desc(models.MarketRegimeSnapshot.source_timestamp))
+            .limit(1)
+        )
+        regime_ts = latest_regime.source_timestamp if latest_regime else None
+        if regime_ts is not None and regime_ts.tzinfo is None:
+            regime_ts = regime_ts.replace(tzinfo=UTC)
+        regime_fresh = bool(
+            regime_ts is not None
+            and (datetime.now(UTC) - regime_ts).total_seconds() <= 86400
+        )
+        market_regime_supportive = bool(
+            regime_fresh
+            and latest_regime.market_regime == MarketRegime.BULL_TREND.value
+            and (latest_regime.risk_multiplier or 0.0) >= 1.0
+        )
+        overnight_risk_approved = (
+            market_regime_supportive and self.repository.active_kill_switch_count() == 0
+        )
+        return market_regime_supportive, overnight_risk_approved
+
+    def _catalyst_still_valid(self, symbol: str, cutoff: datetime) -> bool:
+        catalyst = self.repository.session.scalar(
+            select(models.Catalyst)
+            .where(
+                models.Catalyst.symbol == symbol,
+                models.Catalyst.source_timestamp >= cutoff,
+                models.Catalyst.materiality_score > 0,
+            )
+            .order_by(desc(models.Catalyst.source_timestamp))
+            .limit(1)
+        )
+        return catalyst is not None
 
     def _sync_journal_lifecycle(self) -> dict[str, int]:
         created = updated = rule_violations = protective_exits = stop_orders_adjusted = 0

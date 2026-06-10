@@ -39,12 +39,13 @@ class MarketRegimeService:
         spy_50 = spy_close.rolling(50, min_periods=1).mean().iloc[-1]
         qqq_20 = qqq_close.rolling(20, min_periods=1).mean().iloc[-1]
         breadth_positive = self._breadth_positive()
+        vix_level, vix_reason = self._estimate_vix(spy)
         decision = classify_market_regime(
             RegimeInputs(
                 spy_above_20ma=bool(spy_close.iloc[-1] > spy_20),
                 spy_above_50ma=bool(spy_close.iloc[-1] > spy_50),
                 qqq_above_20ma=bool(qqq_close.iloc[-1] > qqq_20),
-                vix_level=20.0,
+                vix_level=vix_level,
                 breadth_positive=breadth_positive,
             )
         )
@@ -55,7 +56,7 @@ class MarketRegimeService:
             risk_multiplier=decision.risk_multiplier,
             breakout_permission=decision.breakout_permission,
             mean_reversion_permission=decision.mean_reversion_permission,
-            reason=f"{decision.reason} VIX input defaults to neutral 20 until VIX feed is configured.",
+            reason=f"{decision.reason} {vix_reason}",
             source_timestamp=spy.index[-1].to_pydatetime(),
         )
         return RegimeRunResult(
@@ -64,6 +65,35 @@ class MarketRegimeService:
             decision.confidence,
             "Market regime snapshot persisted.",
         )
+
+    def _estimate_vix(self, spy) -> tuple[float, str]:
+        """Approximate VIX from SPY realized volatility.
+
+        There is no dedicated VIX feed configured, so we annualize the standard
+        deviation of recent SPY returns as a volatility proxy. This lets the
+        HIGH_VOLATILITY regime actually trigger during turbulent markets instead
+        of being pinned to a hardcoded neutral 20.
+        """
+        neutral = (20.0, "VIX proxy unavailable (insufficient SPY history); defaulting to neutral 20.")
+        close = spy["close"].astype(float)
+        returns = close.pct_change().dropna()
+        if len(returns) < 20:
+            return neutral
+        try:
+            deltas = spy.index.to_series().diff().dropna().dt.total_seconds()
+            bar_seconds = float(deltas.median()) if len(deltas) else 86400.0
+        except Exception:
+            bar_seconds = 86400.0
+        bar_minutes = max(bar_seconds / 60.0, 1.0)
+        if bar_minutes >= 240:
+            periods_per_year = 252.0
+        else:
+            periods_per_year = 252.0 * (390.0 / bar_minutes)
+        realized = float(returns.tail(60).std()) * (periods_per_year ** 0.5) * 100.0
+        if not realized or realized != realized:  # guard against NaN
+            return neutral
+        vix_proxy = max(5.0, min(150.0, realized))
+        return vix_proxy, f"VIX proxy from SPY realized volatility ~= {vix_proxy:.1f}."
 
     def _frame(self, symbol: str):
         for provider in ["alpaca_market_data", "yahoo_chart"]:

@@ -57,6 +57,9 @@ class ScheduledCollectorRunner:
             payload = {}
             success = True
             reasons = []
+            cadences = _job_cadences(self.settings)
+            now = datetime.now(UTC)
+            last_runs = self.repository.last_scheduler_run_times()
             for child in [
                 "market_data",
                 "features",
@@ -74,6 +77,11 @@ class ScheduledCollectorRunner:
                 "reviews",
                 "learning",
             ]:
+                cadence = cadences.get(child)
+                if cadence is not None and not _cadence_elapsed(now, last_runs.get(child), cadence):
+                    payload[child] = {"skipped": True, "reason": f"Cadence of {cadence}s has not elapsed."}
+                    reasons.append(f"{child}: skipped (cadence not elapsed)")
+                    continue
                 result = self.run_once(child, symbols=symbols, actor=actor)
                 payload[child] = asdict(result)
                 success = success and result.success
@@ -120,20 +128,21 @@ class ScheduledCollectorRunner:
         return result
 
     def run_forever(self) -> None:
+        cadences = _job_cadences(self.settings)
+        last_run: dict[str, float] = {}
         while True:
-            self.run_once("market_data")
-            self.run_once("features")
-            self.run_once("regime")
-            self.run_once("catalysts")
-            self.run_once("production_scanners")
-            self.run_once("provider_health")
-            self.run_once("universe")
-            self.run_once("missing_candle_repair")
-            self.run_once("fill_reconciliation")
-            self.run_once("trade_monitor")
-            self.run_once("news")
-            self.run_once("sec")
-            time.sleep(max(5, min(_cadences(self.settings))))
+            now = time.monotonic()
+            for job_name, cadence in cadences.items():
+                previous = last_run.get(job_name)
+                if previous is None or (now - previous) >= cadence:
+                    self.run_once(job_name)
+                    last_run[job_name] = time.monotonic()
+            now = time.monotonic()
+            next_due = min(
+                (last_run[job_name] + cadence) - now
+                for job_name, cadence in cadences.items()
+            )
+            time.sleep(max(1.0, next_due))
 
     def _run_job(
         self,
@@ -243,14 +252,36 @@ class ScheduledCollectorRunner:
         raise ValueError(f"Unknown scheduled job: {job_name}")
 
 
-def _cadences(settings: Settings) -> list[int]:
-    return [
-        settings.scheduler_market_data_seconds,
-        settings.scheduler_fill_reconciliation_seconds,
-        settings.scheduler_news_seconds,
-        settings.scheduler_sec_seconds,
-        settings.scheduler_regime_seconds,
-        settings.scheduler_catalyst_seconds,
-        settings.scheduler_trade_monitor_seconds,
-        settings.scheduler_review_seconds,
-    ]
+def _cadence_elapsed(now: datetime, last: datetime | None, cadence: int) -> bool:
+    if last is None:
+        return True
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=UTC)
+    return (now - last).total_seconds() >= cadence
+
+
+def _job_cadences(settings: Settings) -> dict[str, int]:
+    """Map each scheduled job to its own cadence in seconds.
+
+    Both ``run_forever`` and the ``"all"`` fan-out path use this so low-frequency
+    jobs (news, SEC, universe, reviews, learning) only fire on their own schedule
+    instead of running every loop alongside the high-frequency market-data job.
+    """
+    market = settings.scheduler_market_data_seconds
+    return {
+        "market_data": market,
+        "features": market,
+        "production_scanners": market,
+        "regime": settings.scheduler_regime_seconds,
+        "provider_health": settings.provider_health_max_age_seconds,
+        "catalysts": settings.scheduler_catalyst_seconds,
+        "missing_candle_repair": settings.scheduler_news_seconds,
+        "fill_reconciliation": settings.scheduler_fill_reconciliation_seconds,
+        "trade_monitor": settings.scheduler_trade_monitor_seconds,
+        "news": settings.scheduler_news_seconds,
+        "sec": settings.scheduler_sec_seconds,
+        "universe": settings.scheduler_sec_seconds,
+        "reviews": settings.scheduler_review_seconds,
+        "learning": settings.scheduler_review_seconds,
+        "live_readiness": settings.scheduler_review_seconds,
+    }
