@@ -1,1 +1,2 @@
-- [Scheduler deployed path](scheduler-deployed-path.md) — production scheduler runs via worker `run_once("all")`, NOT `run_forever`; cadence/scheduling logic must live in the `"all"` branch, keyed off persisted last-run times.
+- [Scheduler deployed path](scheduler-deployed-path.md) — deployed scheduler "all"-path cadence gating quirk.
+- [Alpha Vantage news](alpha-vantage-news.md) — NEWS_SENTIMENT multi-ticker is AND-filtered (fetch per symbol); 200-with-Note errors; redact apikey from logged exceptions.

@@ -94,6 +94,8 @@ class Settings:
     max_spread_bps: float = 20.0
     dashboard_refresh_seconds: int = 15
     news_rss_feeds: str = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
+    alpha_vantage_api_key: str = ""
+    alpha_vantage_news_limit: int = 50
     sec_user_agent: str = "AutonomousTradingIntelligence contact@example.com"
     sec_requests_per_second: float = 5.0
     scheduler_market_data_seconds: int = 60
@@ -222,6 +224,8 @@ def get_settings() -> Settings:
             "NEWS_RSS_FEEDS",
             "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US",
         ),
+        alpha_vantage_api_key=os.getenv("ALPHA_VANTAGE_API_KEY", ""),
+        alpha_vantage_news_limit=_env_int("ALPHA_VANTAGE_NEWS_LIMIT", 50),
         sec_user_agent=os.getenv("SEC_USER_AGENT", "AutonomousTradingIntelligence contact@example.com"),
         sec_requests_per_second=_env_float("SEC_REQUESTS_PER_SECOND", 5.0),
         scheduler_market_data_seconds=_env_int("SCHEDULER_MARKET_DATA_SECONDS", 60),

@@ -24,7 +24,8 @@ from trading_system.app.data.collectors.alpaca_stream import (
     AlpacaMarketDataStream,
     AlpacaStreamRunResult,
 )
-from trading_system.app.data.collectors.news_rss import NewsCollectionResult, NewsRssCollector
+from trading_system.app.data.collectors.alpha_vantage_news import AlphaVantageNewsCollector
+from trading_system.app.data.collectors.news_rss import NewsCollectionResult
 from trading_system.app.data.collectors.sec_edgar import SecCollectionResult, SecEdgarCollector
 from trading_system.app.data.collectors.yahoo_chart import YahooChartCollector, YahooChartResult
 from trading_system.app.data.quality_repair import MissingCandleRepairResult, MissingCandleRepairService
@@ -1172,7 +1173,7 @@ class TradingRuntimeService:
 
     def collect_news(self, symbols: list[str] | None = None) -> NewsCollectionResult:
         self.bootstrap()
-        return NewsRssCollector(self.repository, self.settings).collect(symbols)
+        return AlphaVantageNewsCollector(self.repository, self.settings).collect(symbols)
 
     def collect_sec_filings(
         self,

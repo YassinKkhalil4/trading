@@ -9,7 +9,7 @@ from trading_system.app.core.enums import EnvironmentMode
 from trading_system.app.core.config import Settings, get_settings
 from trading_system.app.catalysts.catalyst_engine import CatalystEngine
 from trading_system.app.data.collectors.alpaca_bars import AlpacaBarsCollector
-from trading_system.app.data.collectors.news_rss import NewsRssCollector
+from trading_system.app.data.collectors.alpha_vantage_news import AlphaVantageNewsCollector
 from trading_system.app.data.collectors.sec_edgar import SecEdgarCollector
 from trading_system.app.data.collectors.yahoo_chart import YahooChartCollector
 from trading_system.app.data.quality_repair import MissingCandleRepairService
@@ -203,7 +203,7 @@ class ScheduledCollectorRunner:
             result = MarketRegimeService(self.repository).run_once()
             return ScheduledJobResult(job_name, result.computed, result.reason, {"result": asdict(result)})
         if job_name == "news":
-            result = NewsRssCollector(self.repository, self.settings).collect(symbols)
+            result = AlphaVantageNewsCollector(self.repository, self.settings).collect(symbols)
             return ScheduledJobResult(job_name, result.success, result.reason, {"result": asdict(result)})
         if job_name == "sec":
             result = SecEdgarCollector(self.repository, self.settings).collect(symbols)
