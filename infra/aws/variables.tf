@@ -72,3 +72,20 @@ variable "raw_archive_bucket" {
   type        = string
   description = "Globally unique S3 bucket name for raw provider payload archives."
 }
+
+variable "enable_https" {
+  type        = bool
+  default     = false
+  description = "When true, terminate TLS on the ALB and redirect HTTP to HTTPS."
+}
+
+variable "acm_certificate_arn" {
+  type        = string
+  default     = ""
+  description = "ACM certificate ARN for ALB HTTPS listeners. Required when enable_https is true."
+
+  validation {
+    condition     = !var.enable_https || var.acm_certificate_arn != ""
+    error_message = "acm_certificate_arn must be set when enable_https is true."
+  }
+}

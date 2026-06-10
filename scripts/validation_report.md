@@ -76,10 +76,28 @@ BLOCKERS environment_mode_live,allow_live_trading,confirm_live_trading,live_orde
 
 _None._
 
+## Terraform / AWS static validation
+
+- **Terraform version:** v1.9.8 (`darwin_arm64`, `.tools/bin/terraform`)
+- **terraform fmt** — PASS
+  - Reformatted `infra/aws/main.tf` (WAF nested blocks); working tree now formatted
+- **terraform fmt -check** — PASS
+- **terraform init** — PASS
+  - Provider `hashicorp/aws` v5.100.0 installed; lock file written to `infra/aws/.terraform.lock.hcl`
+- **terraform validate** — PASS
+  - Configuration is valid
+
+### Remaining blockers for plan/apply
+
+- AWS CLI not installed on this host (`aws` command not found)
+- No AWS credentials configured (`~/.aws/` missing; no `AWS_*` env vars)
+- No `terraform.tfvars` or `TF_VAR_*` values for required variables: `container_image`, `db_password`, `admin_bootstrap_password`, `api_admin_token`, `admin_session_secret`, `raw_archive_bucket`
+- ALB listeners are HTTP-only (no ACM certificate / HTTPS routing)
+- `terraform plan` and `terraform apply` not run (credentials and variable values required)
+
 ## Skipped checks
 
-- **terraform available** — SKIP
-  - terraform not installed on this host
+_None._
 
 ## Commands run
 
@@ -96,16 +114,21 @@ _None._
 - `/opt/homebrew/bin/docker-compose run --rm --no-deps trade-monitor-worker python -m trading_system.app.services.worker trade-monitor --once`
 - `/opt/homebrew/bin/docker-compose run --rm --no-deps review-worker python -m trading_system.app.services.worker review --once`
 - `/opt/homebrew/bin/docker-compose run --rm --no-deps learning-worker python -m trading_system.app.services.worker learning --once`
+- `export PATH="/Users/yassinkhalil/Documents/Trading/.tools/bin:$PATH"`
+- `terraform -chdir=infra/aws fmt`
+- `terraform -chdir=infra/aws fmt -check`
+- `terraform -chdir=infra/aws init`
+- `terraform -chdir=infra/aws validate`
 
 ## Missing local dependencies
 
-- terraform
+- aws-cli
 
 ## Exact next steps for AWS validation
 
 1. Install and configure AWS CLI credentials for the target account/region (default us-east-1).
-2. Review infra/aws/main.tf and set required variables (VPC CIDR, secrets ARNs, image tags).
-3. Run `terraform -chdir=infra/aws init` and `terraform -chdir=infra/aws plan` before any apply.
+2. Create `infra/aws/terraform.tfvars` (or export `TF_VAR_*`) with required values: `container_image`, `db_password`, `admin_bootstrap_password`, `api_admin_token`, `admin_session_secret`, `raw_archive_bucket`.
+3. Run `export PATH="/Users/yassinkhalil/Documents/Trading/.tools/bin:$PATH"` then `terraform -chdir=infra/aws plan` before any apply.
 4. Build and push the application image to the ECR repository declared in Terraform.
 5. Run the Alembic migration ECS task against the RDS endpoint (see .github/workflows/ci-cd.yml).
 6. Set runtime secrets in AWS Secrets Manager: DATABASE_URL, ADMIN_PASSWORD, ADMIN_SESSION_SECRET, ALPACA_PAPER_*.

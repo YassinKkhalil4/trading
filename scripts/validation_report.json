@@ -156,14 +156,34 @@
     }
   ],
   "failed": [],
-  "skipped": [
-    {
-      "name": "terraform available",
-      "status": "SKIP",
-      "detail": "terraform not installed on this host",
-      "command": ""
-    }
-  ],
+  "skipped": [],
+  "terraform": {
+    "version": "Terraform v1.9.8 on darwin_arm64",
+    "binary_path": "/Users/yassinkhalil/Documents/Trading/.tools/bin/terraform",
+    "fmt": {
+      "status": "PASS",
+      "detail": "infra/aws/main.tf formatted (WAF nested blocks fixed)"
+    },
+    "fmt_check": {
+      "status": "PASS",
+      "detail": "all files formatted"
+    },
+    "init": {
+      "status": "PASS",
+      "detail": "hashicorp/aws v5.100.0 installed; .terraform.lock.hcl written"
+    },
+    "validate": {
+      "status": "PASS",
+      "detail": "Success! The configuration is valid."
+    },
+    "plan_apply_blockers": [
+      "AWS CLI not installed (aws command not found)",
+      "No AWS credentials configured (~/.aws/ missing; no AWS_* env vars)",
+      "Missing required Terraform variables: container_image, db_password, admin_bootstrap_password, api_admin_token, admin_session_secret, raw_archive_bucket",
+      "ALB listeners are HTTP-only (no ACM certificate / HTTPS routing)",
+      "terraform plan and apply not run"
+    ]
+  },
   "commands": [
     "/opt/homebrew/bin/docker build -t trading-platform-api:validation .",
     "/opt/homebrew/bin/docker build -t trading-platform-dashboard:validation .",
@@ -177,15 +197,20 @@
     "/opt/homebrew/bin/docker-compose run --rm --no-deps reconciliation-worker python -m trading_system.app.services.worker reconciliation --once",
     "/opt/homebrew/bin/docker-compose run --rm --no-deps trade-monitor-worker python -m trading_system.app.services.worker trade-monitor --once",
     "/opt/homebrew/bin/docker-compose run --rm --no-deps review-worker python -m trading_system.app.services.worker review --once",
-    "/opt/homebrew/bin/docker-compose run --rm --no-deps learning-worker python -m trading_system.app.services.worker learning --once"
+    "/opt/homebrew/bin/docker-compose run --rm --no-deps learning-worker python -m trading_system.app.services.worker learning --once",
+    "export PATH=\"/Users/yassinkhalil/Documents/Trading/.tools/bin:$PATH\"",
+    "terraform -chdir=infra/aws fmt",
+    "terraform -chdir=infra/aws fmt -check",
+    "terraform -chdir=infra/aws init",
+    "terraform -chdir=infra/aws validate"
   ],
   "missing_dependencies": [
-    "terraform"
+    "aws-cli"
   ],
   "aws_next_steps": [
     "Install and configure AWS CLI credentials for the target account/region (default us-east-1).",
-    "Review infra/aws/main.tf and set required variables (VPC CIDR, secrets ARNs, image tags).",
-    "Run `terraform -chdir=infra/aws init` and `terraform -chdir=infra/aws plan` before any apply.",
+    "Create infra/aws/terraform.tfvars (or export TF_VAR_*) with container_image, db_password, admin_bootstrap_password, api_admin_token, admin_session_secret, raw_archive_bucket.",
+    "Run export PATH=\"/Users/yassinkhalil/Documents/Trading/.tools/bin:$PATH\" then terraform -chdir=infra/aws plan before any apply.",
     "Build and push the application image to the ECR repository declared in Terraform.",
     "Run the Alembic migration ECS task against the RDS endpoint (see .github/workflows/ci-cd.yml).",
     "Set runtime secrets in AWS Secrets Manager: DATABASE_URL, ADMIN_PASSWORD, ADMIN_SESSION_SECRET, ALPACA_PAPER_*.",
