@@ -113,6 +113,33 @@ class Settings:
     scheduler_lock_ttl_seconds: int = 300
     scheduler_use_master_universe_refresh: bool = True
 
+    # Opportunity ranking engine. The score is a weighted average of the eight
+    # components below, so it always lands on a 0-100 scale regardless of the
+    # configured weights. Grade thresholds are evaluated against that 0-100 score.
+    #
+    # enable_ranking_signal_path routes accepted live VWAP scans through the
+    # opportunity-ranking bridge (only A/A+ grades create signals). Keep it OFF
+    # unless the provider-health AND market-regime schedulers are running: the
+    # ranking hard-block requires a fresh Alpaca provider-health snapshot and a
+    # fresh regime snapshot, so with the flag ON and those schedulers idle the
+    # scan will accept candidates but never create a signal.
+    enable_ranking_signal_path: bool = False
+    ranking_weight_scanner: float = 30.0
+    ranking_weight_freshness: float = 15.0
+    ranking_weight_provider: float = 10.0
+    ranking_weight_regime: float = 15.0
+    ranking_weight_catalyst: float = 10.0
+    ranking_weight_relative_strength: float = 10.0
+    ranking_weight_liquidity: float = 10.0
+    ranking_weight_spread: float = 5.0
+    ranking_grade_a_plus_min: float = 88.0
+    ranking_grade_a_min: float = 78.0
+    ranking_grade_b_min: float = 65.0
+    ranking_grade_watch_min: float = 50.0
+    ranking_relative_strength_multiplier: float = 20.0
+    ranking_neutral_component_score: float = 50.0
+    ranking_unknown_provider_reliability: float = 100.0
+
     @property
     def live_order_path_enabled(self) -> bool:
         return (
@@ -244,4 +271,20 @@ def get_settings() -> Settings:
         worker_sleep_seconds=_env_int("WORKER_SLEEP_SECONDS", 5),
         scheduler_lock_ttl_seconds=_env_int("SCHEDULER_LOCK_TTL_SECONDS", 300),
         scheduler_use_master_universe_refresh=_env_bool("SCHEDULER_USE_MASTER_UNIVERSE_REFRESH", True),
+        enable_ranking_signal_path=_env_bool("ENABLE_RANKING_SIGNAL_PATH", False),
+        ranking_weight_scanner=_env_float("RANKING_WEIGHT_SCANNER", 30.0),
+        ranking_weight_freshness=_env_float("RANKING_WEIGHT_FRESHNESS", 15.0),
+        ranking_weight_provider=_env_float("RANKING_WEIGHT_PROVIDER", 10.0),
+        ranking_weight_regime=_env_float("RANKING_WEIGHT_REGIME", 15.0),
+        ranking_weight_catalyst=_env_float("RANKING_WEIGHT_CATALYST", 10.0),
+        ranking_weight_relative_strength=_env_float("RANKING_WEIGHT_RELATIVE_STRENGTH", 10.0),
+        ranking_weight_liquidity=_env_float("RANKING_WEIGHT_LIQUIDITY", 10.0),
+        ranking_weight_spread=_env_float("RANKING_WEIGHT_SPREAD", 5.0),
+        ranking_grade_a_plus_min=_env_float("RANKING_GRADE_A_PLUS_MIN", 88.0),
+        ranking_grade_a_min=_env_float("RANKING_GRADE_A_MIN", 78.0),
+        ranking_grade_b_min=_env_float("RANKING_GRADE_B_MIN", 65.0),
+        ranking_grade_watch_min=_env_float("RANKING_GRADE_WATCH_MIN", 50.0),
+        ranking_relative_strength_multiplier=_env_float("RANKING_RELATIVE_STRENGTH_MULTIPLIER", 20.0),
+        ranking_neutral_component_score=_env_float("RANKING_NEUTRAL_COMPONENT_SCORE", 50.0),
+        ranking_unknown_provider_reliability=_env_float("RANKING_UNKNOWN_PROVIDER_RELIABILITY", 100.0),
     )

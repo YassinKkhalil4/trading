@@ -20,16 +20,33 @@ from trading_system.app.scanners.production_scanners import (
 
 RANKING_RULE_VERSION = "opportunity_ranking_v1"
 
-COMPONENT_WEIGHTS: dict[str, float] = {
-    "scanner": 30.0,
-    "freshness": 15.0,
-    "provider": 10.0,
-    "regime": 15.0,
-    "catalyst": 10.0,
-    "relative_strength": 10.0,
-    "liquidity": 10.0,
-    "spread": 5.0,
-}
+# Stable component order used for the weighted average. Each component is scored
+# on a 0-100 scale; the final opportunity score is the weight-normalized average
+# of these components, so it is always on a documented 0-100 scale regardless of
+# the configured weights (a perfect candidate scores exactly 100.0).
+COMPONENT_NAMES: tuple[str, ...] = (
+    "scanner",
+    "freshness",
+    "provider",
+    "regime",
+    "catalyst",
+    "relative_strength",
+    "liquidity",
+    "spread",
+)
+
+
+def component_weights(settings: Settings) -> dict[str, float]:
+    return {
+        "scanner": settings.ranking_weight_scanner,
+        "freshness": settings.ranking_weight_freshness,
+        "provider": settings.ranking_weight_provider,
+        "regime": settings.ranking_weight_regime,
+        "catalyst": settings.ranking_weight_catalyst,
+        "relative_strength": settings.ranking_weight_relative_strength,
+        "liquidity": settings.ranking_weight_liquidity,
+        "spread": settings.ranking_weight_spread,
+    }
 
 
 class OpportunityGrade(str, Enum):
@@ -100,17 +117,22 @@ def compute_opportunity_ranking(
         )
 
     component_scores, reasons = _score_components(inputs, settings)
-    opportunity_score = round(
-        sum(component_scores[name] * COMPONENT_WEIGHTS[name] / 100.0 for name in COMPONENT_WEIGHTS),
-        2,
-    )
+    weights = component_weights(settings)
+    total_weight = sum(weights.values())
+    if total_weight > 0:
+        opportunity_score = round(
+            sum(component_scores[name] * weights[name] for name in COMPONENT_NAMES) / total_weight,
+            2,
+        )
+    else:
+        opportunity_score = 0.0
     return OpportunityRankingResult(
         scanner_result_id=inputs.scanner_result_id,
         symbol=inputs.symbol,
         strategy_id=inputs.strategy_id,
         scanner_name=inputs.scanner_name,
         opportunity_score=opportunity_score,
-        grade=_grade_from_score(opportunity_score),
+        grade=_grade_from_score(opportunity_score, settings),
         reasons=reasons,
         blocked_reason=None,
     )
@@ -327,11 +349,23 @@ def _score_components(
     scores["freshness"] = freshness_component
     reasons.append(f"Data freshness score {freshness_component:.1f}")
 
-    provider_component = _clamp(inputs.provider_health_reliability or 100.0)
+    # Provider reliability: a missing score means the provider passed the HEALTHY
+    # hard-block but did not report a numeric reliability, so fall back to the
+    # configured "unknown" value. A genuine 0.0 is a real low score and must not
+    # be coerced upward.
+    if inputs.provider_health_reliability is None:
+        provider_component = _clamp(settings.ranking_unknown_provider_reliability)
+    else:
+        provider_component = _clamp(inputs.provider_health_reliability)
     scores["provider"] = provider_component
     reasons.append(f"Provider reliability {provider_component:.1f}")
 
-    regime_component = _clamp(inputs.regime_confidence or 0.0)
+    # Regime confidence: distinguish a missing snapshot value (neutral) from a
+    # genuine 0.0 confidence (real low score).
+    if inputs.regime_confidence is None:
+        regime_component = _clamp(settings.ranking_neutral_component_score)
+    else:
+        regime_component = _clamp(inputs.regime_confidence)
     scores["regime"] = regime_component
     reasons.append(f"Regime confidence {regime_component:.1f}")
 
@@ -340,17 +374,30 @@ def _score_components(
     elif inputs.strategy_id in CATALYST_REQUIRED_STRATEGY_IDS:
         catalyst_component = 0.0
     else:
-        catalyst_component = 50.0
+        catalyst_component = _clamp(settings.ranking_neutral_component_score)
     scores["catalyst"] = catalyst_component
     reasons.append(f"Catalyst score {catalyst_component:.1f}")
 
-    rs_value = inputs.relative_strength_20d or 0.0
-    relative_strength_component = _clamp(min(100.0, max(0.0, rs_value * 20.0)))
+    # Relative strength: missing data is neutral; a genuine value is scaled by the
+    # configured multiplier and clamped to 0-100.
+    if inputs.relative_strength_20d is None:
+        relative_strength_component = _clamp(settings.ranking_neutral_component_score)
+    else:
+        relative_strength_component = _clamp(
+            inputs.relative_strength_20d * settings.ranking_relative_strength_multiplier
+        )
     scores["relative_strength"] = relative_strength_component
     reasons.append(f"Relative strength score {relative_strength_component:.1f}")
 
-    liquidity_component = _clamp(inputs.liquidity_score or 0.0)
-    spread_component = _clamp(inputs.spread_score or 0.0)
+    # Liquidity / spread: missing intraday features are neutral, not zero.
+    if inputs.liquidity_score is None:
+        liquidity_component = _clamp(settings.ranking_neutral_component_score)
+    else:
+        liquidity_component = _clamp(inputs.liquidity_score)
+    if inputs.spread_score is None:
+        spread_component = _clamp(settings.ranking_neutral_component_score)
+    else:
+        spread_component = _clamp(inputs.spread_score)
     scores["liquidity"] = liquidity_component
     scores["spread"] = spread_component
     reasons.append(f"Liquidity score {liquidity_component:.1f}")
@@ -359,14 +406,14 @@ def _score_components(
     return scores, reasons
 
 
-def _grade_from_score(score: float) -> OpportunityGrade:
-    if score >= 88:
+def _grade_from_score(score: float, settings: Settings) -> OpportunityGrade:
+    if score >= settings.ranking_grade_a_plus_min:
         return OpportunityGrade.A_PLUS
-    if score >= 78:
+    if score >= settings.ranking_grade_a_min:
         return OpportunityGrade.A
-    if score >= 65:
+    if score >= settings.ranking_grade_b_min:
         return OpportunityGrade.B
-    if score >= 50:
+    if score >= settings.ranking_grade_watch_min:
         return OpportunityGrade.WATCH
     return OpportunityGrade.REJECT
 

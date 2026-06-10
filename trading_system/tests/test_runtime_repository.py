@@ -6,16 +6,24 @@ from types import SimpleNamespace
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from trading_system.app.core.config import Settings
-from trading_system.app.core.enums import EnvironmentMode, OrderStatus, StrategyStatus
+from trading_system.app.core.enums import (
+    EnvironmentMode,
+    MarketRegime,
+    OrderStatus,
+    ProviderHealthStatus,
+    StrategyStatus,
+)
 from trading_system.app.db import models
 from trading_system.app.db.base import Base
 from trading_system.app.db.repositories import TradingRepository
 from trading_system.app.db.session import build_engine
 from trading_system.app.execution.alpaca_paper_adapter import AlpacaPaperOrderResult
 from trading_system.app.features.production_features import ProductionFeatureEngine
+from trading_system.app.scanners.production_scanners import PRODUCTION_DATA_PROVIDER
 from trading_system.app.services.runtime import TradingRuntimeService
 from trading_system.app.strategies.registry import StrategyRegistryService
 
@@ -141,6 +149,127 @@ def test_runtime_scan_persists_signal_and_thesis_from_clean_candles():
     snapshot = service.dashboard_snapshot()
     assert snapshot["counts"]["signals"] == 1
     assert snapshot["trade_theses"][0]["reason_for_trade"]
+
+
+def _store_scannable_candles(repo: TradingRepository) -> list[datetime]:
+    timestamps = [
+        datetime(2026, 6, 3, 10, 0, tzinfo=ZoneInfo("America/New_York")),
+        datetime(2026, 6, 3, 10, 1, tzinfo=ZoneInfo("America/New_York")),
+    ]
+    candles = [
+        {"open": 100.0, "high": 102.0, "low": 98.0, "close": 99.0, "volume": 100_000.0},
+        {"open": 99.0, "high": 103.0, "low": 99.0, "close": 102.0, "volume": 4_000_000.0},
+    ]
+    for ts, candle in zip(timestamps, candles, strict=True):
+        raw_id = repo.store_raw_candle(
+            {
+                "provider": "yahoo_chart",
+                "symbol": "AMD",
+                "timeframe": "1Min",
+                "source_timestamp": ts,
+                "raw_payload": candle,
+            }
+        )
+        repo.store_clean_candle(
+            {
+                "raw_market_data_id": raw_id,
+                "provider": "yahoo_chart",
+                "symbol": "AMD",
+                "timeframe": "1Min",
+                "source_timestamp": ts,
+                "trade_count": None,
+                "vwap": None,
+                "data_quality_status": "VALID",
+                "quality_reason": "test candle",
+                **candle,
+            }
+        )
+    return timestamps
+
+
+def _approve_all_strategies(repo: TradingRepository) -> None:
+    for row in repo.session.scalars(select(models.StrategyRegistry)).all():
+        row.status = StrategyStatus.PAPER_TESTING.value
+    repo.session.commit()
+
+
+def test_runtime_scan_routes_through_ranking_bridge_when_flag_enabled():
+    repo = _repo()
+    service = TradingRuntimeService(
+        repo,
+        settings=Settings(
+            max_spread_bps=500.0,
+            enable_ranking_signal_path=True,
+            # Make any non-blocked candidate grade A_PLUS so the wiring (not the
+            # exact score) is what this test exercises; scoring math is covered
+            # in test_opportunity_ranking.py.
+            ranking_grade_a_plus_min=1.0,
+            bar_freshness_max_seconds=86_400,
+            provider_health_max_age_seconds=86_400,
+            scheduler_regime_seconds=3_600,
+        ),
+    )
+    service.bootstrap()
+    timestamps = _store_scannable_candles(repo)
+    _approve_all_strategies(repo)
+    repo.store_provider_health_snapshot(
+        provider_name=PRODUCTION_DATA_PROVIDER,
+        status=ProviderHealthStatus.HEALTHY.value,
+        reason="runtime ranking wiring test provider health",
+        reliability_score=100.0,
+        source_timestamp=timestamps[-1],
+    )
+    repo.store_market_regime_snapshot(
+        market_regime=MarketRegime.BULL_TREND.value,
+        confidence=95.0,
+        allowed_bias="long",
+        risk_multiplier=1.0,
+        breakout_permission=True,
+        mean_reversion_permission="limited",
+        reason="runtime ranking wiring test regime",
+        source_timestamp=timestamps[-1],
+    )
+
+    result = service.run_vwap_scan("AMD")
+
+    assert result.scanner_result_id is not None
+    assert result.signal_id is not None
+    assert result.thesis_id is not None
+    assert result.reason == "Ranked signal and thesis generated."
+    # The bridge path (and only the bridge path) records a strategy cooldown when
+    # it creates a signal, so its presence proves we routed through the bridge.
+    cooldowns = repo.session.scalars(select(models.StrategyCooldown)).all()
+    assert any(
+        "Signal created from ranked scanner opportunity" in (row.reason or "")
+        for row in cooldowns
+    )
+
+
+def test_runtime_scan_ranking_path_blocks_without_provider_health():
+    repo = _repo()
+    service = TradingRuntimeService(
+        repo,
+        settings=Settings(
+            max_spread_bps=500.0,
+            enable_ranking_signal_path=True,
+            ranking_grade_a_plus_min=1.0,
+        ),
+    )
+    service.bootstrap()
+    _store_scannable_candles(repo)
+    _approve_all_strategies(repo)
+    # Deliberately omit provider-health and regime snapshots: the ranking gate must
+    # hard-block, so the scan accepts the scanner result but creates no signal.
+
+    result = service.run_vwap_scan("AMD")
+
+    assert result.scanner_result_id is not None
+    assert result.signal_id is None
+    assert result.thesis_id is None
+    assert result.reason is not None
+    assert "Provider health" in result.reason
+    assert repo.session.scalars(select(models.Signal)).all() == []
+    assert repo.session.scalars(select(models.StrategyCooldown)).all() == []
 
 
 def _store_runtime_signal(repo: TradingRepository, settings: Settings) -> str:

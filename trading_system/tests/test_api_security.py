@@ -7,6 +7,10 @@ from types import SimpleNamespace
 
 import trading_system.app.api.main as api_main
 from trading_system.app.api.main import app
+from trading_system.app.services.ranking.opportunity_ranking import (
+    OpportunityGrade,
+    OpportunityRankingResult,
+)
 from trading_system.app.security.auth import AdminPrincipal
 from trading_system.app.security.auth import (
     require_admin_token,
@@ -49,6 +53,7 @@ def test_sensitive_read_endpoints_require_authentication():
         "/catalysts/events",
         "/catalysts/scores",
         "/scanners/results",
+        "/rankings/recent",
         "/signals",
         "/signals/theses",
         "/risk/checks",
@@ -104,6 +109,7 @@ def test_api_exposes_required_dashboard_and_operations_surfaces():
         "/catalysts/events",
         "/catalysts/scores",
         "/scanners/results",
+        "/rankings/recent",
         "/signals",
         "/signals/theses",
         "/risk/checks",
@@ -751,3 +757,81 @@ def test_admin_user_endpoint_blocks_self_deactivation_and_demotion():
     assert deactivate.status_code == 409
     assert role.status_code == 409
     assert upsert.status_code == 409
+
+
+def test_recent_rankings_endpoint_returns_ranked_rows(monkeypatch):
+    class FakeSession:
+        def close(self) -> None:
+            pass
+
+    class FakeService:
+        def __init__(self) -> None:
+            self.repository = object()
+
+        def bootstrap(self) -> dict:
+            return {}
+
+    captured: dict = {}
+
+    class FakeRankingService:
+        def __init__(self, repository, settings) -> None:
+            captured["repository"] = repository
+            captured["settings"] = settings
+
+        def rank_recent_accepted(self, limit: int):
+            captured["limit"] = limit
+            return [
+                OpportunityRankingResult(
+                    scanner_result_id="scan-1",
+                    symbol="AMD",
+                    strategy_id="VWAP_RECLAIM",
+                    scanner_name="VWAP_RECLAIM",
+                    opportunity_score=88.5,
+                    grade=OpportunityGrade.A_PLUS,
+                    reasons=["Strong scanner score.", "Healthy provider."],
+                    blocked_reason=None,
+                ),
+                OpportunityRankingResult(
+                    scanner_result_id="scan-2",
+                    symbol="MSFT",
+                    strategy_id="OPENING_RANGE_BREAKOUT",
+                    scanner_name="OPENING_RANGE_BREAKOUT",
+                    opportunity_score=0.0,
+                    grade=OpportunityGrade.REJECT,
+                    reasons=[],
+                    blocked_reason="Market data is stale for scanner timeframe.",
+                ),
+            ]
+
+    def fake_runtime():
+        return FakeSession(), FakeService()
+
+    monkeypatch.setattr(api_main, "_runtime", fake_runtime)
+    monkeypatch.setattr(api_main, "OpportunityRankingService", FakeRankingService)
+    app.dependency_overrides[require_principal] = lambda: AdminPrincipal(username="viewer", role="VIEWER")
+    try:
+        response = client.get("/rankings/recent", params={"limit": 25})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert captured["limit"] == 25
+    rankings = response.json()["rankings"]
+    assert [row["symbol"] for row in rankings] == ["AMD", "MSFT"]
+    assert rankings[0]["grade"] == "A_PLUS"
+    assert rankings[0]["opportunity_score"] == 88.5
+    assert rankings[0]["blocked_reason"] is None
+    assert rankings[1]["grade"] == "REJECT"
+    assert rankings[1]["blocked_reason"] == "Market data is stale for scanner timeframe."
+
+
+def test_recent_rankings_endpoint_rejects_out_of_range_limit():
+    app.dependency_overrides[require_principal] = lambda: AdminPrincipal(username="viewer", role="VIEWER")
+    try:
+        too_large = client.get("/rankings/recent", params={"limit": 5000})
+        too_small = client.get("/rankings/recent", params={"limit": 0})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert too_large.status_code == 422
+    assert too_small.status_code == 422

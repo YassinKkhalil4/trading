@@ -79,7 +79,9 @@ from trading_system.app.scanners.production_scanners import (
 )
 from trading_system.app.security.auth import AuthService
 from trading_system.app.scanners.vwap_reclaim import VwapReclaimScanner, VwapReclaimSnapshot
+from trading_system.app.services.ranking.opportunity_ranking import build_preflight_payload
 from trading_system.app.services.replay.decision_snapshot_service import DecisionSnapshotService
+from trading_system.app.services.signals.scanner_signal_bridge import ScannerSignalBridgeService
 from trading_system.app.services.scheduler import ScheduledCollectorRunner, ScheduledJobResult
 from trading_system.app.signals.signal_engine import SignalEngine, TradeSignal
 from trading_system.app.strategies.approval import (
@@ -203,6 +205,17 @@ class TradingRuntimeService:
             cooldowns=self.cooldowns,
         )
         decision = scanner.scan(snapshot)
+        # Always persist a preflight payload (plus latest close/VWAP) alongside the
+        # scanner result. This is additive to the existing payload shape and lets the
+        # opportunity-ranking engine score every accepted scanner result, regardless of
+        # whether the ranking-gated signal path is enabled.
+        preflight = build_preflight_payload(
+            self.repository,
+            symbol=normalized,
+            strategy_id="VWAP_RECLAIM",
+            timeframe="1Min",
+            latest_data_timestamp=snapshot.timestamp,
+        )
         scanner_row = self.repository.store_scanner_result(
             decision,
             source_timestamp=snapshot.timestamp,
@@ -210,6 +223,9 @@ class TradingRuntimeService:
                 "snapshot": _snapshot_to_payload(snapshot),
                 "features": feature_payload,
                 "spread_note": "Yahoo chart has no bid/ask; spread_bps uses current candle range proxy.",
+                "preflight": preflight,
+                "latest_close": snapshot.price,
+                "latest_vwap": snapshot.vwap,
             },
         )
 
@@ -221,6 +237,15 @@ class TradingRuntimeService:
                 signal_id=None,
                 thesis_id=None,
                 reason=decision.reason,
+            )
+
+        if self.settings.enable_ranking_signal_path:
+            return self._create_signal_via_ranking(
+                normalized,
+                scanner_row,
+                snapshot,
+                decision,
+                collected,
             )
 
         stop_loss = min(snapshot.vwap, snapshot.price * 0.995)
@@ -259,6 +284,55 @@ class TradingRuntimeService:
             signal_id=signal_row.id,
             thesis_id=thesis_row.id,
             reason="Signal and thesis generated.",
+        )
+
+    def _create_signal_via_ranking(
+        self,
+        normalized: str,
+        scanner_row: models.ScannerResult,
+        snapshot: VwapReclaimSnapshot,
+        decision: Any,
+        collected: YahooChartResult | None,
+    ) -> ScanCycleResult:
+        """Route an accepted scanner result through the opportunity-ranking gate.
+
+        A signal (and thesis) is only created when the ranking engine grades the
+        candidate highly enough for the bridge to accept it. Otherwise the scan
+        returns with the bridge's blocked reason and no signal.
+        """
+        bridge = ScannerSignalBridgeService(self.repository, self.settings)
+        bridge_result = bridge.try_create_signal(scanner_row.id, now=snapshot.timestamp)
+        if not bridge_result.created or bridge_result.signal_id is None:
+            return ScanCycleResult(
+                symbol=normalized,
+                collected=collected,
+                scanner_result_id=scanner_row.id,
+                signal_id=None,
+                thesis_id=None,
+                reason=bridge_result.blocked_reason or "Ranking gate did not produce a signal.",
+            )
+
+        thesis = build_rule_based_thesis(
+            symbol=normalized,
+            setup_name="VWAP_RECLAIM",
+            scanner_reason=decision.reason,
+            catalyst_summary=None,
+            market_context=f"Market regime input: {snapshot.market_regime.value}",
+        )
+        thesis_row = self.repository.store_trade_thesis(
+            thesis,
+            signal_id=bridge_result.signal_id,
+            symbol=normalized,
+            strategy_id=scanner_row.strategy_id or "VWAP_RECLAIM",
+            source_timestamp=snapshot.timestamp,
+        )
+        return ScanCycleResult(
+            symbol=normalized,
+            collected=collected,
+            scanner_result_id=scanner_row.id,
+            signal_id=bridge_result.signal_id,
+            thesis_id=thesis_row.id,
+            reason="Ranked signal and thesis generated.",
         )
 
     def submit_signal_to_paper(

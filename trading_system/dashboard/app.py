@@ -13,6 +13,7 @@ from trading_system.app.core.enums import AdminRole, EnvironmentMode
 from trading_system.app.db.repositories import TradingRepository
 from trading_system.app.db.session import SessionLocal
 from trading_system.app.security.auth import AdminPrincipal, AuthService, hash_password
+from trading_system.app.services.ranking.opportunity_ranking import OpportunityRankingService
 from trading_system.app.services.runtime import TradingRuntimeService
 
 
@@ -732,6 +733,29 @@ with tabs[2]:
             }
         )
     _table(thesis_rows, label="trade thesis", height=420)
+
+    st.markdown("**Opportunity rankings (most recent accepted scanner results)**")
+    if settings.enable_ranking_signal_path:
+        st.caption("Ranking-gated signal path is ENABLED: A_PLUS / A grades route to live signals.")
+    else:
+        st.caption("Ranking-gated signal path is disabled; rankings are advisory only.")
+    ranking_rows = []
+    try:
+        ranking_service = OpportunityRankingService(service.repository, settings)
+        for result in ranking_service.rank_recent_accepted(50):
+            ranking_rows.append(
+                {
+                    "symbol": result.symbol,
+                    "strategy": result.strategy_id,
+                    "grade": result.grade.value,
+                    "score": result.opportunity_score,
+                    "blocked_reason": result.blocked_reason or "",
+                    "reasons": "; ".join(result.reasons),
+                }
+            )
+    except Exception as exc:  # noqa: BLE001 - surface ranking errors without crashing the tab
+        st.warning(f"Opportunity ranking is unavailable: {exc}")
+    _table(ranking_rows, label="opportunity ranking", height=360)
 
 with tabs[3]:
     st.subheader("Risk And Execution")

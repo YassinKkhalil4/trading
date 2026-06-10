@@ -1,3 +1,1 @@
-- [Scheduler deployed path](scheduler-deployed-path.md) — deployed scheduler "all"-path cadence gating quirk.
-- [Alpha Vantage news](alpha-vantage-news.md) — NEWS_SENTIMENT multi-ticker is AND-filtered (fetch per symbol); 200-with-Note errors; redact apikey from logged exceptions.
-- [News scheduling](news-scheduling.md) — news is market-session gated (premarket once/day + evenly-spread intraday), not fixed-cadence; tune via SCHEDULER_NEWS_PREMARKET / SCHEDULER_NEWS_INTRADAY_PULLS.
+- [Ranking signal path enablement](ranking-signal-path.md) — why ENABLE_RANKING_SIGNAL_PATH is a no-op without the Alpaca provider-health + regime schedulers.

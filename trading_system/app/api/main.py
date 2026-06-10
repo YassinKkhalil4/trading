@@ -18,6 +18,10 @@ from trading_system.app.features.calculations import LiquidityGates
 from trading_system.app.risk.live_readiness import LiveReadinessService
 from trading_system.app.risk.risk_engine import PortfolioState, RiskEngine
 from trading_system.app.scanners.vwap_reclaim import VwapReclaimScanner, VwapReclaimSnapshot
+from trading_system.app.services.ranking.opportunity_ranking import (
+    OpportunityRankingResult,
+    OpportunityRankingService,
+)
 from trading_system.app.services.runtime import TradingRuntimeService
 from trading_system.app.security.auth import (
     AdminPrincipal,
@@ -715,6 +719,35 @@ def scanner_results(
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
     return _read_rows("scanner_results", lambda repo, row_limit: repo.latest_scanner_results(row_limit), limit)
+
+
+def _ranking_to_dict(result: OpportunityRankingResult) -> dict:
+    return {
+        "scanner_result_id": result.scanner_result_id,
+        "symbol": result.symbol,
+        "strategy_id": result.strategy_id,
+        "scanner_name": result.scanner_name,
+        "opportunity_score": result.opportunity_score,
+        "grade": result.grade.value,
+        "reasons": result.reasons,
+        "blocked_reason": result.blocked_reason,
+        "ranking_rule_version": result.ranking_rule_version,
+    }
+
+
+@app.get("/rankings/recent")
+def recent_rankings(
+    _principal: AdminPrincipal = Depends(require_principal),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        ranking_service = OpportunityRankingService(service.repository, get_settings())
+        ranked = ranking_service.rank_recent_accepted(limit)
+        return {"rankings": [_ranking_to_dict(item) for item in ranked]}
+    finally:
+        session.close()
 
 
 @app.get("/signals")
