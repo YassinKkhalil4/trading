@@ -13,4 +13,5 @@ credentials
 **/.terraform/
 **/*.tfstate
 **/*.tfstate.backup
+**/terraform.tfvars
 EOF

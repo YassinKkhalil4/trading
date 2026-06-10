@@ -1,0 +1,32 @@
+# Copy to terraform.tfvars and fill in real values locally.
+# WARNING: Do NOT commit terraform.tfvars — it contains secrets.
+# terraform.tfvars is listed in .gitignore; only commit this example file.
+#
+# Live Alpaca keys must remain empty unless you are explicitly enabling live
+# testing in a controlled environment. The stack sets ALLOW_LIVE_TRADING=false,
+# ENABLE_LIVE_ORDER_PATH=false, and ENVIRONMENT_MODE=paper by default in ECS.
+
+aws_region = "us-east-1"
+
+# Full ECR image URI including tag (build and push before plan/apply).
+container_image = "123456789012.dkr.ecr.us-east-1.amazonaws.com/trading-intelligence:REPLACE_WITH_GIT_SHA_OR_TAG"
+
+# Globally unique S3 bucket name for raw provider payload archives.
+raw_archive_bucket = "trading-intelligence-raw-archive-REPLACE_WITH_UNIQUE_SUFFIX"
+
+db_password              = "REPLACE_WITH_STRONG_DB_PASSWORD"
+admin_bootstrap_password = "REPLACE_WITH_STRONG_ADMIN_PASSWORD"
+api_admin_token          = "REPLACE_WITH_API_ADMIN_TOKEN"
+admin_session_secret     = "REPLACE_WITH_HIGH_ENTROPY_SESSION_SECRET"
+
+# Paper trading keys (required for paper-mode market data and orders).
+alpaca_paper_api_key    = "REPLACE_WITH_ALPACA_PAPER_API_KEY"
+alpaca_paper_secret_key = "REPLACE_WITH_ALPACA_PAPER_SECRET_KEY"
+
+# Leave empty unless explicitly enabling live testing.
+alpaca_live_api_key    = ""
+alpaca_live_secret_key = ""
+
+# Production HTTPS (optional; default is HTTP-only for dev/staging).
+# enable_https          = false
+# acm_certificate_arn   = "arn:aws:acm:us-east-1:123456789012:certificate/REPLACE_WITH_CERT_ID"

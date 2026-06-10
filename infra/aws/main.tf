@@ -52,7 +52,7 @@ resource "aws_vpc" "main" {
   cidr_block           = "10.42.0.0/16"
   enable_dns_hostnames = true
   enable_dns_support   = true
-  tags = { Name = local.name }
+  tags                 = { Name = local.name }
 }
 
 resource "aws_internet_gateway" "main" {
@@ -129,6 +129,15 @@ resource "aws_security_group" "alb" {
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+  dynamic "ingress" {
+    for_each = var.enable_https ? [1] : []
+    content {
+      from_port   = 443
+      to_port     = 443
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
   }
   ingress {
     from_port   = 8501
@@ -297,21 +306,21 @@ resource "aws_db_subnet_group" "postgres" {
 }
 
 resource "aws_db_instance" "postgres" {
-  identifier              = "${local.name}-postgres"
-  engine                  = "postgres"
-  engine_version          = "16"
-  instance_class          = "db.t4g.micro"
-  allocated_storage       = 50
-  db_name                 = var.db_name
-  username                = var.db_username
-  password                = var.db_password
-  db_subnet_group_name    = aws_db_subnet_group.postgres.name
-  vpc_security_group_ids  = [aws_security_group.data.id]
-  backup_retention_period = 14
-  deletion_protection     = true
-  storage_encrypted       = true
-  publicly_accessible     = false
-  skip_final_snapshot     = false
+  identifier                = "${local.name}-postgres"
+  engine                    = "postgres"
+  engine_version            = "16"
+  instance_class            = "db.t4g.micro"
+  allocated_storage         = 50
+  db_name                   = var.db_name
+  username                  = var.db_username
+  password                  = var.db_password
+  db_subnet_group_name      = aws_db_subnet_group.postgres.name
+  vpc_security_group_ids    = [aws_security_group.data.id]
+  backup_retention_period   = 14
+  deletion_protection       = true
+  storage_encrypted         = true
+  publicly_accessible       = false
+  skip_final_snapshot       = false
   final_snapshot_identifier = "${local.name}-postgres-final-snapshot"
 }
 
@@ -349,8 +358,8 @@ resource "aws_iam_role" "task_execution" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
       Principal = { Service = "ecs-tasks.amazonaws.com" }
     }]
   })
@@ -361,8 +370,8 @@ resource "aws_iam_role" "task" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
       Principal = { Service = "ecs-tasks.amazonaws.com" }
     }]
   })
@@ -379,8 +388,8 @@ resource "aws_iam_role_policy" "secrets" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect = "Allow"
-      Action = ["secretsmanager:GetSecretValue"]
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
       Resource = aws_secretsmanager_secret.runtime.arn
     }]
   })
@@ -470,7 +479,8 @@ resource "aws_lb_target_group" "service" {
   }
 }
 
-resource "aws_lb_listener" "api" {
+resource "aws_lb_listener" "api_http_forward" {
+  count             = var.enable_https ? 0 : 1
   load_balancer_arn = aws_lb.app.arn
   port              = 80
   protocol          = "HTTP"
@@ -480,10 +490,67 @@ resource "aws_lb_listener" "api" {
   }
 }
 
-resource "aws_lb_listener" "dashboard" {
+resource "aws_lb_listener" "dashboard_http_forward" {
+  count             = var.enable_https ? 0 : 1
   load_balancer_arn = aws_lb.app.arn
   port              = 8501
   protocol          = "HTTP"
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.service["dashboard"].arn
+  }
+}
+
+resource "aws_lb_listener" "api_http_redirect" {
+  count             = var.enable_https ? 1 : 0
+  load_balancer_arn = aws_lb.app.arn
+  port              = 80
+  protocol          = "HTTP"
+  default_action {
+    type = "redirect"
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
+resource "aws_lb_listener" "api_https" {
+  count             = var.enable_https ? 1 : 0
+  load_balancer_arn = aws_lb.app.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = var.acm_certificate_arn
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.service["api"].arn
+  }
+}
+
+resource "aws_lb_listener" "dashboard_http_redirect" {
+  count             = var.enable_https ? 1 : 0
+  load_balancer_arn = aws_lb.app.arn
+  port              = 8501
+  protocol          = "HTTP"
+  default_action {
+    type = "redirect"
+    redirect {
+      port        = "8501"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
+resource "aws_lb_listener" "dashboard_https" {
+  count             = var.enable_https ? 1 : 0
+  load_balancer_arn = aws_lb.app.arn
+  port              = 8501
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = var.acm_certificate_arn
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.service["dashboard"].arn
@@ -533,11 +600,15 @@ resource "aws_ecs_service" "worker" {
 resource "aws_wafv2_web_acl" "app" {
   name  = "${local.name}-waf"
   scope = "REGIONAL"
-  default_action { allow {} }
+  default_action {
+    allow {}
+  }
   rule {
     name     = "AWSManagedRulesCommonRuleSet"
     priority = 1
-    override_action { none {} }
+    override_action {
+      none {}
+    }
     statement {
       managed_rule_group_statement {
         name        = "AWSManagedRulesCommonRuleSet"
