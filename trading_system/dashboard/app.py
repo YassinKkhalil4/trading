@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -23,7 +24,215 @@ from trading_system.app.services.ranking.opportunity_ranking import OpportunityR
 from trading_system.app.services.runtime import TradingRuntimeService
 
 
-st.set_page_config(page_title="Trading Intelligence", layout="wide")
+st.set_page_config(
+    page_title="Trading Intelligence",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+
+_GLOBAL_STYLES = """
+<style>
+:root {
+    --bg: #0a0e17;
+    --panel: #121a27;
+    --panel-2: #18233440;
+    --elevated: #1a2436;
+    --border: #243049;
+    --border-soft: #1c2740;
+    --text: #e6edf3;
+    --muted: #8a98b0;
+    --accent: #4c8dff;
+    --accent-soft: #4c8dff22;
+    --green: #29d398;
+    --red: #f87171;
+    --amber: #f5b14c;
+}
+
+/* ---- Base canvas ---- */
+.stApp {
+    background:
+        radial-gradient(1200px 600px at 12% -8%, #15203308 0%, transparent 55%),
+        radial-gradient(1000px 520px at 95% 0%, #4c8dff0d 0%, transparent 50%),
+        var(--bg);
+}
+[data-testid="stHeader"] { background: transparent; }
+[data-testid="stMain"] .block-container {
+    padding-top: 2.2rem;
+    padding-bottom: 4rem;
+    max-width: 1500px;
+}
+html, body, [class*="css"] { font-feature-settings: "tnum" 1, "cv01" 1; }
+
+/* ---- Typography ---- */
+h1, h2, h3 { letter-spacing: -0.01em; font-weight: 700; }
+[data-testid="stMain"] h2 { font-size: 1.35rem; margin-top: 0.4rem; }
+[data-testid="stMain"] h3 { font-size: 1.05rem; color: var(--text); }
+
+/* ---- Brand header ---- */
+.app-header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 1rem; flex-wrap: wrap;
+    padding: 1.1rem 1.4rem;
+    margin-bottom: 1.4rem;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background:
+        linear-gradient(120deg, #4c8dff14 0%, transparent 42%),
+        var(--panel);
+    box-shadow: 0 1px 0 #ffffff08 inset, 0 18px 40px -28px #000;
+}
+.app-header .brand { display: flex; align-items: center; gap: 0.85rem; }
+.app-header .brand .logo {
+    width: 42px; height: 42px; border-radius: 11px;
+    display: grid; place-items: center; font-size: 1.35rem;
+    background: linear-gradient(150deg, var(--accent), #2dd4bf);
+    box-shadow: 0 8px 22px -8px var(--accent);
+}
+.app-header .brand .title { font-size: 1.35rem; font-weight: 800; line-height: 1.1; color: #fff; }
+.app-header .brand .subtitle { font-size: 0.82rem; color: var(--muted); margin-top: 2px; }
+.app-header .badges { display: flex; gap: 0.55rem; flex-wrap: wrap; }
+
+.badge {
+    display: inline-flex; align-items: center; gap: 0.4rem;
+    padding: 0.34rem 0.7rem; border-radius: 999px;
+    font-size: 0.74rem; font-weight: 600; letter-spacing: 0.02em;
+    border: 1px solid var(--border); background: var(--elevated); color: var(--text);
+}
+.badge .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.badge.ok { color: var(--green); border-color: #29d39840; background: #29d3981a; }
+.badge.ok .dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.badge.warn { color: var(--amber); border-color: #f5b14c40; background: #f5b14c1a; }
+.badge.warn .dot { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+.badge.info { color: var(--accent); border-color: #4c8dff40; background: #4c8dff1a; }
+.badge.info .dot { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+/* ---- Section headers ---- */
+.section-header {
+    display: flex; align-items: center; gap: 0.55rem;
+    font-size: 0.78rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.09em; color: var(--muted);
+    margin: 1.4rem 0 0.55rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border-soft);
+}
+.section-header::before {
+    content: ""; width: 3px; height: 15px; border-radius: 2px;
+    background: linear-gradient(var(--accent), #2dd4bf);
+}
+
+/* ---- Metric cards ---- */
+[data-testid="stMetric"] {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    padding: 0.9rem 1.05rem;
+    transition: border-color .15s ease, transform .15s ease;
+}
+[data-testid="stMetric"]:hover { border-color: #33446a; transform: translateY(-1px); }
+[data-testid="stMetricLabel"] p {
+    font-size: 0.72rem !important; text-transform: uppercase;
+    letter-spacing: 0.07em; color: var(--muted) !important; font-weight: 600;
+}
+[data-testid="stMetricValue"] { font-size: 1.7rem; font-weight: 750; color: #fff; }
+
+/* ---- Tabs ---- */
+[data-baseweb="tab-list"] {
+    gap: 0.3rem; background: var(--panel);
+    padding: 0.4rem; border-radius: 13px; border: 1px solid var(--border);
+    flex-wrap: wrap;
+}
+[data-baseweb="tab-list"] button[data-baseweb="tab"] {
+    height: auto; padding: 0.5rem 0.95rem; border-radius: 9px;
+    color: var(--muted); font-weight: 600; font-size: 0.86rem;
+    background: transparent; border: none;
+}
+[data-baseweb="tab-list"] button[data-baseweb="tab"]:hover { color: var(--text); background: #ffffff0a; }
+[data-baseweb="tab-list"] button[aria-selected="true"] {
+    color: #fff; background: linear-gradient(150deg, var(--accent), #3b76e0);
+    box-shadow: 0 8px 20px -10px var(--accent);
+}
+[data-baseweb="tab-highlight"], [data-baseweb="tab-border"] { display: none; }
+
+/* ---- Buttons ---- */
+.stButton > button {
+    border-radius: 10px; border: 1px solid var(--border);
+    background: var(--elevated); color: var(--text); font-weight: 600;
+    transition: all .15s ease;
+}
+.stButton > button:hover { border-color: var(--accent); color: #fff; background: #20304d; }
+.stButton > button[kind="primary"] {
+    background: linear-gradient(150deg, var(--accent), #3b76e0);
+    border-color: transparent; color: #fff;
+}
+[data-testid="stFormSubmitButton"] > button {
+    background: linear-gradient(150deg, var(--accent), #3b76e0);
+    border-color: transparent; color: #fff; font-weight: 700; width: 100%;
+}
+
+/* ---- Inputs ---- */
+[data-testid="stTextInput"] input,
+[data-testid="stNumberInput"] input,
+[data-baseweb="select"] > div,
+[data-testid="stTextArea"] textarea {
+    background: var(--bg) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 9px !important;
+}
+[data-testid="stTextInput"] input:focus { border-color: var(--accent) !important; }
+
+/* ---- Dataframes ---- */
+[data-testid="stDataFrame"] {
+    border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+}
+[data-testid="stDataFrame"] [data-testid="stTable"] { background: var(--panel); }
+
+/* ---- Alerts / info ---- */
+[data-testid="stAlert"] { border-radius: 11px; border: 1px solid var(--border); }
+
+/* ---- Sidebar ---- */
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #0d141f 0%, #0a0e17 100%);
+    border-right: 1px solid var(--border);
+}
+[data-testid="stSidebar"] .block-container { padding-top: 1.4rem; }
+.sidebar-brand {
+    display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.3rem;
+}
+.sidebar-brand .logo {
+    width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center;
+    font-size: 1rem; background: linear-gradient(150deg, var(--accent), #2dd4bf);
+}
+.sidebar-brand .name { font-weight: 800; font-size: 1rem; color: #fff; }
+[data-testid="stSidebar"] [data-testid="stMetric"] { padding: 0.6rem 0.75rem; }
+[data-testid="stSidebar"] [data-testid="stMetricValue"] { font-size: 1.15rem; }
+
+/* ---- Login ---- */
+.login-hero { text-align: center; margin: 1.5rem 0 0.5rem; }
+.login-hero .logo {
+    width: 60px; height: 60px; border-radius: 16px; margin: 0 auto 1rem;
+    display: grid; place-items: center; font-size: 1.9rem;
+    background: linear-gradient(150deg, var(--accent), #2dd4bf);
+    box-shadow: 0 14px 34px -12px var(--accent);
+}
+.login-hero .title { font-size: 1.7rem; font-weight: 800; color: #fff; }
+.login-hero .subtitle { color: var(--muted); font-size: 0.9rem; margin-top: 0.3rem; }
+
+footer, #MainMenu { visibility: hidden; }
+</style>
+"""
+
+
+def _inject_global_styles() -> None:
+    st.markdown(_GLOBAL_STYLES, unsafe_allow_html=True)
+
+
+def _section(title: str) -> None:
+    st.markdown(
+        f'<div class="section-header">{html.escape(title)}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _service() -> TradingRuntimeService:
@@ -150,25 +359,37 @@ settings = get_settings()
 
 dashboard_token = st.session_state.get("admin_token")
 principal = _authenticate_dashboard_token(dashboard_token) if dashboard_token else None
+_inject_global_styles()
 if not principal:
-    st.title("Trading Intelligence")
-    st.caption("Admin access is required.")
-    with st.form("admin_login"):
-        username = st.text_input("Username", value=settings.admin_username)
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Sign in")
-        if submitted:
-            try:
-                result = _login_dashboard(username, password)
-            except Exception as exc:
-                st.error(f"Authentication service is not ready: {exc}")
-                st.stop()
-            if result.authenticated and result.token:
-                st.session_state["admin_token"] = result.token
-                st.session_state["admin_username"] = result.username
-                st.session_state["admin_role"] = result.role
-                st.rerun()
-            st.error(result.reason)
+    _, mid, _ = st.columns([1, 1.1, 1])
+    with mid:
+        st.markdown(
+            """
+            <div class="login-hero">
+                <div class="logo">📈</div>
+                <div class="title">Trading Intelligence</div>
+                <div class="subtitle">Autonomous research &amp; paper-trading console</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        with st.form("admin_login"):
+            username = st.text_input("Username", value=settings.admin_username)
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Sign in")
+            if submitted:
+                try:
+                    result = _login_dashboard(username, password)
+                except Exception as exc:
+                    st.error(f"Authentication service is not ready: {exc}")
+                    st.stop()
+                if result.authenticated and result.token:
+                    st.session_state["admin_token"] = result.token
+                    st.session_state["admin_username"] = result.username
+                    st.session_state["admin_role"] = result.role
+                    st.rerun()
+                st.error(result.reason)
+        st.caption("Admin access is required to view the console.")
     st.stop()
 
 can_trade = principal.role in {AdminRole.ADMIN.value, AdminRole.TRADER.value}
@@ -183,12 +404,48 @@ except Exception as exc:
     st.error(f"Database is not ready: {exc}")
     st.stop()
 
-st.title("Autonomous Trading Intelligence")
-st.caption("Database-backed research and paper-trading console. Live execution remains disabled.")
+_env_label = settings.environment_mode.value.upper()
+st.markdown(
+    f"""
+    <div class="app-header">
+        <div class="brand">
+            <div class="logo">📈</div>
+            <div>
+                <div class="title">Autonomous Trading Intelligence</div>
+                <div class="subtitle">Database-backed research &amp; paper-trading console</div>
+            </div>
+        </div>
+        <div class="badges">
+            <span class="badge info"><span class="dot"></span>{_env_label}</span>
+            <span class="badge warn"><span class="dot"></span>Live execution disabled</span>
+            <span class="badge ok"><span class="dot"></span>{html.escape(principal.username)} &middot; {html.escape(principal.role)}</span>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+try:
+    _latest_regime = latest_market_regime(service.repository) or "—"
+except Exception:
+    _latest_regime = "—"
+_kpi = st.columns(4)
+_kpi[0].metric("Active symbols", len(snapshot["active_symbols"]))
+_kpi[1].metric("Open signals", len(snapshot["signals"]))
+_kpi[2].metric("Scanner results", len(snapshot["scanner_results"]))
+_kpi[3].metric("Market regime", _latest_regime)
 
 with st.sidebar:
-    st.header("Controls")
-    st.write(f"Signed in as {principal.username} ({principal.role})")
+    st.markdown(
+        """
+        <div class="sidebar-brand">
+            <div class="logo">📈</div>
+            <div class="name">Trading Intelligence</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption(f"Signed in as **{principal.username}** ({principal.role})")
     if st.button("Sign out", width="stretch"):
         _logout_dashboard(dashboard_token or "", principal.username)
         st.session_state.pop("admin_token", None)
@@ -604,10 +861,10 @@ with tabs[0]:
     st.caption("Rows are persisted from collector calls. Empty tables mean no data has been collected yet.")
     market_cols = st.columns([1, 1])
     with market_cols[0]:
-        st.markdown("**Latest clean candles**")
+        _section("Latest clean candles")
         _table(snapshot["clean_candles"], label="clean candle", height=420)
     with market_cols[1]:
-        st.markdown("**Latest feature calculations**")
+        _section("Latest feature calculations")
         feature_rows = []
         for row in snapshot["features"]:
             feature_rows.append(
@@ -626,20 +883,20 @@ with tabs[0]:
             )
         _table(feature_rows, label="feature", height=420)
 
-    st.markdown("**Scanner results**")
+    _section("Scanner results")
     _table(snapshot["scanner_results"], label="scanner result", height=360)
 
-    st.markdown("**Daily feature calculations**")
+    _section("Daily feature calculations")
     _table(snapshot["daily_features"], label="daily feature", height=260)
 
-    st.markdown("**Market regime snapshots**")
+    _section("Market regime snapshots")
     _table(snapshot["regime_snapshots"], label="market regime snapshot", height=260)
 
 with tabs[1]:
     st.subheader("Catalyst And Stream Intelligence")
     catalyst_cols = st.columns(2)
     with catalyst_cols[0]:
-        st.markdown("**Alpaca market-data stream events**")
+        _section("Alpaca market-data stream events")
         stream_rows = []
         for row in snapshot["stream_events"]:
             stream_rows.append(
@@ -654,12 +911,12 @@ with tabs[1]:
             )
         _table(stream_rows, label="stream event", height=360)
     with catalyst_cols[1]:
-        st.markdown("**Scheduler runs**")
+        _section("Scheduler runs")
         _table(snapshot["scheduler_runs"], label="scheduler run", height=360)
 
     news_cols = st.columns(2)
     with news_cols[0]:
-        st.markdown("**Clean news**")
+        _section("Clean news")
         news_rows = []
         for row in snapshot["clean_news"]:
             news_rows.append(
@@ -675,7 +932,7 @@ with tabs[1]:
             )
         _table(news_rows, label="clean news", height=420)
     with news_cols[1]:
-        st.markdown("**SEC filings**")
+        _section("SEC filings")
         filing_rows = []
         for row in snapshot["filings"]:
             filing_rows.append(
@@ -691,10 +948,10 @@ with tabs[1]:
 
     event_cols = st.columns(2)
     with event_cols[0]:
-        st.markdown("**Normalized events**")
+        _section("Normalized events")
         _table(snapshot["events"], label="event", height=360)
     with event_cols[1]:
-        st.markdown("**Catalysts**")
+        _section("Catalysts")
         _table(snapshot["catalysts"], label="catalyst", height=360)
 
 with tabs[2]:
@@ -721,7 +978,7 @@ with tabs[2]:
         )
     _table(signal_rows, label="signal", height=360)
 
-    st.markdown("**Trade thesis reasoning**")
+    _section("Trade thesis reasoning")
     thesis_rows = []
     for row in snapshot["trade_theses"]:
         thesis_rows.append(
@@ -740,7 +997,7 @@ with tabs[2]:
         )
     _table(thesis_rows, label="trade thesis", height=420)
 
-    st.markdown("**Opportunity rankings (most recent accepted scanner results)**")
+    _section("Opportunity rankings (most recent accepted scanner results)")
     if settings.enable_ranking_signal_path:
         st.caption("Ranking-gated signal path is ENABLED: A_PLUS / A grades route to live signals.")
     else:
@@ -785,7 +1042,7 @@ with tabs[2]:
         st.warning(f"Opportunity ranking is unavailable: {exc}")
     _table(ranking_rows, label="opportunity ranking", height=360)
 
-    st.markdown("**Expectancy layer (historical outcomes of closed trades)**")
+    _section("Expectancy layer (historical outcomes of closed trades)")
     st.caption(
         "What happened when trades looked like this before. Real closed trades only; "
         "empty rows (0 samples) mean no history yet, not a zero result."
@@ -874,30 +1131,30 @@ with tabs[3]:
 
     exec_cols = st.columns(4)
     with exec_cols[0]:
-        st.markdown("**Risk checks**")
+        _section("Risk checks")
         _table(snapshot["risk_checks"], label="risk check", height=360)
     with exec_cols[1]:
-        st.markdown("**Orders**")
+        _section("Orders")
         _table(snapshot["orders"], label="order", height=360)
     with exec_cols[2]:
-        st.markdown("**Fills**")
+        _section("Fills")
         _table(snapshot["fills"], label="fill", height=360)
     with exec_cols[3]:
-        st.markdown("**Positions**")
+        _section("Positions")
         _table(snapshot["positions"], label="position", height=360)
 
     broker_cols = st.columns(3)
     with broker_cols[0]:
-        st.markdown("**Broker sync logs**")
+        _section("Broker sync logs")
         _table(snapshot["broker_sync_logs"], label="broker sync log", height=300)
     with broker_cols[1]:
-        st.markdown("**Broker account snapshots**")
+        _section("Broker account snapshots")
         _table(snapshot["broker_account_snapshots"], label="broker account snapshot", height=300)
     with broker_cols[2]:
-        st.markdown("**Execution errors**")
+        _section("Execution errors")
         _table(snapshot["execution_errors"], label="execution error", height=300)
 
-    st.markdown("**Exposure snapshots**")
+    _section("Exposure snapshots")
     _table(snapshot["exposure_snapshots"], label="exposure snapshot", height=300)
 
 with tabs[4]:
@@ -933,46 +1190,46 @@ with tabs[4]:
 
     _table(snapshot["journal"], label="journal", height=420)
 
-    st.markdown("**Trade reviews**")
+    _section("Trade reviews")
     _table(snapshot["ai_reviews"], label="trade review", height=320)
 
     review_cols = st.columns(2)
     with review_cols[0]:
-        st.markdown("**Weekly reviews**")
+        _section("Weekly reviews")
         _table(snapshot["weekly_reviews"], label="weekly review", height=300)
     with review_cols[1]:
-        st.markdown("**Learning recommendations**")
+        _section("Learning recommendations")
         _table(snapshot["strategy_recommendations"], label="strategy recommendation", height=300)
 
 with tabs[5]:
     st.subheader("Providers, API Calls, And Data Quality")
     quality_cols = st.columns(4)
     with quality_cols[0]:
-        st.markdown("**Provider capabilities**")
+        _section("Provider capabilities")
         _table(snapshot["providers"], label="provider capability", height=360)
     with quality_cols[1]:
-        st.markdown("**Provider rate limits**")
+        _section("Provider rate limits")
         _table(snapshot["provider_rate_limits"], label="provider rate limit", height=360)
     with quality_cols[2]:
-        st.markdown("**API call logs**")
+        _section("API call logs")
         _table(snapshot["api_calls"], label="API call", height=360)
     with quality_cols[3]:
-        st.markdown("**Data quality errors**")
+        _section("Data quality errors")
         _table(snapshot["data_quality_errors"], label="data quality error", height=360)
 
-    st.markdown("**Strategy registry**")
+    _section("Strategy registry")
     _table(snapshot["strategies"], label="strategy", height=260)
 
-    st.markdown("**Provider health**")
+    _section("Provider health")
     _table(snapshot["provider_health"], label="provider health", height=300)
 
-    st.markdown("**Worker health**")
+    _section("Worker health")
     _table(snapshot["worker_heartbeats"], label="worker heartbeat", height=260)
 
-    st.markdown("**Missing candle gaps**")
+    _section("Missing candle gaps")
     _table(snapshot["missing_candle_gaps"], label="missing candle gap", height=260)
 
-    st.markdown("**Backtest reports**")
+    _section("Backtest reports")
     _table(snapshot["backtest_reports"], label="backtest report", height=260)
 
 with tabs[6]:
@@ -980,7 +1237,7 @@ with tabs[6]:
     st.caption("Scanner, signal, risk, execution, journal, and AI reasoning decisions are recorded here.")
     _table(snapshot["decisions"], label="decision log", height=520)
 
-    st.markdown("**Audit logs**")
+    _section("Audit logs")
     _table(snapshot["audit_logs"], label="audit log", height=360)
 
 with tabs[7]:
@@ -990,7 +1247,7 @@ with tabs[7]:
         approval_cols = st.columns(2)
         with approval_cols[0]:
             with st.form("live_approval_create_form", clear_on_submit=True):
-                st.markdown("**Create approval window**")
+                _section("Create approval window")
                 approval_reason = st.text_area("Approval reason")
                 approval_minutes = st.number_input(
                     "Approval minutes",
@@ -1031,7 +1288,7 @@ with tabs[7]:
                 if row.get("status") == "ACTIVE" and not row.get("revoked_at")
             ]
             with st.form("live_approval_revoke_form", clear_on_submit=True):
-                st.markdown("**Revoke approval**")
+                _section("Revoke approval")
                 approval_ids = [row["id"] for row in active_approvals]
                 approval_id = st.selectbox("Active approval", approval_ids, disabled=not approval_ids)
                 revoke_reason = st.text_area("Revocation reason")
@@ -1058,17 +1315,17 @@ with tabs[7]:
     _table(reports, label="live-readiness report", height=360)
     if reports:
         latest = reports[0]
-        st.markdown("**Latest readiness checks**")
+        _section("Latest readiness checks")
         checks = latest.get("checks") or []
         _table(checks, label="live-readiness check", height=460)
 
-    st.markdown("**Live approvals**")
+    _section("Live approvals")
     _table(snapshot["live_trading_approvals"], label="live approval", height=260)
 
-    st.markdown("**Kill switches**")
+    _section("Kill switches")
     _table(snapshot["kill_switches"], label="kill switch", height=260)
 
-    st.markdown("**Strategy approval requests**")
+    _section("Strategy approval requests")
     _table(snapshot["strategy_approval_requests"], label="strategy approval request", height=300)
 
 with tabs[8]:
@@ -1084,7 +1341,7 @@ with tabs[8]:
         create_cols = st.columns(2)
         with create_cols[0]:
             with st.form("admin_user_upsert_form", clear_on_submit=True):
-                st.markdown("**Create or update user**")
+                _section("Create or update user")
                 admin_username = st.text_input("Username")
                 admin_password = st.text_input("Password", type="password")
                 admin_role = st.selectbox("Role", role_options, index=role_options.index(AdminRole.VIEWER.value))
@@ -1130,7 +1387,7 @@ with tabs[8]:
 
         with create_cols[1]:
             with st.form("admin_user_role_form", clear_on_submit=True):
-                st.markdown("**Change role**")
+                _section("Change role")
                 role_username = st.selectbox("User", admin_usernames, disabled=not admin_usernames)
                 role_value = st.selectbox("New role", role_options, key="admin_user_role_select")
                 role_reason = st.text_area("Reason", key="admin_user_role_reason")
@@ -1165,7 +1422,7 @@ with tabs[8]:
         state_cols = st.columns(2)
         with state_cols[0]:
             with st.form("admin_user_active_form", clear_on_submit=True):
-                st.markdown("**Activate or deactivate**")
+                _section("Activate or deactivate")
                 active_username = st.selectbox("User", admin_usernames, key="admin_user_active", disabled=not admin_usernames)
                 is_active = st.checkbox("Active", value=True)
                 active_reason = st.text_area("Reason", key="admin_user_active_reason")
@@ -1210,7 +1467,7 @@ with tabs[8]:
 
         with state_cols[1]:
             with st.form("admin_user_unlock_form", clear_on_submit=True):
-                st.markdown("**Unlock user**")
+                _section("Unlock user")
                 unlock_username = st.selectbox("User", admin_usernames, key="admin_user_unlock", disabled=not admin_usernames)
                 unlock_reason = st.text_area("Reason", key="admin_user_unlock_reason")
                 submitted = st.form_submit_button(
