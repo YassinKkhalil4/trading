@@ -1008,33 +1008,28 @@ for state_key, title in [
         with st.expander(title, expanded=True):
             st.json(st.session_state[state_key])
 
-(
-    tab_overview,
-    tab_active,
-    tab_market,
-    tab_catalysts,
-    tab_signals,
-    tab_risk,
-    tab_journal,
-    tab_providers,
-    tab_decisions,
-    tab_readiness,
-    tab_admin,
-) = st.tabs(
+tab_overview, tab_trades, tab_market_grp, tab_system, tab_admin = st.tabs(
     [
         "Overview",
-        "Active Trades",
-        "Live Market",
-        "Catalysts + Stream",
-        "Signals + Reasoning",
-        "Risk + Execution",
-        "Trades + Journal",
-        "Providers + Quality",
-        "System Decisions",
-        "Live Readiness",
+        "Trades",
+        "Market",
+        "System",
         "Admin",
     ]
 )
+
+with tab_trades:
+    sub_active, sub_signals, sub_risk, sub_journal = st.tabs(
+        ["Active Trades", "Signals", "Execution & Risk", "Journal"]
+    )
+
+with tab_market_grp:
+    sub_market, sub_catalysts = st.tabs(["Live Market", "Catalysts & Stream"])
+
+with tab_system:
+    sub_providers, sub_decisions, sub_readiness = st.tabs(
+        ["Providers & Quality", "Decisions & Audit", "Live Readiness"]
+    )
 
 with tab_overview:
     st.subheader("Command Center")
@@ -1154,7 +1149,7 @@ with tab_overview:
     ]
     _table(_recent_signals, label="signal", height=240)
 
-with tab_active:
+with sub_active:
     st.subheader("Active Trades")
     st.caption("Positions you currently hold plus active signal setups the system is tracking.")
 
@@ -1237,8 +1232,7 @@ with tab_active:
     ]
     _table(_act_sig_rows, label="active signal", height=300)
 
-with tab_market:
-    st.subheader("Market Overview")
+with sub_market:
     st.caption("Live board, performance vs the S&P 500, and intraday price action from collected candles.")
 
     _mkt_symbols = list(snapshot["active_symbols"])[:50]
@@ -1403,7 +1397,7 @@ with tab_market:
     _section("Market regime snapshots")
     _table(snapshot["regime_snapshots"], label="market regime snapshot", height=260)
 
-with tab_catalysts:
+with sub_catalysts:
     st.subheader("Catalyst And Stream Intelligence")
     catalyst_cols = st.columns(2)
     with catalyst_cols[0]:
@@ -1465,7 +1459,7 @@ with tab_catalysts:
         _section("Catalysts")
         _table(snapshot["catalysts"], label="catalyst", height=360)
 
-with tab_signals:
+with sub_signals:
     st.subheader("Signals And Reasoning")
     signal_rows = []
     for row in snapshot["signals"]:
@@ -1596,7 +1590,7 @@ with tab_signals:
                 height=240,
             )
 
-with tab_risk:
+with sub_risk:
     st.subheader("Risk And Execution")
     st.caption("Paper submission requires `ENVIRONMENT_MODE=paper`; otherwise the order is blocked and logged.")
     signals = snapshot["signals"]
@@ -1668,7 +1662,7 @@ with tab_risk:
     _section("Exposure snapshots")
     _table(snapshot["exposure_snapshots"], label="exposure snapshot", height=300)
 
-with tab_journal:
+with sub_journal:
     st.subheader("Trades And Journal")
     with st.form("journal_form", clear_on_submit=True):
         cols = st.columns(4)
@@ -1712,7 +1706,7 @@ with tab_journal:
         _section("Learning recommendations")
         _table(snapshot["strategy_recommendations"], label="strategy recommendation", height=300)
 
-with tab_providers:
+with sub_providers:
     st.subheader("Providers, API Calls, And Data Quality")
     quality_cols = st.columns(4)
     with quality_cols[0]:
@@ -1743,7 +1737,7 @@ with tab_providers:
     _section("Backtest reports")
     _table(snapshot["backtest_reports"], label="backtest report", height=260)
 
-with tab_decisions:
+with sub_decisions:
     st.subheader("Decision Logs")
     st.caption("Scanner, signal, risk, execution, journal, and AI reasoning decisions are recorded here.")
     _table(snapshot["decisions"], label="decision log", height=520)
@@ -1751,7 +1745,7 @@ with tab_decisions:
     _section("Audit logs")
     _table(snapshot["audit_logs"], label="audit log", height=360)
 
-with tab_readiness:
+with sub_readiness:
     st.subheader("Live Readiness")
     st.caption("Live execution is disabled by default and requires every readiness, approval, and gate check.")
     if can_admin:
