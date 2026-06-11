@@ -26,10 +26,24 @@ from trading_system.app.ops.coordination import CoordinationLockManager
 from trading_system.app.ops.provider_health import ProviderHealthService
 from trading_system.app.regime.regime_service import MarketRegimeService
 from trading_system.app.risk.live_readiness import LiveReadinessService
+from trading_system.app.scanners.news_screener import NewsOpportunityScanner
 from trading_system.app.scanners.production_scanners import ProductionScannerEngine
 
 
 SCHEDULER_VERSION = "scheduled_collector_runner_v1"
+
+# Jobs that depend on stock-market (price/candle) data. In news-only mode the
+# platform pulls only Alpha Vantage news, so these are skipped entirely.
+_PRICE_ONLY_JOBS = frozenset(
+    {
+        "market_data",
+        "features",
+        "production_scanners",
+        "missing_candle_repair",
+        "regime",
+        "sec",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -61,7 +75,7 @@ class ScheduledCollectorRunner:
             cadences = _job_cadences(self.settings)
             now = datetime.now(UTC)
             last_runs = self.repository.last_scheduler_run_times()
-            for child in [
+            children = [
                 "market_data",
                 "features",
                 "regime",
@@ -71,13 +85,19 @@ class ScheduledCollectorRunner:
                 "production_scanners",
                 "provider_health",
                 "universe",
+                "news_screener",
                 "missing_candle_repair",
                 "live_readiness",
                 "fill_reconciliation",
                 "trade_monitor",
                 "reviews",
                 "learning",
-            ]:
+            ]
+            if self.settings.news_only_mode:
+                children = [name for name in children if name not in _PRICE_ONLY_JOBS]
+            else:
+                children = [name for name in children if name != "news_screener"]
+            for child in children:
                 if child == "news":
                     due, news_reason = news_pull_due(now, last_runs.get("news"), self.settings)
                     if not due:
@@ -235,10 +255,15 @@ class ScheduledCollectorRunner:
             result = SecEdgarCollector(self.repository, self.settings).collect(symbols)
             return ScheduledJobResult(job_name, result.success, result.reason, {"result": asdict(result)})
         if job_name == "catalysts":
-            result = CatalystEngine(self.repository).run_once(symbols)
+            # Pass no symbols so the engine scopes by an active-universe subquery
+            # instead of a ~13k-item IN clause (news is already universe-filtered).
+            result = CatalystEngine(self.repository).run_once()
             return ScheduledJobResult(job_name, True, result.reason, {"result": asdict(result)})
         if job_name == "production_scanners":
             result = ProductionScannerEngine(self.repository).run_once(symbols)
+            return ScheduledJobResult(job_name, True, result.reason, {"result": asdict(result)})
+        if job_name == "news_screener":
+            result = NewsOpportunityScanner(self.repository, self.settings).run_once()
             return ScheduledJobResult(job_name, True, result.reason, {"result": asdict(result)})
         if job_name == "provider_health":
             result = ProviderHealthService(self.repository, self.settings).run_once()
@@ -248,6 +273,7 @@ class ScheduledCollectorRunner:
                 result = MasterUniverseRefreshWorker(
                     self.repository,
                     settings=self.settings,
+                    skip_liquidity=self.settings.news_only_mode,
                 ).run_once()
                 return ScheduledJobResult(
                     job_name,
@@ -355,6 +381,7 @@ def _job_cadences(settings: Settings) -> dict[str, int]:
         "regime": settings.scheduler_regime_seconds,
         "provider_health": settings.provider_health_max_age_seconds,
         "catalysts": settings.scheduler_catalyst_seconds,
+        "news_screener": settings.scheduler_news_screener_seconds,
         "missing_candle_repair": settings.scheduler_news_seconds,
         "fill_reconciliation": settings.scheduler_fill_reconciliation_seconds,
         "trade_monitor": settings.scheduler_trade_monitor_seconds,

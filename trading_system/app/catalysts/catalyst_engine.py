@@ -28,16 +28,33 @@ class CatalystEngine:
         self.repository = repository
 
     def run_once(self, symbols: list[str] | None = None) -> CatalystRunResult:
-        symbols = [item.upper() for item in (symbols or self.repository.active_symbols())]
+        if symbols is None:
+            # Scheduler path: the active universe can be ~13k symbols, which would
+            # blow up a literal IN(...) clause. The news collector already filters
+            # stored news to the active universe, so scope by a subquery instead of
+            # materializing every symbol as a bind parameter.
+            active_symbols = (
+                select(models.SymbolUniverse.symbol)
+                .where(models.SymbolUniverse.is_active.is_(True))
+                .scalar_subquery()
+            )
+            news_filter = models.CleanNews.symbol.in_(active_symbols)
+            filing_filter = models.FilingEvent.symbol.in_(active_symbols)
+        else:
+            symbol_list = [item.upper() for item in symbols]
+            news_filter = models.CleanNews.symbol.in_(symbol_list)
+            filing_filter = models.FilingEvent.symbol.in_(symbol_list)
         news_rows = self.repository.session.scalars(
             select(models.CleanNews)
-            .where(models.CleanNews.symbol.in_(symbols))
+            .where(models.CleanNews.symbol.is_not(None))
+            .where(news_filter)
             .order_by(desc(models.CleanNews.created_at))
             .limit(200)
         ).all()
         filing_rows = self.repository.session.scalars(
             select(models.FilingEvent)
-            .where(models.FilingEvent.symbol.in_(symbols))
+            .where(models.FilingEvent.symbol.is_not(None))
+            .where(filing_filter)
             .order_by(desc(models.FilingEvent.created_at))
             .limit(200)
         ).all()

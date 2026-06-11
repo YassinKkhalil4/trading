@@ -184,12 +184,16 @@ class MasterUniverseRefreshWorker:
         provider: AssetProvider | None = None,
         metadata_provider: MetadataProvider | None = None,
         policy: UniverseRefreshPolicy | None = None,
+        skip_liquidity: bool = False,
     ) -> None:
         self.repository = repository
         self.settings = settings or get_settings()
         self.provider = provider or AlpacaAssetProvider(self.settings)
         self.metadata_provider = metadata_provider
         self.policy = policy or UniverseRefreshPolicy.from_settings(self.settings)
+        # News-only mode: activate every tradable US stock & ETF without running
+        # the price-based liquidity screen (there is no candle data to rank on).
+        self.skip_liquidity = skip_liquidity
 
     def run_once(self) -> MasterUniverseRefreshResult:
         if not self.provider.configured:
@@ -252,31 +256,54 @@ class MasterUniverseRefreshWorker:
                 assets.append(parsed)
 
         now = datetime.now(UTC)
-        provider_disable_reason = self._provider_disable_reason(now)
+        # In news-only mode the market-data provider health is irrelevant (no price
+        # pulls), so it must not disable the entire universe.
+        provider_disable_reason = None if self.skip_liquidity else self._provider_disable_reason(now)
         upserted = 0
+        active_count = 0
         for asset in assets:
             disable_reason = provider_disable_reason or _asset_disable_reason(asset)
-            self._upsert_asset(asset, disable_reason=disable_reason, now=now)
-            upserted += 1
-
-        liquidity = self._calculate_liquidity([asset.symbol for asset in assets], now=now)
-        tradable = self._apply_liquid_subset(liquidity, now=now)
-        disabled = self.repository.session.scalar(
-            select(func.count())
-            .select_from(models.SymbolUniverse)
-            .where(models.SymbolUniverse.symbol.in_([asset.symbol for asset in assets]))
-            .where(models.SymbolUniverse.is_active.is_(False))
-        )
-        if disabled is None:
-            disabled = 0
-
-        below_minimum = 0 < tradable < self.policy.min_universe_size and len(assets) >= self.policy.min_universe_size
-        reason = "Master universe refresh completed from Alpaca assets and clean market data."
-        if below_minimum:
-            reason = (
-                "Master universe refresh completed, but the liquid subset is below the configured "
-                f"minimum of {self.policy.min_universe_size}."
+            self._upsert_asset(
+                asset,
+                disable_reason=disable_reason,
+                now=now,
+                skip_liquidity=self.skip_liquidity,
             )
+            upserted += 1
+            if disable_reason is None:
+                active_count += 1
+
+        if self.skip_liquidity:
+            # Every tradable, non-delisted US stock & ETF is part of the scan
+            # universe. No price-based liquidity ranking and no giant IN clause.
+            tradable = active_count
+            disabled = upserted - active_count
+            reason = (
+                "Master universe refresh activated all tradable Alpaca US stocks & ETFs "
+                "(news-only mode; price-based liquidity screen skipped)."
+            )
+        else:
+            liquidity = self._calculate_liquidity([asset.symbol for asset in assets], now=now)
+            tradable = self._apply_liquid_subset(liquidity, now=now)
+            disabled = self.repository.session.scalar(
+                select(func.count())
+                .select_from(models.SymbolUniverse)
+                .where(models.SymbolUniverse.symbol.in_([asset.symbol for asset in assets]))
+                .where(models.SymbolUniverse.is_active.is_(False))
+            )
+            if disabled is None:
+                disabled = 0
+
+            below_minimum = (
+                0 < tradable < self.policy.min_universe_size
+                and len(assets) >= self.policy.min_universe_size
+            )
+            reason = "Master universe refresh completed from Alpaca assets and clean market data."
+            if below_minimum:
+                reason = (
+                    "Master universe refresh completed, but the liquid subset is below the configured "
+                    f"minimum of {self.policy.min_universe_size}."
+                )
         return MasterUniverseRefreshResult(
             configured=True,
             success=True,
@@ -314,6 +341,7 @@ class MasterUniverseRefreshWorker:
         *,
         disable_reason: str | None,
         now: datetime,
+        skip_liquidity: bool = False,
     ) -> models.SymbolUniverse:
         row = self.repository.session.scalar(
             select(models.SymbolUniverse).where(models.SymbolUniverse.symbol == asset.symbol)
@@ -329,18 +357,23 @@ class MasterUniverseRefreshWorker:
         row.sector = _string_or_none(metadata.get("sector"))
         row.industry = _string_or_none(metadata.get("industry"))
         row.is_active = disable_reason is None
-        row.is_tradable = False
+        # In news-only mode an active asset is immediately tradable for the scan
+        # (no liquidity pass follows); otherwise the liquidity step decides.
+        row.is_tradable = skip_liquidity and disable_reason is None
         row.is_liquid = False
         row.disable_reason = disable_reason
         row.provider_asset_id = _string_or_none(asset.raw.get("id"))
         row.provider_status = asset.status
         row.last_provider_check_at = now
         row.raw_asset_payload = asset.raw
-        row.tradability_reason = (
-            "Awaiting liquidity calculation."
-            if disable_reason is None
-            else f"Disabled by universe safety check: {disable_reason}."
-        )
+        if disable_reason is not None:
+            row.tradability_reason = f"Disabled by universe safety check: {disable_reason}."
+        elif skip_liquidity:
+            row.tradability_reason = (
+                "News-only mode: included for news coverage without a price-based liquidity screen."
+            )
+        else:
+            row.tradability_reason = "Awaiting liquidity calculation."
         row.change_reason = "Master universe asset sync from Alpaca assets endpoint."
         row.source_timestamp = now
         self.repository.session.commit()

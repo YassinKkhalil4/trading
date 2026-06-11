@@ -21,6 +21,7 @@ from trading_system.app.services.ranking.expectancy import (
     latest_market_regime,
     stats_to_dict,
 )
+from trading_system.app.scanners.news_screener import NEWS_SCREENER_NAME
 from trading_system.app.services.ranking.opportunity_ranking import OpportunityRankingService
 from trading_system.app.services.runtime import TradingRuntimeService
 
@@ -521,6 +522,7 @@ def _audit_manual_operation(
 
 
 settings = get_settings()
+news_only_mode = settings.news_only_mode
 
 dashboard_token = st.session_state.get("admin_token")
 principal = _authenticate_dashboard_token(dashboard_token) if dashboard_token else None
@@ -571,6 +573,11 @@ except Exception as exc:
     st.stop()
 
 _env_label = settings.environment_mode.value.upper()
+_news_mode_badge = (
+    '<span class="badge ok"><span class="dot"></span>News-only mode</span>'
+    if news_only_mode
+    else '<span class="badge info"><span class="dot"></span>Price mode</span>'
+)
 st.markdown(
     f"""
     <div class="app-header">
@@ -582,6 +589,7 @@ st.markdown(
             </div>
         </div>
         <div class="badges">
+            {_news_mode_badge}
             <span class="badge info"><span class="dot"></span>{_env_label}</span>
             <span class="badge warn"><span class="dot"></span>Live execution disabled</span>
             <span class="badge ok"><span class="dot"></span>{html.escape(principal.username)} &middot; {html.escape(principal.role)}</span>
@@ -670,7 +678,7 @@ with st.sidebar:
     )
     selected_symbols = [item.strip().upper() for item in symbols_csv.split(",") if item.strip()]
 
-    if st.button("Collect Real Market Data", width="stretch", disabled=not can_trade or not selected_symbols):
+    if st.button("Collect Real Market Data", width="stretch", disabled=not can_trade or not selected_symbols or news_only_mode):
         results = []
         for symbol in selected_symbols:
             reason = "Activated for dashboard collection."
@@ -696,7 +704,7 @@ with st.sidebar:
         st.rerun()
 
     collect_before_scan = st.checkbox("Collect before scanning", value=True)
-    if st.button("Run VWAP Scan Cycle", width="stretch", disabled=not can_trade or not selected_symbols):
+    if st.button("Run VWAP Scan Cycle", width="stretch", disabled=not can_trade or not selected_symbols or news_only_mode):
         for symbol in selected_symbols:
             reason = "Activated for dashboard scan."
             row = service.repository.add_or_activate_symbol(symbol, reason=reason)
@@ -809,7 +817,7 @@ with st.sidebar:
         st.session_state["last_catalyst_result"] = catalyst_result.__dict__
         st.rerun()
 
-    if st.button("Run Production Scanners", width="stretch", disabled=not can_trade or not selected_symbols):
+    if st.button("Run Production Scanners", width="stretch", disabled=not can_trade or not selected_symbols or news_only_mode):
         result = service.run_production_scanners(selected_symbols)
         _audit_manual_operation(
             service.repository,
@@ -855,7 +863,7 @@ with st.sidebar:
         st.session_state["last_provider_health"] = result.__dict__
         st.rerun()
 
-    if st.button("Refresh Liquid Universe", width="stretch", disabled=not can_trade or not selected_symbols):
+    if st.button("Refresh Liquid Universe", width="stretch", disabled=not can_trade or not selected_symbols or news_only_mode):
         result = service.refresh_universe(selected_symbols)
         _audit_manual_operation(
             service.repository,
@@ -868,7 +876,7 @@ with st.sidebar:
         st.session_state["last_universe_refresh"] = result.__dict__
         st.rerun()
 
-    if st.button("Repair Missing Candles", width="stretch", disabled=not can_trade or not selected_symbols):
+    if st.button("Repair Missing Candles", width="stretch", disabled=not can_trade or not selected_symbols or news_only_mode):
         result = service.repair_missing_candles(selected_symbols)
         _audit_manual_operation(
             service.repository,
@@ -1008,8 +1016,9 @@ for state_key, title in [
         with st.expander(title, expanded=True):
             st.json(st.session_state[state_key])
 
-tab_overview, tab_trades, tab_market_grp, tab_system, tab_admin = st.tabs(
+tab_news, tab_overview, tab_trades, tab_market_grp, tab_system, tab_admin = st.tabs(
     [
+        "News",
         "Overview",
         "Trades",
         "Market",
@@ -1030,6 +1039,78 @@ with tab_system:
     sub_providers, sub_decisions, sub_readiness = st.tabs(
         ["Providers & Quality", "Decisions & Audit", "Live Readiness"]
     )
+
+with tab_news:
+    st.subheader("News Opportunities")
+    st.caption(
+        "Symbols ranked by recent Alpha Vantage news coverage, sentiment, relevance and "
+        "source confidence. News-only mode surfaces opportunities for review \u2014 it places no trades."
+    )
+
+    _news_opps = [
+        r for r in snapshot["scanner_results"]
+        if r.get("scanner_name") == NEWS_SCREENER_NAME
+    ]
+
+    def _opp_payload(row: dict[str, Any]) -> dict[str, Any]:
+        payload = row.get("payload")
+        return payload if isinstance(payload, dict) else {}
+
+    _news_kpi = st.columns(4)
+    _news_kpi[0].metric("Ranked symbols", len(_news_opps))
+    _news_kpi[1].metric(
+        "Bullish", sum(1 for r in _news_opps if _opp_payload(r).get("direction") == "bullish")
+    )
+    _news_kpi[2].metric(
+        "Bearish", sum(1 for r in _news_opps if _opp_payload(r).get("direction") == "bearish")
+    )
+    _news_kpi[3].metric(
+        "Headlines stored",
+        snapshot["counts"].get("clean_news", len(snapshot["clean_news"])),
+    )
+
+    _section("Top news-ranked opportunities")
+    if _news_opps:
+        _opp_rows = []
+        for r in _news_opps:
+            payload = _opp_payload(r)
+            _opp_rows.append(
+                {
+                    "Symbol": r["symbol"],
+                    "Score": r["score"],
+                    "Direction": payload.get("direction"),
+                    "Articles": payload.get("news_count"),
+                    "Avg sentiment": payload.get("avg_sentiment"),
+                    "Avg relevance": payload.get("avg_relevance"),
+                    "Avg confidence": payload.get("avg_confidence"),
+                    "Rumor ratio": payload.get("rumor_ratio"),
+                    "Updated": r["source_timestamp"],
+                }
+            )
+        _opp_df = pd.DataFrame(_opp_rows).sort_values("Score", ascending=False)
+        st.dataframe(_opp_df, width="stretch", height=min(520, 80 + 35 * len(_opp_rows)))
+    else:
+        st.info(
+            "No news-ranked opportunities yet. Collect news from the sidebar, then run the "
+            "'news_screener' scheduler job to rank symbols by their recent coverage."
+        )
+
+    _section("Latest headlines")
+    _headline_rows = []
+    for row in snapshot["clean_news"]:
+        _headline_rows.append(
+            {
+                "Symbol": row["symbol"],
+                "Headline": row["headline"],
+                "Sentiment": row.get("sentiment_score"),
+                "Relevance": row.get("relevance_score"),
+                "Confidence": row["source_confidence_score"],
+                "Rumor": row["rumor_flag"],
+                "Duplicate": row["duplicate_headline"],
+                "When": row["source_timestamp"],
+            }
+        )
+    _table(_headline_rows, label="headline", height=420)
 
 with tab_overview:
     st.subheader("Command Center")
@@ -1233,133 +1314,141 @@ with sub_active:
     _table(_act_sig_rows, label="active signal", height=300)
 
 with sub_market:
-    st.caption("Live board, performance vs the S&P 500, and intraday price action from collected candles.")
+    if news_only_mode:
+        st.caption("News-only mode is ON — live price charts and the market board are disabled.")
+        st.info(
+            "Price charts, the live market board, and SPY benchmarking are hidden "
+            "because the platform is running in news-only mode. See the News tab "
+            "for news-ranked opportunities."
+        )
+    else:
+        st.caption("Live board, performance vs the S&P 500, and intraday price action from collected candles.")
 
-    _mkt_symbols = list(snapshot["active_symbols"])[:50]
-    _section("Live market board")
-    if _mkt_symbols:
-        _board_prices = {s: _price_history(s) for s in _mkt_symbols}
-        _board_rows = []
-        for _s in _mkt_symbols:
-            _f = _board_prices[_s]
-            _cur = _series_close(_f)
-            _prev = _series_close(_f, -2)
-            _chg = ((_cur - _prev) / _prev * 100.0) if (_cur is not None and _prev) else None
-            _board_rows.append(
-                {"Symbol": _s, "Price": _cur, "Last bar %": _chg, "Volume": _latest_volume(_f)}
-            )
-        _board_df = pd.DataFrame(_board_rows)
-        if _board_df["Price"].notna().any():
-            st.dataframe(
-                _style_board(_board_df),
-                width="stretch",
-                height=min(420, 60 + 35 * len(_board_rows)),
-            )
-            _chg_rows = sorted(
-                [r for r in _board_rows if r["Last bar %"] is not None],
-                key=lambda r: r["Last bar %"],
-            )
-            if _chg_rows:
-                _board_fig = go.Figure(
-                    go.Bar(
-                        x=[r["Last bar %"] for r in _chg_rows],
-                        y=[r["Symbol"] for r in _chg_rows],
-                        orientation="h",
-                        marker_color=[
-                            "#29d398" if r["Last bar %"] >= 0 else "#f87171" for r in _chg_rows
-                        ],
+        _mkt_symbols = list(snapshot["active_symbols"])[:50]
+        _section("Live market board")
+        if _mkt_symbols:
+            _board_prices = {s: _price_history(s) for s in _mkt_symbols}
+            _board_rows = []
+            for _s in _mkt_symbols:
+                _f = _board_prices[_s]
+                _cur = _series_close(_f)
+                _prev = _series_close(_f, -2)
+                _chg = ((_cur - _prev) / _prev * 100.0) if (_cur is not None and _prev) else None
+                _board_rows.append(
+                    {"Symbol": _s, "Price": _cur, "Last bar %": _chg, "Volume": _latest_volume(_f)}
+                )
+            _board_df = pd.DataFrame(_board_rows)
+            if _board_df["Price"].notna().any():
+                st.dataframe(
+                    _style_board(_board_df),
+                    width="stretch",
+                    height=min(420, 60 + 35 * len(_board_rows)),
+                )
+                _chg_rows = sorted(
+                    [r for r in _board_rows if r["Last bar %"] is not None],
+                    key=lambda r: r["Last bar %"],
+                )
+                if _chg_rows:
+                    _board_fig = go.Figure(
+                        go.Bar(
+                            x=[r["Last bar %"] for r in _chg_rows],
+                            y=[r["Symbol"] for r in _chg_rows],
+                            orientation="h",
+                            marker_color=[
+                                "#29d398" if r["Last bar %"] >= 0 else "#f87171" for r in _chg_rows
+                            ],
+                        )
+                    )
+                    st.plotly_chart(
+                        _style_fig(_board_fig, height=max(220, 26 * len(_chg_rows))),
+                        width="stretch",
+                        config={"displayModeBar": False},
+                    )
+            else:
+                st.info("No price data collected yet. Use 'Collect Real Market Data' in the sidebar.")
+        else:
+            st.info("No active symbols. Add symbols in the sidebar, then collect market data.")
+
+        _section("Performance vs S&P 500 (SPY)")
+        _cmp_choices = _mkt_symbols or ["AAPL"]
+        _cmp_symbol = st.selectbox("Symbol to chart", _cmp_choices, key="market_cmp_symbol")
+        _sym_frame = _price_history(_cmp_symbol)
+        if _sym_frame.empty:
+            st.info(f"No candle data for {_cmp_symbol} yet. Collect market data for it first.")
+        else:
+            def _rebased(frame: pd.DataFrame) -> pd.DataFrame:
+                closes = frame[["timestamp", "close"]].dropna()
+                if closes.empty:
+                    return pd.DataFrame()
+                base = closes["close"].iloc[0]
+                if not base:
+                    return pd.DataFrame()
+                closes = closes.copy()
+                closes["rebased"] = closes["close"] / base * 100.0
+                return closes
+
+            _sym_re = _rebased(_sym_frame)
+            if _sym_re.empty:
+                st.info(f"Not enough valid price data to chart {_cmp_symbol}.")
+            else:
+                _cmp_fig = go.Figure()
+                _cmp_fig.add_trace(
+                    go.Scatter(
+                        x=_sym_re["timestamp"],
+                        y=_sym_re["rebased"],
+                        mode="lines",
+                        line=dict(color="#4c8dff", width=2),
+                        name=_cmp_symbol,
                     )
                 )
+                _spy_frame = _price_history("SPY")
+                if _cmp_symbol != "SPY" and not _spy_frame.empty:
+                    _spy_re = _rebased(_spy_frame)
+                    if not _spy_re.empty:
+                        _cmp_fig.add_trace(
+                            go.Scatter(
+                                x=_spy_re["timestamp"],
+                                y=_spy_re["rebased"],
+                                mode="lines",
+                                line=dict(color="#8a98b0", width=1.6, dash="dot"),
+                                name="SPY (S&P 500)",
+                            )
+                        )
+                        st.caption("Both series rebased to 100 at the start of the window for a like-for-like comparison.")
+                elif _cmp_symbol != "SPY":
+                    st.caption("Collect candles for SPY to overlay the S&P 500 benchmark.")
                 st.plotly_chart(
-                    _style_fig(_board_fig, height=max(220, 26 * len(_chg_rows))),
+                    _style_fig(_cmp_fig, height=320),
                     width="stretch",
                     config={"displayModeBar": False},
                 )
-        else:
-            st.info("No price data collected yet. Use 'Collect Real Market Data' in the sidebar.")
-    else:
-        st.info("No active symbols. Add symbols in the sidebar, then collect market data.")
 
-    _section("Performance vs S&P 500 (SPY)")
-    _cmp_choices = _mkt_symbols or ["AAPL"]
-    _cmp_symbol = st.selectbox("Symbol to chart", _cmp_choices, key="market_cmp_symbol")
-    _sym_frame = _price_history(_cmp_symbol)
-    if _sym_frame.empty:
-        st.info(f"No candle data for {_cmp_symbol} yet. Collect market data for it first.")
-    else:
-        def _rebased(frame: pd.DataFrame) -> pd.DataFrame:
-            closes = frame[["timestamp", "close"]].dropna()
-            if closes.empty:
-                return pd.DataFrame()
-            base = closes["close"].iloc[0]
-            if not base:
-                return pd.DataFrame()
-            closes = closes.copy()
-            closes["rebased"] = closes["close"] / base * 100.0
-            return closes
-
-        _sym_re = _rebased(_sym_frame)
-        if _sym_re.empty:
-            st.info(f"Not enough valid price data to chart {_cmp_symbol}.")
-        else:
-            _cmp_fig = go.Figure()
-            _cmp_fig.add_trace(
-                go.Scatter(
-                    x=_sym_re["timestamp"],
-                    y=_sym_re["rebased"],
-                    mode="lines",
-                    line=dict(color="#4c8dff", width=2),
-                    name=_cmp_symbol,
-                )
-            )
-            _spy_frame = _price_history("SPY")
-            if _cmp_symbol != "SPY" and not _spy_frame.empty:
-                _spy_re = _rebased(_spy_frame)
-                if not _spy_re.empty:
-                    _cmp_fig.add_trace(
-                        go.Scatter(
-                            x=_spy_re["timestamp"],
-                            y=_spy_re["rebased"],
-                            mode="lines",
-                            line=dict(color="#8a98b0", width=1.6, dash="dot"),
-                            name="SPY (S&P 500)",
-                        )
-                    )
-                    st.caption("Both series rebased to 100 at the start of the window for a like-for-like comparison.")
-            elif _cmp_symbol != "SPY":
-                st.caption("Collect candles for SPY to overlay the S&P 500 benchmark.")
-            st.plotly_chart(
-                _style_fig(_cmp_fig, height=320),
-                width="stretch",
-                config={"displayModeBar": False},
-            )
-
-            _section(f"{_cmp_symbol} price & VWAP")
-            _price_fig = go.Figure()
-            _price_fig.add_trace(
-                go.Scatter(
-                    x=_sym_frame["timestamp"],
-                    y=_sym_frame["close"],
-                    mode="lines",
-                    line=dict(color="#4c8dff", width=2),
-                    name="Close",
-                )
-            )
-            if "vwap" in _sym_frame.columns and _sym_frame["vwap"].notna().any():
+                _section(f"{_cmp_symbol} price & VWAP")
+                _price_fig = go.Figure()
                 _price_fig.add_trace(
                     go.Scatter(
                         x=_sym_frame["timestamp"],
-                        y=_sym_frame["vwap"],
+                        y=_sym_frame["close"],
                         mode="lines",
-                        line=dict(color="#f5b14c", width=1.4, dash="dot"),
-                        name="VWAP",
+                        line=dict(color="#4c8dff", width=2),
+                        name="Close",
                     )
                 )
-            st.plotly_chart(
-                _style_fig(_price_fig, height=300),
-                width="stretch",
-                config={"displayModeBar": False},
-            )
+                if "vwap" in _sym_frame.columns and _sym_frame["vwap"].notna().any():
+                    _price_fig.add_trace(
+                        go.Scatter(
+                            x=_sym_frame["timestamp"],
+                            y=_sym_frame["vwap"],
+                            mode="lines",
+                            line=dict(color="#f5b14c", width=1.4, dash="dot"),
+                            name="VWAP",
+                        )
+                    )
+                st.plotly_chart(
+                    _style_fig(_price_fig, height=300),
+                    width="stretch",
+                    config={"displayModeBar": False},
+                )
 
     st.divider()
     st.subheader("Real Market Data")

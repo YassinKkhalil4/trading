@@ -77,7 +77,7 @@ def test_all_path_skips_jobs_within_cadence_but_runs_due_jobs():
     _store_run(repo, "market_data", now - timedelta(days=1))
     # regime has never run -> must run.
 
-    runner = _RecordingRunner(repo, settings=Settings())
+    runner = _RecordingRunner(repo, settings=Settings(news_only_mode=False))
     result = runner.run_once("all")
 
     assert "news" not in runner.dispatched
@@ -89,7 +89,7 @@ def test_all_path_skips_jobs_within_cadence_but_runs_due_jobs():
 
 def test_all_path_runs_everything_on_first_cycle():
     repo = _repo()
-    runner = _RecordingRunner(repo, settings=Settings())
+    runner = _RecordingRunner(repo, settings=Settings(news_only_mode=False))
 
     runner.run_once("all")
 

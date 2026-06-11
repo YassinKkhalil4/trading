@@ -266,6 +266,8 @@ class CleanNews(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     duplicate_headline: Mapped[bool] = mapped_column(Boolean, default=False)
     rumor_flag: Mapped[bool] = mapped_column(Boolean, default=False)
     reason: Mapped[str | None] = mapped_column(Text)
+    sentiment_score: Mapped[float | None] = mapped_column(Float)
+    relevance_score: Mapped[float | None] = mapped_column(Float)
 
 
 class RawFiling(IdMixin, TimestampMixin, SourceTimestampMixin, Base):

@@ -1920,6 +1920,8 @@ class TradingRepository:
         rumor_flag: bool,
         reason: str,
         source_timestamp: datetime,
+        sentiment_score: float | None = None,
+        relevance_score: float | None = None,
     ) -> models.CleanNews:
         existing = self.session.scalar(
             select(models.CleanNews).where(
@@ -1943,6 +1945,8 @@ class TradingRepository:
             duplicate_headline=duplicate_headline,
             rumor_flag=rumor_flag,
             reason=reason,
+            sentiment_score=sentiment_score,
+            relevance_score=relevance_score,
             source_timestamp=source_timestamp,
         )
         self.session.add(row)

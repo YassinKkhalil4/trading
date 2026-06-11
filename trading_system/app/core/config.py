@@ -95,7 +95,7 @@ class Settings:
     dashboard_refresh_seconds: int = 15
     news_rss_feeds: str = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
     alpha_vantage_api_key: str = ""
-    alpha_vantage_news_limit: int = 50
+    alpha_vantage_news_limit: int = 1000
     sec_user_agent: str = "AutonomousTradingIntelligence contact@example.com"
     sec_requests_per_second: float = 5.0
     scheduler_market_data_seconds: int = 60
@@ -112,6 +112,12 @@ class Settings:
     worker_sleep_seconds: int = 5
     scheduler_lock_ttl_seconds: int = 300
     scheduler_use_master_universe_refresh: bool = True
+    # News-only mode: scan ALL US stocks & ETFs purely from Alpha Vantage news.
+    # When True the scheduler skips every price/market-data job (market data,
+    # features, price scanners, candle repair, regime, SEC) and the universe
+    # refresh activates all tradable assets without a price-based liquidity cap.
+    news_only_mode: bool = True
+    scheduler_news_screener_seconds: int = 300
 
     # Opportunity ranking engine. The score is a weighted average of the eight
     # components below, so it always lands on a 0-100 scale regardless of the
@@ -260,7 +266,7 @@ def get_settings() -> Settings:
             "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US",
         ),
         alpha_vantage_api_key=os.getenv("ALPHA_VANTAGE_API_KEY", ""),
-        alpha_vantage_news_limit=_env_int("ALPHA_VANTAGE_NEWS_LIMIT", 50),
+        alpha_vantage_news_limit=_env_int("ALPHA_VANTAGE_NEWS_LIMIT", 1000),
         sec_user_agent=os.getenv("SEC_USER_AGENT", "AutonomousTradingIntelligence contact@example.com"),
         sec_requests_per_second=_env_float("SEC_REQUESTS_PER_SECOND", 5.0),
         scheduler_market_data_seconds=_env_int("SCHEDULER_MARKET_DATA_SECONDS", 60),
@@ -277,6 +283,8 @@ def get_settings() -> Settings:
         worker_sleep_seconds=_env_int("WORKER_SLEEP_SECONDS", 5),
         scheduler_lock_ttl_seconds=_env_int("SCHEDULER_LOCK_TTL_SECONDS", 300),
         scheduler_use_master_universe_refresh=_env_bool("SCHEDULER_USE_MASTER_UNIVERSE_REFRESH", True),
+        news_only_mode=_env_bool("NEWS_ONLY_MODE", True),
+        scheduler_news_screener_seconds=_env_int("SCHEDULER_NEWS_SCREENER_SECONDS", 300),
         enable_ranking_signal_path=_env_bool("ENABLE_RANKING_SIGNAL_PATH", False),
         ranking_weight_scanner=_env_float("RANKING_WEIGHT_SCANNER", 25.0),
         ranking_weight_freshness=_env_float("RANKING_WEIGHT_FRESHNESS", 10.0),
