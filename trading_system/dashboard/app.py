@@ -381,9 +381,7 @@ def _enrich_positions(
         market_value = current * quantity if current is not None else None
         unrealized = (market_value - cost_basis) if market_value is not None else None
         unrealized_pct = (
-            unrealized / abs(cost_basis) * 100.0
-            if unrealized is not None and cost_basis
-            else None
+            unrealized / abs(cost_basis) * 100.0 if unrealized is not None and cost_basis else None
         )
         rows.append(
             {
@@ -678,7 +676,11 @@ with st.sidebar:
     )
     selected_symbols = [item.strip().upper() for item in symbols_csv.split(",") if item.strip()]
 
-    if st.button("Collect Real Market Data", width="stretch", disabled=not can_trade or not selected_symbols or news_only_mode):
+    if st.button(
+        "Collect Real Market Data",
+        width="stretch",
+        disabled=not can_trade or not selected_symbols or news_only_mode,
+    ):
         results = []
         for symbol in selected_symbols:
             reason = "Activated for dashboard collection."
@@ -704,7 +706,11 @@ with st.sidebar:
         st.rerun()
 
     collect_before_scan = st.checkbox("Collect before scanning", value=True)
-    if st.button("Run VWAP Scan Cycle", width="stretch", disabled=not can_trade or not selected_symbols or news_only_mode):
+    if st.button(
+        "Run VWAP Scan Cycle",
+        width="stretch",
+        disabled=not can_trade or not selected_symbols or news_only_mode,
+    ):
         for symbol in selected_symbols:
             reason = "Activated for dashboard scan."
             row = service.repository.add_or_activate_symbol(symbol, reason=reason)
@@ -752,7 +758,9 @@ with st.sidebar:
         st.session_state["last_fill_reconciliation"] = result.__dict__
         st.rerun()
 
-    if st.button("Run Alpaca Stream Batch", width="stretch", disabled=not can_trade or not selected_symbols):
+    if st.button(
+        "Run Alpaca Stream Batch", width="stretch", disabled=not can_trade or not selected_symbols
+    ):
         result = asyncio.run(
             service.run_alpaca_market_data_stream(symbols=selected_symbols, max_messages=25)
         )
@@ -782,7 +790,9 @@ with st.sidebar:
         st.session_state["last_news_collect"] = result.__dict__
         st.rerun()
 
-    if st.button("Collect SEC Filings", width="stretch", disabled=not can_trade or not selected_symbols):
+    if st.button(
+        "Collect SEC Filings", width="stretch", disabled=not can_trade or not selected_symbols
+    ):
         result = service.collect_sec_filings(selected_symbols, max_filings_per_symbol=10)
         _audit_manual_operation(
             service.repository,
@@ -795,7 +805,11 @@ with st.sidebar:
         st.session_state["last_sec_collect"] = result.__dict__
         st.rerun()
 
-    if st.button("Run Features + Regime + Catalysts", width="stretch", disabled=not can_trade or not selected_symbols):
+    if st.button(
+        "Run Features + Regime + Catalysts",
+        width="stretch",
+        disabled=not can_trade or not selected_symbols,
+    ):
         feature_result = service.run_features(selected_symbols)
         regime_result = service.run_market_regime()
         catalyst_result = service.run_catalysts(selected_symbols)
@@ -817,7 +831,11 @@ with st.sidebar:
         st.session_state["last_catalyst_result"] = catalyst_result.__dict__
         st.rerun()
 
-    if st.button("Run Production Scanners", width="stretch", disabled=not can_trade or not selected_symbols or news_only_mode):
+    if st.button(
+        "Run Production Scanners",
+        width="stretch",
+        disabled=not can_trade or not selected_symbols or news_only_mode,
+    ):
         result = service.run_production_scanners(selected_symbols)
         _audit_manual_operation(
             service.repository,
@@ -863,7 +881,11 @@ with st.sidebar:
         st.session_state["last_provider_health"] = result.__dict__
         st.rerun()
 
-    if st.button("Refresh Liquid Universe", width="stretch", disabled=not can_trade or not selected_symbols or news_only_mode):
+    if st.button(
+        "Refresh Liquid Universe",
+        width="stretch",
+        disabled=not can_trade or not selected_symbols or news_only_mode,
+    ):
         result = service.refresh_universe(selected_symbols)
         _audit_manual_operation(
             service.repository,
@@ -876,7 +898,11 @@ with st.sidebar:
         st.session_state["last_universe_refresh"] = result.__dict__
         st.rerun()
 
-    if st.button("Repair Missing Candles", width="stretch", disabled=not can_trade or not selected_symbols or news_only_mode):
+    if st.button(
+        "Repair Missing Candles",
+        width="stretch",
+        disabled=not can_trade or not selected_symbols or news_only_mode,
+    ):
         result = service.repair_missing_candles(selected_symbols)
         _audit_manual_operation(
             service.repository,
@@ -1016,9 +1042,10 @@ for state_key, title in [
         with st.expander(title, expanded=True):
             st.json(st.session_state[state_key])
 
-tab_news, tab_overview, tab_trades, tab_market_grp, tab_system, tab_admin = st.tabs(
+tab_news, tab_alpha, tab_overview, tab_trades, tab_market_grp, tab_system, tab_admin = st.tabs(
     [
         "News",
+        "Alpha Command Center",
         "Overview",
         "Trades",
         "Market",
@@ -1048,8 +1075,7 @@ with tab_news:
     )
 
     _news_opps = [
-        r for r in snapshot["scanner_results"]
-        if r.get("scanner_name") == NEWS_SCREENER_NAME
+        r for r in snapshot["scanner_results"] if r.get("scanner_name") == NEWS_SCREENER_NAME
     ]
 
     def _opp_payload(row: dict[str, Any]) -> dict[str, Any]:
@@ -1112,6 +1138,87 @@ with tab_news:
         )
     _table(_headline_rows, label="headline", height=420)
 
+with tab_alpha:
+    st.subheader("Alpha Command Center")
+    st.caption(
+        "Event-driven U.S. equity candidates ranked by catalyst, volume, price reaction, "
+        "structure, relative strength, liquidity, regime, and historical expectancy."
+    )
+    alpha_scores = snapshot.get("opportunity_scores", [])
+    alpha_rejections = snapshot.get("alpha_rejections", [])
+    sector_strength = snapshot.get("sector_strength", [])
+    symbol_strength = snapshot.get("symbol_relative_strength", [])
+    expectancy_rows = snapshot.get("expectancy_snapshots", [])
+    pit_universe_rows = snapshot.get("point_in_time_universe", [])
+    short_interest_rows = snapshot.get("short_interest", [])
+    options_rows = snapshot.get("options_intelligence", [])
+    multi_bagger_rows = snapshot.get("multi_bagger_candidates", [])
+
+    alpha_cols = st.columns(4)
+    alpha_cols[0].metric("Alpha candidates", len(alpha_scores))
+    alpha_cols[1].metric("A/A+", sum(1 for row in alpha_scores if row.get("grade") in {"A", "A+"}))
+    alpha_cols[2].metric("Rejections", len(alpha_rejections))
+    alpha_cols[3].metric("Leadership rows", len(symbol_strength))
+
+    _section("Top alpha candidates")
+    candidate_rows = []
+    for row in alpha_scores:
+        candidate_rows.append(
+            {
+                "Symbol": row.get("symbol"),
+                "Score": row.get("score"),
+                "Grade": row.get("grade"),
+                "Strategy": row.get("strategy_id"),
+                "Catalyst": row.get("catalyst_type"),
+                "Expected R": row.get("expected_r"),
+                "Win rate": row.get("historical_win_rate"),
+                "Sample": row.get("expectancy_sample_size"),
+                "Confidence": row.get("confidence_level"),
+                "Risk x": row.get("suggested_risk_multiplier"),
+                "Market regime": row.get("market_regime"),
+                "Sector regime": row.get("sector_regime"),
+                "Reason": row.get("explanation"),
+                "Scanner": row.get("scanner_result_id"),
+                "Signal": row.get("signal_id"),
+            }
+        )
+    _table(candidate_rows, label="alpha candidate", height=420)
+
+    _section("Sector leadership")
+    st.caption(
+        "Uses actual sector ETF vs SPY analytics when ETF candles are available; otherwise falls back to member-inferred leadership."
+    )
+    _table(sector_strength, label="sector leadership", height=260)
+    _table(symbol_strength, label="symbol leadership", height=360)
+
+    _section("Point-in-time universe / survivorship-bias control")
+    _table(pit_universe_rows, label="point-in-time universe membership", height=260)
+
+    _section("Short interest and options intelligence")
+    st.caption(
+        "Short squeeze/reversal candidates should not be traded blind: review short %, days-to-cover, borrow fee, utilization, float, IV rank/percentile, open interest, gamma/delta and expected move."
+    )
+    _table(short_interest_rows, label="short interest snapshot", height=260)
+    _table(options_rows, label="options intelligence snapshot", height=260)
+
+    _section("Multi-bagger / long-shot candidates")
+    st.caption(
+        "Separate long-horizon narrative/growth/flows/accumulation scorer for 3x/5x/10x watchlists; not an intraday trade signal."
+    )
+    _table(multi_bagger_rows, label="multi-bagger candidate", height=320)
+
+    _section("Expectancy by strategy/setup")
+    expectancy_strategy = [
+        row
+        for row in expectancy_rows
+        if row.get("bucket_type") in {"by_strategy", "by_catalyst_type", "by_time_of_day"}
+    ]
+    _table(expectancy_strategy, label="expectancy bucket", height=360)
+
+    _section("Recent alpha rejections / false positives")
+    _table(alpha_rejections, label="alpha rejection", height=360)
+
+
 with tab_overview:
     st.subheader("Command Center")
     st.caption("Live snapshot of the portfolio, market regime, and system activity.")
@@ -1136,7 +1243,9 @@ with tab_overview:
     _ov_prices = {s: _price_history(s) for s in _ov_symbols}
     _ov_enriched = _enrich_positions(_ov_positions, _ov_prices)
     _ov_total_value = sum(r["market_value"] for r in _ov_enriched if r["market_value"] is not None)
-    _ov_total_pnl = sum(r["unrealized_pnl"] for r in _ov_enriched if r["unrealized_pnl"] is not None)
+    _ov_total_pnl = sum(
+        r["unrealized_pnl"] for r in _ov_enriched if r["unrealized_pnl"] is not None
+    )
 
     _ov_row1 = st.columns(4)
     _ov_row1[0].metric("Equity", _fmt_money(_acct_value("equity")), delta=_acct_delta("equity"))
@@ -1183,7 +1292,9 @@ with tab_overview:
                 config={"displayModeBar": False},
             )
         else:
-            st.info("No broker equity history yet. Use 'Sync Alpaca Paper' in the sidebar to populate it.")
+            st.info(
+                "No broker equity history yet. Use 'Sync Alpaca Paper' in the sidebar to populate it."
+            )
     else:
         st.info("No broker account snapshots yet. Use 'Sync Alpaca Paper' in the sidebar.")
 
@@ -1246,7 +1357,9 @@ with sub_active:
             for r in _act_enriched
             if r["average_price"] is not None
         )
-        _act_pnl = sum(r["unrealized_pnl"] for r in _act_enriched if r["unrealized_pnl"] is not None)
+        _act_pnl = sum(
+            r["unrealized_pnl"] for r in _act_enriched if r["unrealized_pnl"] is not None
+        )
         _act_winners = sum(1 for r in _act_enriched if (r["unrealized_pnl"] or 0) > 0)
         _act_k = st.columns(4)
         _act_k[0].metric("Open positions", len(_act_enriched))
@@ -1256,7 +1369,9 @@ with sub_active:
             _fmt_money(_act_pnl),
             delta=_fmt_pct(_act_pnl / _act_cost * 100.0) if _act_cost else None,
         )
-        _act_k[3].metric("Winners / losers", f"{_act_winners} / {len(_act_enriched) - _act_winners}")
+        _act_k[3].metric(
+            "Winners / losers", f"{_act_winners} / {len(_act_enriched) - _act_winners}"
+        )
 
         _section("Open positions")
         st.caption("Current price and P&L use the latest collected candle for each symbol.")
@@ -1322,7 +1437,9 @@ with sub_market:
             "for news-ranked opportunities."
         )
     else:
-        st.caption("Live board, performance vs the S&P 500, and intraday price action from collected candles.")
+        st.caption(
+            "Live board, performance vs the S&P 500, and intraday price action from collected candles."
+        )
 
         _mkt_symbols = list(snapshot["active_symbols"])[:50]
         _section("Live market board")
@@ -1365,7 +1482,9 @@ with sub_market:
                         config={"displayModeBar": False},
                     )
             else:
-                st.info("No price data collected yet. Use 'Collect Real Market Data' in the sidebar.")
+                st.info(
+                    "No price data collected yet. Use 'Collect Real Market Data' in the sidebar."
+                )
         else:
             st.info("No active symbols. Add symbols in the sidebar, then collect market data.")
 
@@ -1376,6 +1495,7 @@ with sub_market:
         if _sym_frame.empty:
             st.info(f"No candle data for {_cmp_symbol} yet. Collect market data for it first.")
         else:
+
             def _rebased(frame: pd.DataFrame) -> pd.DataFrame:
                 closes = frame[["timestamp", "close"]].dropna()
                 if closes.empty:
@@ -1414,7 +1534,9 @@ with sub_market:
                                 name="SPY (S&P 500)",
                             )
                         )
-                        st.caption("Both series rebased to 100 at the start of the window for a like-for-like comparison.")
+                        st.caption(
+                            "Both series rebased to 100 at the start of the window for a like-for-like comparison."
+                        )
                 elif _cmp_symbol != "SPY":
                     st.caption("Collect candles for SPY to overlay the S&P 500 benchmark.")
                 st.plotly_chart(
@@ -1452,7 +1574,9 @@ with sub_market:
 
     st.divider()
     st.subheader("Real Market Data")
-    st.caption("Rows are persisted from collector calls. Empty tables mean no data has been collected yet.")
+    st.caption(
+        "Rows are persisted from collector calls. Empty tables mean no data has been collected yet."
+    )
     market_cols = st.columns([1, 1])
     with market_cols[0]:
         _section("Latest clean candles")
@@ -1681,23 +1805,31 @@ with sub_signals:
 
 with sub_risk:
     st.subheader("Risk And Execution")
-    st.caption("Paper submission requires `ENVIRONMENT_MODE=paper`; otherwise the order is blocked and logged.")
+    st.caption(
+        "Paper submission requires `ENVIRONMENT_MODE=paper`; otherwise the order is blocked and logged."
+    )
     signals = snapshot["signals"]
     signal_options = {
         f"{row['symbol']} | {row['strategy_id']} | {row['created_at']} | {row['id'][:8]}": row["id"]
         for row in signals
     }
     if signal_options:
-        selected_label = st.selectbox("Signal to risk-check / paper-submit", list(signal_options.keys()))
+        selected_label = st.selectbox(
+            "Signal to risk-check / paper-submit", list(signal_options.keys())
+        )
         risk_cols = st.columns(4)
         account_equity = risk_cols[0].number_input("Account equity", value=100_000.0, min_value=1.0)
         open_positions = risk_cols[1].number_input("Open positions", value=0, min_value=0)
         trades_today = risk_cols[2].number_input("Trades today", value=0, min_value=0)
-        strategy_trades_today = risk_cols[3].number_input("Strategy trades today", value=0, min_value=0)
+        strategy_trades_today = risk_cols[3].number_input(
+            "Strategy trades today", value=0, min_value=0
+        )
         risk_cols_2 = st.columns(4)
         daily_loss_pct = risk_cols_2[0].number_input("Daily loss %", value=0.0, min_value=0.0)
         weekly_loss_pct = risk_cols_2[1].number_input("Weekly loss %", value=0.0, min_value=0.0)
-        sector_exposure_pct = risk_cols_2[2].number_input("Sector exposure %", value=0.0, min_value=0.0)
+        sector_exposure_pct = risk_cols_2[2].number_input(
+            "Sector exposure %", value=0.0, min_value=0.0
+        )
         internal_quantity = risk_cols_2[3].number_input("Internal position qty", value=0.0)
         broker_quantity = st.number_input("Broker position qty", value=0.0)
 
@@ -1776,7 +1908,9 @@ with sub_journal:
                     actual_exit=actual_exit or None,
                     pnl=pnl,
                     human_notes=human_notes or None,
-                    mistake_tags=[item.strip() for item in mistake_tags_raw.split(",") if item.strip()],
+                    mistake_tags=[
+                        item.strip() for item in mistake_tags_raw.split(",") if item.strip()
+                    ],
                     change_reason="Manual dashboard journal entry.",
                 )
                 st.success("Journal entry recorded.")
@@ -1828,7 +1962,9 @@ with sub_providers:
 
 with sub_decisions:
     st.subheader("Decision Logs")
-    st.caption("Scanner, signal, risk, execution, journal, and AI reasoning decisions are recorded here.")
+    st.caption(
+        "Scanner, signal, risk, execution, journal, and AI reasoning decisions are recorded here."
+    )
     _table(snapshot["decisions"], label="decision log", height=520)
 
     _section("Audit logs")
@@ -1836,7 +1972,9 @@ with sub_decisions:
 
 with sub_readiness:
     st.subheader("Live Readiness")
-    st.caption("Live execution is disabled by default and requires every readiness, approval, and gate check.")
+    st.caption(
+        "Live execution is disabled by default and requires every readiness, approval, and gate check."
+    )
     if can_admin:
         approval_cols = st.columns(2)
         with approval_cols[0]:
@@ -1884,7 +2022,9 @@ with sub_readiness:
             with st.form("live_approval_revoke_form", clear_on_submit=True):
                 _section("Revoke approval")
                 approval_ids = [row["id"] for row in active_approvals]
-                approval_id = st.selectbox("Active approval", approval_ids, disabled=not approval_ids)
+                approval_id = st.selectbox(
+                    "Active approval", approval_ids, disabled=not approval_ids
+                )
                 revoke_reason = st.text_area("Revocation reason")
                 submitted = st.form_submit_button(
                     "Revoke Live Approval",
@@ -1938,14 +2078,21 @@ with tab_admin:
                 _section("Create or update user")
                 admin_username = st.text_input("Username")
                 admin_password = st.text_input("Password", type="password")
-                admin_role = st.selectbox("Role", role_options, index=role_options.index(AdminRole.VIEWER.value))
+                admin_role = st.selectbox(
+                    "Role", role_options, index=role_options.index(AdminRole.VIEWER.value)
+                )
                 admin_reason = st.text_area("Reason")
                 submitted = st.form_submit_button(
                     "Save User",
-                    disabled=not admin_username.strip() or len(admin_password) < 12 or not admin_reason.strip(),
+                    disabled=not admin_username.strip()
+                    or len(admin_password) < 12
+                    or not admin_reason.strip(),
                 )
                 if submitted:
-                    if admin_username.strip() == principal.username and admin_role != AdminRole.ADMIN.value:
+                    if (
+                        admin_username.strip() == principal.username
+                        and admin_role != AdminRole.ADMIN.value
+                    ):
                         st.error("Admins cannot demote their own active session user.")
                     else:
                         row = service.repository.upsert_admin_user(
@@ -2004,7 +2151,11 @@ with tab_admin:
                             entity_type="admin_user",
                             entity_id=row.id,
                             reason=role_reason,
-                            payload={"username": row.username, "role": row.role, "source": "dashboard"},
+                            payload={
+                                "username": row.username,
+                                "role": row.role,
+                                "source": "dashboard",
+                            },
                         )
                         st.session_state["last_admin_user_action"] = {
                             "action": "role_changed",
@@ -2017,7 +2168,9 @@ with tab_admin:
         with state_cols[0]:
             with st.form("admin_user_active_form", clear_on_submit=True):
                 _section("Activate or deactivate")
-                active_username = st.selectbox("User", admin_usernames, key="admin_user_active", disabled=not admin_usernames)
+                active_username = st.selectbox(
+                    "User", admin_usernames, key="admin_user_active", disabled=not admin_usernames
+                )
                 is_active = st.checkbox("Active", value=True)
                 active_reason = st.text_area("Reason", key="admin_user_active_reason")
                 submitted = st.form_submit_button(
@@ -2062,7 +2215,9 @@ with tab_admin:
         with state_cols[1]:
             with st.form("admin_user_unlock_form", clear_on_submit=True):
                 _section("Unlock user")
-                unlock_username = st.selectbox("User", admin_usernames, key="admin_user_unlock", disabled=not admin_usernames)
+                unlock_username = st.selectbox(
+                    "User", admin_usernames, key="admin_user_unlock", disabled=not admin_usernames
+                )
                 unlock_reason = st.text_area("Reason", key="admin_user_unlock_reason")
                 submitted = st.form_submit_button(
                     "Clear Lockout",

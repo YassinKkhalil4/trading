@@ -38,6 +38,11 @@ def _record(
     r_multiple: float | None,
     exit_hour_utc: int,
     time_in_trade_seconds: float = 3600.0,
+    time_of_day_bucket: str = "OPEN",
+    relative_volume_bucket: str = "2X_TO_3X",
+    catalyst_type: str = "news_momentum",
+    spread_bucket: str = "5_TO_10_BPS",
+    volatility_bucket: str = "HIGH_50_TO_75",
 ) -> OutcomeRecord:
     exit_at = datetime(2026, 6, 1, exit_hour_utc, 0, tzinfo=UTC)
     entry_at = datetime(2026, 6, 1, max(0, exit_hour_utc - 1), 0, tzinfo=UTC)
@@ -55,6 +60,11 @@ def _record(
         pnl=pnl,
         r_multiple=r_multiple,
         time_in_trade_seconds=time_in_trade_seconds,
+        time_of_day_bucket=time_of_day_bucket,
+        relative_volume_bucket=relative_volume_bucket,
+        catalyst_type=catalyst_type,
+        spread_bucket=spread_bucket,
+        volatility_bucket=volatility_bucket,
     )
 
 
@@ -167,6 +177,50 @@ def test_match_widens_until_records_found():
 
     # No records at all -> explicit empty.
     assert ExpectancyView([]).match(strategy_id="X", symbol="Y").matched_on == "none"
+
+
+
+def test_summary_tracks_expectancy_by_context_buckets():
+    records = [
+        _record(
+            symbol="AAPL",
+            strategy_id="VWAP_RECLAIM",
+            sector="Technology",
+            regime="TRENDING",
+            pnl=100.0,
+            r_multiple=2.0,
+            exit_hour_utc=15,
+            time_of_day_bucket="OPEN",
+            relative_volume_bucket="2X_TO_3X",
+            catalyst_type="news_momentum",
+            spread_bucket="5_TO_10_BPS",
+            volatility_bucket="HIGH_50_TO_75",
+        ),
+        _record(
+            symbol="MSFT",
+            strategy_id="OPENING_RANGE_BREAKOUT",
+            sector="Technology",
+            regime="CHOPPY",
+            pnl=-50.0,
+            r_multiple=-1.0,
+            exit_hour_utc=16,
+            time_of_day_bucket="MID_MORNING",
+            relative_volume_bucket="1_5X_TO_2X",
+            catalyst_type="NO_CATALYST",
+            spread_bucket="10_TO_20_BPS",
+            volatility_bucket="MODERATE_25_TO_50",
+        ),
+    ]
+
+    summary = ExpectancyView(records).summary()
+
+    assert summary["by_strategy"]["VWAP_RECLAIM"].sample_size == 1
+    assert summary["by_time_of_day"]["OPEN"].expectancy == 100.0
+    assert summary["by_relative_volume_bucket"]["2X_TO_3X"].sample_size == 1
+    assert summary["by_catalyst_type"]["news_momentum"].sample_size == 1
+    assert summary["by_spread_bucket"]["10_TO_20_BPS"].expectancy == -50.0
+    assert summary["by_volatility_bucket"]["HIGH_50_TO_75"].sample_size == 1
+    assert summary["by_market_regime"]["TRENDING"].sample_size == 1
 
 
 def test_empty_stats_helper_matches_compute_on_empty():
@@ -286,6 +340,83 @@ def test_service_excludes_partial_exits_and_computes_r_from_fills():
     summary = view.summary()
     assert summary["overall"].sample_size == 1
     assert "AAPL" in summary["by_symbol"]
+
+
+
+def test_service_enriches_closed_trades_with_bucket_context_from_scanner_payloads():
+    repo = _repo()
+    repo.session.add(
+        models.SymbolUniverse(
+            symbol="AAPL",
+            sector="Technology",
+            source_timestamp=datetime(2026, 6, 1, 13, 0, tzinfo=UTC),
+        )
+    )
+    repo.session.add(
+        models.FeatureDaily(
+            symbol="AAPL",
+            feature_version="test",
+            volatility_score=62.0,
+            source_timestamp=datetime(2026, 6, 1, 13, 0, tzinfo=UTC),
+        )
+    )
+    catalyst = models.Catalyst(
+        symbol="AAPL",
+        catalyst_type="news_momentum",
+        materiality_score=75.0,
+        source_timestamp=datetime(2026, 6, 1, 13, 0, tzinfo=UTC),
+    )
+    repo.session.add(catalyst)
+    repo.session.flush()
+    repo.session.add(
+        models.ScannerResult(
+            scanner_name="VWAP_RECLAIM",
+            scanner_rule_version="test",
+            symbol="AAPL",
+            strategy_id="VWAP_RECLAIM",
+            accepted=True,
+            score=80.0,
+            payload={
+                "relative_volume": 2.4,
+                "spread_bps": 7.0,
+                "catalyst_id": catalyst.id,
+                "preflight": {"regime": {"market_regime": "TRENDING"}},
+            },
+            source_timestamp=datetime(2026, 6, 1, 13, 59, tzinfo=UTC),
+        )
+    )
+    _add_signal(repo, signal_id="sig-bucketed", symbol="AAPL", stop_loss=96.0)
+    _add_order_with_fill(
+        repo,
+        order_id="ord-bucketed-entry",
+        signal_id="sig-bucketed",
+        symbol="AAPL",
+        side="buy",
+        quantity=100.0,
+        price=100.0,
+        at=datetime(2026, 6, 1, 14, 0, tzinfo=UTC),
+    )
+    _add_order_with_fill(
+        repo,
+        order_id="ord-bucketed-exit",
+        signal_id="sig-bucketed",
+        symbol="AAPL",
+        side="sell",
+        quantity=100.0,
+        price=110.0,
+        at=datetime(2026, 6, 1, 15, 0, tzinfo=UTC),
+    )
+    repo.session.commit()
+
+    record = ExpectancyService(repo).load().records[0]
+
+    assert record.sector == "Technology"
+    assert record.regime == "TRENDING"
+    assert record.time_of_day_bucket == "OPEN"
+    assert record.relative_volume_bucket == "2X_TO_3X"
+    assert record.catalyst_type == "news_momentum"
+    assert record.spread_bucket == "5_TO_10_BPS"
+    assert record.volatility_bucket == "HIGH_50_TO_75"
 
 
 def test_service_returns_empty_when_no_trades():
