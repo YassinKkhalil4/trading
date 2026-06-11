@@ -31,6 +31,12 @@ class PortfolioState:
     kill_switch_active: bool = False
     broker_sync_ok: bool = True
     broker_sync_reason: str = "Broker/internal reconciliation is clean."
+    opportunity_score: float | None = None
+    opportunity_grade: str | None = None
+    expectancy_r: float | None = None
+    expectancy_sample_size: int = 0
+    recent_strategy_drawdown: float = 0.0
+    market_regime: str | None = None
 
 
 @dataclass(frozen=True)
@@ -40,6 +46,7 @@ class RiskDecision:
     risk_rule_version: str
     position_size: int = 0
     risk_amount: float = 0.0
+    risk_multiplier: float = 0.0
 
 
 class RiskEngine:
@@ -100,7 +107,10 @@ class RiskEngine:
         if risk_per_share <= 0:
             return self._reject(signal, "Invalid stop loss: risk per share must be positive.")
 
-        risk_amount = portfolio.account_equity * (self.settings.risk_per_trade_pct / 100)
+        risk_multiplier = self._adaptive_risk_multiplier(portfolio)
+        if risk_multiplier <= 0:
+            return self._reject(signal, "Opportunity score/expectancy does not allow risk allocation.")
+        risk_amount = portfolio.account_equity * (self.settings.risk_per_trade_pct / 100) * risk_multiplier
         position_size = int(risk_amount // risk_per_share)
         if position_size <= 0:
             return self._reject(signal, "Account risk amount is too small for this stop distance.")
@@ -111,6 +121,7 @@ class RiskEngine:
             risk_rule_version=RISK_RULE_VERSION,
             position_size=position_size,
             risk_amount=risk_amount,
+            risk_multiplier=risk_multiplier,
         )
         self.decision_logger.record_simple(
             DecisionType.RISK,
@@ -121,6 +132,43 @@ class RiskEngine:
             rule_version=RISK_RULE_VERSION,
         )
         return decision
+
+    def _adaptive_risk_multiplier(self, portfolio: PortfolioState) -> float:
+        if portfolio.expectancy_r is not None and portfolio.expectancy_r < 0:
+            return 0.0
+        grade = (portfolio.opportunity_grade or "").upper()
+        if grade == "A+":
+            multiplier = 1.0
+        elif grade == "A":
+            multiplier = 0.75
+        elif grade == "B":
+            multiplier = 0.5
+        elif grade == "C":
+            multiplier = 0.1 if self.settings.environment_mode == EnvironmentMode.PAPER else 0.0
+        elif portfolio.opportunity_score is not None:
+            if portfolio.opportunity_score >= 90:
+                multiplier = 1.0
+            elif portfolio.opportunity_score >= 80:
+                multiplier = 0.75
+            elif portfolio.opportunity_score >= 70:
+                multiplier = 0.5
+            elif portfolio.opportunity_score >= 60 and self.settings.environment_mode == EnvironmentMode.PAPER:
+                multiplier = 0.1
+            else:
+                multiplier = 0.0
+        else:
+            multiplier = 1.0
+
+        has_alpha_context = portfolio.opportunity_grade is not None or portfolio.opportunity_score is not None
+        if has_alpha_context and (portfolio.expectancy_r is None or portfolio.expectancy_sample_size < 20):
+            multiplier *= 0.5
+        if portfolio.recent_strategy_drawdown < -2.0:
+            multiplier *= 0.5
+        if portfolio.market_regime in {"BEAR_TREND", "RISK_OFF", "HIGH_VOLATILITY", "MACRO_EVENT_RISK"}:
+            multiplier *= 0.5
+        if portfolio.volatility_score is not None and portfolio.volatility_score > 75:
+            multiplier *= 0.75
+        return round(max(0.0, min(1.0, multiplier)), 4)
 
     def _reject(self, signal: TradeSignal, reason: str) -> RiskDecision:
         self.decision_logger.record_simple(

@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import Select, desc, func, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -23,7 +23,6 @@ from trading_system.app.core.enums import (
     ProviderHealthStatus,
     SignalStatus,
     StrategyApprovalStatus,
-    StrategyStatus,
     TradeType,
 )
 from trading_system.app.db import models
@@ -93,7 +92,9 @@ class TradingRepository:
 
         for payload in DEFAULT_SYMBOLS:
             existing = self.session.scalar(
-                select(models.SymbolUniverse).where(models.SymbolUniverse.symbol == payload["symbol"])
+                select(models.SymbolUniverse).where(
+                    models.SymbolUniverse.symbol == payload["symbol"]
+                )
             )
             if existing:
                 for key, value in payload.items():
@@ -182,7 +183,9 @@ class TradingRepository:
         role: str,
         reason: str,
     ) -> models.AdminUser:
-        row = self.session.scalar(select(models.AdminUser).where(models.AdminUser.username == username))
+        row = self.session.scalar(
+            select(models.AdminUser).where(models.AdminUser.username == username)
+        )
         if not row:
             row = models.AdminUser(
                 username=username,
@@ -221,7 +224,9 @@ class TradingRepository:
             for row in rows
         ]
 
-    def set_admin_user_active(self, *, username: str, is_active: bool, reason: str) -> models.AdminUser:
+    def set_admin_user_active(
+        self, *, username: str, is_active: bool, reason: str
+    ) -> models.AdminUser:
         row = self.admin_user_by_username(username)
         if not row:
             raise ValueError(f"Unknown admin user: {username}")
@@ -250,7 +255,9 @@ class TradingRepository:
         return row
 
     def admin_user_by_username(self, username: str) -> models.AdminUser | None:
-        return self.session.scalar(select(models.AdminUser).where(models.AdminUser.username == username))
+        return self.session.scalar(
+            select(models.AdminUser).where(models.AdminUser.username == username)
+        )
 
     def admin_user_by_id(self, user_id: str) -> models.AdminUser | None:
         return self.session.get(models.AdminUser, user_id)
@@ -284,7 +291,9 @@ class TradingRepository:
         )
 
     def revoke_admin_session(self, token_hash: str, reason: str) -> bool:
-        row = self.session.scalar(select(models.AdminSession).where(models.AdminSession.token_hash == token_hash))
+        row = self.session.scalar(
+            select(models.AdminSession).where(models.AdminSession.token_hash == token_hash)
+        )
         if not row:
             return False
         row.revoked_at = _now()
@@ -612,20 +621,27 @@ class TradingRepository:
             return
         timeframe_seconds = _timeframe_seconds(payload["timeframe"])
         if timeframe_seconds:
-            gap_seconds = (payload["source_timestamp"] - _as_utc(previous.source_timestamp)).total_seconds()
+            gap_seconds = (
+                payload["source_timestamp"] - _as_utc(previous.source_timestamp)
+            ).total_seconds()
             if gap_seconds > timeframe_seconds * 1.5:
                 payload["data_quality_status"] = DataQualityStatus.STALE.value
-                payload["quality_reason"] = f"Missing candle gap detected before this candle: {gap_seconds:.0f}s."
+                payload["quality_reason"] = (
+                    f"Missing candle gap detected before this candle: {gap_seconds:.0f}s."
+                )
                 return
         previous_close = float(previous.close)
         if previous_close <= 0:
             return
-        largest_jump = max(
-            abs(float(payload["open"]) - previous_close),
-            abs(float(payload["high"]) - previous_close),
-            abs(float(payload["low"]) - previous_close),
-            abs(float(payload["close"]) - previous_close),
-        ) / previous_close
+        largest_jump = (
+            max(
+                abs(float(payload["open"]) - previous_close),
+                abs(float(payload["high"]) - previous_close),
+                abs(float(payload["low"]) - previous_close),
+                abs(float(payload["close"]) - previous_close),
+            )
+            / previous_close
+        )
         if largest_jump >= 0.25:
             payload["data_quality_status"] = DataQualityStatus.SUSPICIOUS_PRICE.value
             payload["quality_reason"] = (
@@ -1207,7 +1223,9 @@ class TradingRepository:
         if not row:
             raise ValueError(f"Unknown strategy approval request: {request_id}")
         row.status = (
-            StrategyApprovalStatus.APPROVED.value if approved else StrategyApprovalStatus.REJECTED.value
+            StrategyApprovalStatus.APPROVED.value
+            if approved
+            else StrategyApprovalStatus.REJECTED.value
         )
         row.approved_by = decided_by
         row.decision_reason = decision_reason
@@ -1331,7 +1349,11 @@ class TradingRepository:
     def latest_candidate_signal(self) -> models.Signal | None:
         return self.session.scalar(
             select(models.Signal)
-            .where(models.Signal.status.in_([SignalStatus.CANDIDATE.value, SignalStatus.APPROVED.value]))
+            .where(
+                models.Signal.status.in_(
+                    [SignalStatus.CANDIDATE.value, SignalStatus.APPROVED.value]
+                )
+            )
             .order_by(desc(models.Signal.created_at))
         )
 
@@ -1408,7 +1430,9 @@ class TradingRepository:
         self.session.commit()
         self.store_decision_log(
             decision_type=DecisionType.EXECUTION,
-            outcome=DecisionOutcome.APPROVED if order.status != OrderStatus.REJECTED else DecisionOutcome.BLOCKED,
+            outcome=DecisionOutcome.APPROVED
+            if order.status != OrderStatus.REJECTED
+            else DecisionOutcome.BLOCKED,
             entity_type="order",
             entity_id=row.id,
             strategy_id=strategy_id,
@@ -1492,13 +1516,11 @@ class TradingRepository:
         row.broker_order_id = broker_order_id or row.broker_order_id
         row.status = str(broker_order.get("status") or row.status).upper()
         if row.status == OrderStatus.REJECTED.value:
-            row.rejection_reason = (
-                str(
-                    broker_order.get("failed_reason")
-                    or broker_order.get("reject_reason")
-                    or broker_order.get("reason")
-                    or "Broker reported order rejection."
-                )
+            row.rejection_reason = str(
+                broker_order.get("failed_reason")
+                or broker_order.get("reject_reason")
+                or broker_order.get("reason")
+                or "Broker reported order rejection."
             )
         row.quantity = float(broker_order.get("qty") or row.quantity or 0)
         row.limit_price = _float_or_none(broker_order.get("limit_price")) or row.limit_price
@@ -1566,7 +1588,9 @@ class TradingRepository:
                 },
             )
             return None
-        prior_notional = sum(float(fill.quantity or 0.0) * float(fill.price or 0.0) for fill in prior_fill_rows)
+        prior_notional = sum(
+            float(fill.quantity or 0.0) * float(fill.price or 0.0) for fill in prior_fill_rows
+        )
         cumulative_notional = filled_qty * avg_price
         incremental_price = (cumulative_notional - prior_notional) / incremental_qty
         slippage_bps = _calculate_slippage_bps(
@@ -1821,7 +1845,9 @@ class TradingRepository:
             stmt = stmt.where(models.BrokerAccountSnapshot.environment_mode == environment_mode)
         if broker:
             stmt = stmt.where(models.BrokerAccountSnapshot.broker == broker)
-        return self.session.scalar(stmt.order_by(desc(models.BrokerAccountSnapshot.created_at)).limit(1))
+        return self.session.scalar(
+            stmt.order_by(desc(models.BrokerAccountSnapshot.created_at)).limit(1)
+        )
 
     def broker_equity_loss_pct(
         self,
@@ -1831,13 +1857,10 @@ class TradingRepository:
         lookback: timedelta,
     ) -> float | None:
         cutoff = _now() - lookback
-        base_stmt = (
-            select(models.BrokerAccountSnapshot)
-            .where(
-                models.BrokerAccountSnapshot.environment_mode == environment_mode,
-                models.BrokerAccountSnapshot.broker == broker,
-                models.BrokerAccountSnapshot.source_timestamp >= cutoff,
-            )
+        base_stmt = select(models.BrokerAccountSnapshot).where(
+            models.BrokerAccountSnapshot.environment_mode == environment_mode,
+            models.BrokerAccountSnapshot.broker == broker,
+            models.BrokerAccountSnapshot.source_timestamp >= cutoff,
         )
         baseline = self.session.scalar(
             base_stmt.order_by(
@@ -1851,7 +1874,13 @@ class TradingRepository:
                 desc(models.BrokerAccountSnapshot.created_at),
             ).limit(1)
         )
-        if not baseline or not latest or not baseline.equity or baseline.equity <= 0 or latest.equity is None:
+        if (
+            not baseline
+            or not latest
+            or not baseline.equity
+            or baseline.equity <= 0
+            or latest.equity is None
+        ):
             return None
         return max(0.0, (baseline.equity - latest.equity) / baseline.equity * 100)
 
@@ -1969,7 +1998,9 @@ class TradingRepository:
         existing = None
         if accession_number:
             existing = self.session.scalar(
-                select(models.RawFiling).where(models.RawFiling.accession_number == accession_number)
+                select(models.RawFiling).where(
+                    models.RawFiling.accession_number == accession_number
+                )
             )
         if existing:
             return existing
@@ -2260,12 +2291,16 @@ class TradingRepository:
         entity_id: str | None = None,
         limit: int = 50,
     ) -> list[models.DecisionLog]:
-        query = select(models.DecisionLog).where(models.DecisionLog.entity_type == "decision_snapshot")
+        query = select(models.DecisionLog).where(
+            models.DecisionLog.entity_type == "decision_snapshot"
+        )
         if entity_id:
             query = query.where(models.DecisionLog.entity_id == entity_id)
         fetch_limit = limit * 5 if stage else limit
         rows = list(
-            self.session.scalars(query.order_by(desc(models.DecisionLog.created_at)).limit(fetch_limit)).all()
+            self.session.scalars(
+                query.order_by(desc(models.DecisionLog.created_at)).limit(fetch_limit)
+            ).all()
         )
         if stage:
             rows = [
@@ -2427,10 +2462,14 @@ class TradingRepository:
         if entry_quantity <= 0:
             return None
 
-        actual_entry = _weighted_average([(fill.price, fill.quantity) for fill, _order in entry_fills])
+        actual_entry = _weighted_average(
+            [(fill.price, fill.quantity) for fill, _order in entry_fills]
+        )
         if actual_entry is None:
             return None
-        actual_exit = _weighted_average([(fill.price, fill.quantity) for fill, _order in exit_fills])
+        actual_exit = _weighted_average(
+            [(fill.price, fill.quantity) for fill, _order in exit_fills]
+        )
         slippage_bps = _weighted_average(
             [
                 (fill.slippage_bps, fill.quantity)
@@ -2440,7 +2479,9 @@ class TradingRepository:
         )
         first_entry_at = min(_as_utc(fill.source_timestamp) for fill, _order in entry_fills)
         last_exit_at = (
-            max(_as_utc(fill.source_timestamp) for fill, _order in exit_fills) if exit_fills else None
+            max(_as_utc(fill.source_timestamp) for fill, _order in exit_fills)
+            if exit_fills
+            else None
         )
         latest_candle = self._latest_journal_candle(symbol)
         latest_candle_at = _as_utc(latest_candle.source_timestamp) if latest_candle else None
@@ -2450,7 +2491,9 @@ class TradingRepository:
         else:
             end_at = latest_candle_at or last_exit_at or datetime.now(UTC)
 
-        high, low = self._journal_price_excursion(symbol=symbol, start_at=first_entry_at, end_at=end_at)
+        high, low = self._journal_price_excursion(
+            symbol=symbol, start_at=first_entry_at, end_at=end_at
+        )
         if high is None and actual_exit is not None:
             high = max(actual_entry, actual_exit)
         if low is None and actual_exit is not None:
@@ -2579,7 +2622,9 @@ class TradingRepository:
         end_at: datetime,
     ) -> tuple[float | None, float | None]:
         return self.session.execute(
-            select(func.max(models.CleanMarketData.high), func.min(models.CleanMarketData.low)).where(
+            select(
+                func.max(models.CleanMarketData.high), func.min(models.CleanMarketData.low)
+            ).where(
                 models.CleanMarketData.symbol == symbol.upper(),
                 models.CleanMarketData.source_timestamp >= start_at,
                 models.CleanMarketData.source_timestamp <= end_at,
@@ -2629,7 +2674,10 @@ class TradingRepository:
             return []
         violations = []
         latest_at = _as_utc(latest_candle.source_timestamp) if latest_candle else datetime.now(UTC)
-        if signal.trade_type == TradeType.DAY_TRADE.value and latest_at.date() > first_entry_at.date():
+        if (
+            signal.trade_type == TradeType.DAY_TRADE.value
+            and latest_at.date() > first_entry_at.date()
+        ):
             violations.append("DAY_TRADE_TO_SWING_BLOCKED")
         if latest_candle and signal.stop_loss:
             stop_breached = (
@@ -2756,7 +2804,9 @@ class TradingRepository:
         return row
 
     def list_rows(self, model: type, limit: int = 100) -> list[dict[str, Any]]:
-        rows = self.session.scalars(select(model).order_by(desc(model.created_at)).limit(limit)).all()
+        rows = self.session.scalars(
+            select(model).order_by(desc(model.created_at)).limit(limit)
+        ).all()
         return [model_to_dict(row) for row in rows]
 
     def counts(self) -> dict[str, int]:
@@ -2786,6 +2836,10 @@ class TradingRepository:
             "kill_switches": models.KillSwitchEvent,
             "weekly_reviews": models.WeeklyReview,
             "recommendations": models.StrategyRecommendation,
+            "pit_universe_memberships": models.PointInTimeUniverseMembership,
+            "short_interest_snapshots": models.ShortInterestSnapshot,
+            "options_intelligence_snapshots": models.OptionsIntelligenceSnapshot,
+            "multi_bagger_candidate_scores": models.MultiBaggerCandidateScore,
         }
         return {
             name: int(self.session.scalar(select(func.count()).select_from(model)) or 0)
@@ -2798,14 +2852,372 @@ class TradingRepository:
     def latest_features(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.list_rows(models.FeatureIntraday, limit)
 
+    def store_opportunity_score(
+        self,
+        *,
+        scanner_result_id: str | None,
+        signal_id: str | None,
+        symbol: str,
+        strategy_id: str,
+        setup_type: str | None,
+        score: float,
+        grade: str,
+        component_scores: dict[str, float],
+        components: list[dict[str, Any]],
+        penalties: list[dict[str, Any]],
+        explanation: str,
+        expected_r: float | None = None,
+        historical_win_rate: float | None = None,
+        expectancy_sample_size: int = 0,
+        confidence_level: float = 0.0,
+        suggested_risk_multiplier: float = 0.0,
+        market_regime: str | None = None,
+        sector_regime: str | None = None,
+        catalyst_type: str | None = None,
+        linked_news_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+        source_timestamp: datetime | None = None,
+    ) -> models.OpportunityScore:
+        ts = source_timestamp or _now()
+        row = models.OpportunityScore(
+            scanner_result_id=scanner_result_id,
+            signal_id=signal_id,
+            symbol=symbol.upper(),
+            strategy_id=strategy_id,
+            setup_type=setup_type,
+            score=score,
+            grade=grade,
+            component_scores=_json_safe(component_scores),
+            penalties=_json_safe(penalties),
+            explanation=explanation,
+            expected_r=expected_r,
+            historical_win_rate=historical_win_rate,
+            expectancy_sample_size=expectancy_sample_size,
+            confidence_level=confidence_level,
+            suggested_risk_multiplier=suggested_risk_multiplier,
+            market_regime=market_regime,
+            sector_regime=sector_regime,
+            catalyst_type=catalyst_type,
+            linked_news_id=linked_news_id,
+            payload=_json_safe(payload or {}),
+            source_timestamp=ts,
+        )
+        self.session.add(row)
+        self.session.flush()
+        for component in components:
+            self.session.add(
+                models.OpportunityScoreComponent(
+                    opportunity_score_id=row.id,
+                    component_name=str(component["component_name"]),
+                    raw_value=component.get("raw_value"),
+                    score=float(component.get("score", 0.0)),
+                    weight=float(component.get("weight", 0.0)),
+                    explanation=component.get("explanation"),
+                    source_timestamp=ts,
+                )
+            )
+        self.session.commit()
+        return row
+
+    def store_alpha_rejection_reason(
+        self,
+        *,
+        scanner_result_id: str | None,
+        symbol: str,
+        strategy_id: str | None,
+        setup_type: str | None,
+        reason_code: str,
+        reason: str,
+        severity: str = "BLOCKER",
+        payload: dict[str, Any] | None = None,
+        source_timestamp: datetime | None = None,
+    ) -> models.AlphaRejectionReason:
+        row = models.AlphaRejectionReason(
+            scanner_result_id=scanner_result_id,
+            symbol=symbol.upper(),
+            strategy_id=strategy_id,
+            setup_type=setup_type,
+            reason_code=reason_code,
+            reason=reason,
+            severity=severity,
+            payload=_json_safe(payload or {}),
+            source_timestamp=source_timestamp or _now(),
+        )
+        self.session.add(row)
+        self.session.commit()
+        return row
+
+    def store_expectancy_snapshot(
+        self,
+        *,
+        bucket_type: str,
+        bucket_key: str,
+        strategy_id: str | None,
+        setup_type: str | None,
+        sample_size: int,
+        win_rate: float | None,
+        average_win: float | None,
+        average_loss: float | None,
+        expectancy_r: float | None,
+        profit_factor: float | None,
+        max_drawdown: float | None,
+        average_hold_seconds: float | None,
+        average_slippage_bps: float | None,
+        average_mfe: float | None,
+        average_mae: float | None,
+        confidence_level: float,
+        payload: dict[str, Any],
+        source_timestamp: datetime | None = None,
+    ) -> models.ExpectancySnapshot:
+        row = models.ExpectancySnapshot(
+            bucket_type=bucket_type,
+            bucket_key=bucket_key,
+            strategy_id=strategy_id,
+            setup_type=setup_type,
+            sample_size=sample_size,
+            win_rate=win_rate,
+            average_win=average_win,
+            average_loss=average_loss,
+            expectancy_r=expectancy_r,
+            profit_factor=profit_factor,
+            max_drawdown=max_drawdown,
+            average_hold_seconds=average_hold_seconds,
+            average_slippage_bps=average_slippage_bps,
+            average_mfe=average_mfe,
+            average_mae=average_mae,
+            confidence_level=confidence_level,
+            payload=_json_safe(payload),
+            source_timestamp=source_timestamp or _now(),
+        )
+        self.session.add(row)
+        self.session.commit()
+        return row
+
+    def store_strategy_performance_bucket(self, **kwargs: Any) -> models.StrategyPerformanceBucket:
+        if "payload" in kwargs:
+            kwargs["payload"] = _json_safe(kwargs["payload"])
+        row = models.StrategyPerformanceBucket(**kwargs)
+        if row.source_timestamp is None:
+            row.source_timestamp = _now()
+        self.session.add(row)
+        self.session.commit()
+        return row
+
+    def store_sector_strength_snapshot(self, **kwargs: Any) -> models.SectorStrengthSnapshot:
+        if "payload" in kwargs:
+            kwargs["payload"] = _json_safe(kwargs["payload"])
+        row = models.SectorStrengthSnapshot(**kwargs)
+        if row.source_timestamp is None:
+            row.source_timestamp = _now()
+        self.session.add(row)
+        self.session.commit()
+        return row
+
+    def store_symbol_relative_strength_snapshot(
+        self, **kwargs: Any
+    ) -> models.SymbolRelativeStrengthSnapshot:
+        if "payload" in kwargs:
+            kwargs["payload"] = _json_safe(kwargs["payload"])
+        row = models.SymbolRelativeStrengthSnapshot(**kwargs)
+        if row.source_timestamp is None:
+            row.source_timestamp = _now()
+        self.session.add(row)
+        self.session.commit()
+        return row
+
+    def store_point_in_time_universe_membership(
+        self, **kwargs: Any
+    ) -> models.PointInTimeUniverseMembership:
+        if "payload" in kwargs:
+            kwargs["payload"] = _json_safe(kwargs["payload"])
+        if "symbol" in kwargs:
+            kwargs["symbol"] = str(kwargs["symbol"]).upper()
+        row = models.PointInTimeUniverseMembership(**kwargs)
+        if row.source_timestamp is None:
+            row.source_timestamp = _now()
+        self.session.add(row)
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            existing = self.session.scalar(
+                select(models.PointInTimeUniverseMembership).where(
+                    models.PointInTimeUniverseMembership.universe_name == row.universe_name,
+                    models.PointInTimeUniverseMembership.as_of_date == row.as_of_date,
+                    models.PointInTimeUniverseMembership.symbol == row.symbol,
+                )
+            )
+            if existing:
+                return existing
+            raise
+        return row
+
+    def point_in_time_universe(
+        self,
+        *,
+        as_of: datetime,
+        universe_name: str = "tradable_us_equities",
+        active_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        query = select(models.PointInTimeUniverseMembership).where(
+            models.PointInTimeUniverseMembership.universe_name == universe_name,
+            models.PointInTimeUniverseMembership.as_of_date <= _as_utc(as_of),
+        )
+        if active_only:
+            query = query.where(
+                models.PointInTimeUniverseMembership.is_active.is_(True),
+                models.PointInTimeUniverseMembership.delisted.is_(False),
+            )
+        rows = self.session.scalars(
+            query.order_by(
+                models.PointInTimeUniverseMembership.symbol.asc(),
+                desc(models.PointInTimeUniverseMembership.as_of_date),
+            )
+        ).all()
+        latest_by_symbol: dict[str, models.PointInTimeUniverseMembership] = {}
+        for row in rows:
+            latest_by_symbol.setdefault(row.symbol, row)
+        return [model_to_dict(row) for row in latest_by_symbol.values()]
+
+    def store_short_interest_snapshot(self, **kwargs: Any) -> models.ShortInterestSnapshot:
+        if "payload" in kwargs:
+            kwargs["payload"] = _json_safe(kwargs["payload"])
+        if "symbol" in kwargs:
+            kwargs["symbol"] = str(kwargs["symbol"]).upper()
+        row = models.ShortInterestSnapshot(**kwargs)
+        if row.source_timestamp is None:
+            row.source_timestamp = _now()
+        self.session.add(row)
+        self.session.commit()
+        return row
+
+    def store_options_intelligence_snapshot(
+        self, **kwargs: Any
+    ) -> models.OptionsIntelligenceSnapshot:
+        if "payload" in kwargs:
+            kwargs["payload"] = _json_safe(kwargs["payload"])
+        if "symbol" in kwargs:
+            kwargs["symbol"] = str(kwargs["symbol"]).upper()
+        row = models.OptionsIntelligenceSnapshot(**kwargs)
+        if row.source_timestamp is None:
+            row.source_timestamp = _now()
+        self.session.add(row)
+        self.session.commit()
+        return row
+
+    def store_multi_bagger_candidate_score(self, **kwargs: Any) -> models.MultiBaggerCandidateScore:
+        if "payload" in kwargs:
+            kwargs["payload"] = _json_safe(kwargs["payload"])
+        if "risk_flags" in kwargs:
+            kwargs["risk_flags"] = _json_safe(kwargs["risk_flags"])
+        if "component_scores" in kwargs:
+            kwargs["component_scores"] = _json_safe(kwargs["component_scores"])
+        if "symbol" in kwargs:
+            kwargs["symbol"] = str(kwargs["symbol"]).upper()
+        row = models.MultiBaggerCandidateScore(**kwargs)
+        if row.source_timestamp is None:
+            row.source_timestamp = _now()
+        self.session.add(row)
+        self.session.commit()
+        return row
+
+    def latest_short_interest_for(self, symbol: str) -> models.ShortInterestSnapshot | None:
+        return self.session.scalar(
+            select(models.ShortInterestSnapshot)
+            .where(models.ShortInterestSnapshot.symbol == symbol.upper())
+            .order_by(
+                desc(models.ShortInterestSnapshot.source_timestamp),
+                desc(models.ShortInterestSnapshot.created_at),
+            )
+            .limit(1)
+        )
+
+    def latest_options_intelligence_for(
+        self, symbol: str
+    ) -> models.OptionsIntelligenceSnapshot | None:
+        return self.session.scalar(
+            select(models.OptionsIntelligenceSnapshot)
+            .where(models.OptionsIntelligenceSnapshot.symbol == symbol.upper())
+            .order_by(
+                desc(models.OptionsIntelligenceSnapshot.source_timestamp),
+                desc(models.OptionsIntelligenceSnapshot.created_at),
+            )
+            .limit(1)
+        )
+
+    def latest_point_in_time_universe_memberships(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self.list_rows(models.PointInTimeUniverseMembership, limit)
+
+    def latest_short_interest_snapshots(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self.list_rows(models.ShortInterestSnapshot, limit)
+
+    def latest_options_intelligence_snapshots(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self.list_rows(models.OptionsIntelligenceSnapshot, limit)
+
+    def latest_multi_bagger_candidate_scores(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self.list_rows(models.MultiBaggerCandidateScore, limit)
+
+    def latest_opportunity_scores(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self.list_rows(models.OpportunityScore, limit)
+
+    def latest_opportunity_scores_for_symbol(
+        self, symbol: str, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        rows = self.session.scalars(
+            select(models.OpportunityScore)
+            .where(models.OpportunityScore.symbol == symbol.upper())
+            .order_by(
+                desc(models.OpportunityScore.source_timestamp),
+                desc(models.OpportunityScore.created_at),
+            )
+            .limit(limit)
+        ).all()
+        return [model_to_dict(row) for row in rows]
+
+    def opportunity_score_components(self, opportunity_score_id: str) -> list[dict[str, Any]]:
+        rows = self.session.scalars(
+            select(models.OpportunityScoreComponent)
+            .where(models.OpportunityScoreComponent.opportunity_score_id == opportunity_score_id)
+            .order_by(models.OpportunityScoreComponent.component_name.asc())
+        ).all()
+        return [model_to_dict(row) for row in rows]
+
+    def latest_alpha_rejections(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self.list_rows(models.AlphaRejectionReason, limit)
+
+    def latest_expectancy_snapshots(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self.list_rows(models.ExpectancySnapshot, limit)
+
+    def latest_strategy_performance_buckets(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self.list_rows(models.StrategyPerformanceBucket, limit)
+
+    def latest_sector_strength(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self.list_rows(models.SectorStrengthSnapshot, limit)
+
+    def latest_symbol_relative_strength(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self.list_rows(models.SymbolRelativeStrengthSnapshot, limit)
+
     def latest_daily_features(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.list_rows(models.FeatureDaily, limit)
+
+    def latest_features_for(self, symbol: str) -> models.FeatureIntraday | None:
+        return self.session.scalar(
+            select(models.FeatureIntraday)
+            .where(models.FeatureIntraday.symbol == symbol.upper())
+            .order_by(
+                desc(models.FeatureIntraday.source_timestamp),
+                desc(models.FeatureIntraday.created_at),
+            )
+            .limit(1)
+        )
 
     def latest_daily_feature_for(self, symbol: str) -> models.FeatureDaily | None:
         return self.session.scalar(
             select(models.FeatureDaily)
             .where(models.FeatureDaily.symbol == symbol.upper())
-            .order_by(desc(models.FeatureDaily.source_timestamp), desc(models.FeatureDaily.created_at))
+            .order_by(
+                desc(models.FeatureDaily.source_timestamp), desc(models.FeatureDaily.created_at)
+            )
             .limit(1)
         )
 
@@ -3032,7 +3444,9 @@ class TradingRepository:
             .limit(1)
         )
 
-    def latest_provider_health_for(self, provider_name: str) -> models.ProviderHealthSnapshot | None:
+    def latest_provider_health_for(
+        self, provider_name: str
+    ) -> models.ProviderHealthSnapshot | None:
         return self.session.scalar(
             select(models.ProviderHealthSnapshot)
             .where(models.ProviderHealthSnapshot.provider_name == provider_name)
@@ -3115,11 +3529,16 @@ def _bool_or_none(value: Any) -> bool | None:
 
 
 def _weighted_average(values: list[tuple[float | None, float]]) -> float | None:
-    weighted_values = [(value, weight) for value, weight in values if value is not None and weight > 0]
+    weighted_values = [
+        (value, weight) for value, weight in values if value is not None and weight > 0
+    ]
     total_weight = sum(weight for _value, weight in weighted_values)
     if total_weight <= 0:
         return None
-    return sum(float(value) * weight for value, weight in weighted_values if value is not None) / total_weight
+    return (
+        sum(float(value) * weight for value, weight in weighted_values if value is not None)
+        / total_weight
+    )
 
 
 def _calculate_slippage_bps(

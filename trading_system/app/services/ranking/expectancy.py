@@ -41,6 +41,37 @@ EXPECTANCY_RULE_VERSION = "expectancy_v1"
 
 _EASTERN = ZoneInfo("America/New_York")
 _EARLY_FAILURE_CUTOFF = time(hour=10, minute=30)
+UNKNOWN_BUCKET = "UNKNOWN"
+NO_CATALYST_BUCKET = "NO_CATALYST"
+
+TIME_OF_DAY_BUCKETS: tuple[tuple[str, int, int], ...] = (
+    ("PRE_MARKET", 4 * 60, 9 * 60 + 30),
+    ("OPEN", 9 * 60 + 30, 10 * 60 + 30),
+    ("MID_MORNING", 10 * 60 + 30, 12 * 60),
+    ("MIDDAY", 12 * 60, 14 * 60),
+    ("AFTERNOON", 14 * 60, 15 * 60 + 30),
+    ("CLOSE", 15 * 60 + 30, 16 * 60),
+    ("AFTER_HOURS", 16 * 60, 20 * 60),
+)
+RELATIVE_VOLUME_BUCKETS: tuple[tuple[str, float, float], ...] = (
+    ("UNDER_1X", 0.0, 1.0),
+    ("1X_TO_1_5X", 1.0, 1.5),
+    ("1_5X_TO_2X", 1.5, 2.0),
+    ("2X_TO_3X", 2.0, 3.0),
+    ("OVER_3X", 3.0, float("inf")),
+)
+SPREAD_BUCKETS: tuple[tuple[str, float, float], ...] = (
+    ("TIGHT_UNDER_5_BPS", 0.0, 5.0),
+    ("5_TO_10_BPS", 5.0, 10.0),
+    ("10_TO_20_BPS", 10.0, 20.0),
+    ("WIDE_OVER_20_BPS", 20.0, float("inf")),
+)
+VOLATILITY_BUCKETS: tuple[tuple[str, float, float], ...] = (
+    ("LOW_UNDER_25", 0.0, 25.0),
+    ("MODERATE_25_TO_50", 25.0, 50.0),
+    ("HIGH_50_TO_75", 50.0, 75.0),
+    ("EXTREME_OVER_75", 75.0, float("inf")),
+)
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -49,6 +80,81 @@ def _as_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+
+def _numeric_bucket(value: float | None, buckets: Sequence[tuple[str, float, float]]) -> str:
+    if value is None:
+        return UNKNOWN_BUCKET
+    numeric = max(0.0, float(value))
+    for label, lower, upper in buckets:
+        if lower <= numeric < upper:
+            return label
+    return UNKNOWN_BUCKET
+
+
+def time_of_day_bucket(timestamp: datetime | None) -> str:
+    if timestamp is None:
+        return UNKNOWN_BUCKET
+    localized = _as_utc(timestamp).astimezone(_EASTERN)
+    minute_of_day = localized.hour * 60 + localized.minute
+    for label, start_minute, end_minute in TIME_OF_DAY_BUCKETS:
+        if start_minute <= minute_of_day < end_minute:
+            return label
+    return UNKNOWN_BUCKET
+
+
+def relative_volume_bucket(relative_volume: float | None) -> str:
+    return _numeric_bucket(relative_volume, RELATIVE_VOLUME_BUCKETS)
+
+
+def spread_bucket(spread_bps: float | None) -> str:
+    return _numeric_bucket(spread_bps, SPREAD_BUCKETS)
+
+
+def volatility_bucket(volatility_score: float | None) -> str:
+    return _numeric_bucket(volatility_score, VOLATILITY_BUCKETS)
+
+
+def _float_from_mapping(payload: dict | None, *path: str) -> float | None:
+    current: object = payload or {}
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    if current is None:
+        return None
+    try:
+        return float(current)
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_float(payload: dict | None, paths: Sequence[tuple[str, ...]]) -> float | None:
+    for path in paths:
+        value = _float_from_mapping(payload, *path)
+        if value is not None:
+            return value
+    return None
+
+
+def _str_from_mapping(payload: dict | None, *path: str) -> str | None:
+    current: object = payload or {}
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    if current in (None, ""):
+        return None
+    return str(current)
+
+
+def _first_str(payload: dict | None, paths: Sequence[tuple[str, ...]]) -> str | None:
+    for path in paths:
+        value = _str_from_mapping(payload, *path)
+        if value:
+            return value
+    return None
 
 
 def _weighted_average(pairs: Iterable[tuple[float | None, float | None]]) -> float | None:
@@ -103,6 +209,11 @@ class OutcomeRecord:
     pnl: float
     r_multiple: float | None
     time_in_trade_seconds: float
+    time_of_day_bucket: str = UNKNOWN_BUCKET
+    relative_volume_bucket: str = UNKNOWN_BUCKET
+    catalyst_type: str = NO_CATALYST_BUCKET
+    spread_bucket: str = UNKNOWN_BUCKET
+    volatility_bucket: str = UNKNOWN_BUCKET
 
     @property
     def is_winner(self) -> bool:
@@ -258,12 +369,33 @@ class ExpectancyView:
     def summary(self) -> dict[str, object]:
         return {
             "overall": compute_stats(self.records, matched_on="overall"),
+            "by_strategy": _group_stats(
+                self.records, key=lambda record: record.strategy_id or UNKNOWN_BUCKET
+            ),
             "by_symbol": _group_stats(self.records, key=lambda record: record.symbol),
             "by_sector": _group_stats(
-                self.records, key=lambda record: record.sector or "UNKNOWN"
+                self.records, key=lambda record: record.sector or UNKNOWN_BUCKET
             ),
             "by_regime": _group_stats(
-                self.records, key=lambda record: record.regime or "UNKNOWN"
+                self.records, key=lambda record: record.regime or UNKNOWN_BUCKET
+            ),
+            "by_market_regime": _group_stats(
+                self.records, key=lambda record: record.regime or UNKNOWN_BUCKET
+            ),
+            "by_time_of_day": _group_stats(
+                self.records, key=lambda record: record.time_of_day_bucket
+            ),
+            "by_relative_volume_bucket": _group_stats(
+                self.records, key=lambda record: record.relative_volume_bucket
+            ),
+            "by_catalyst_type": _group_stats(
+                self.records, key=lambda record: record.catalyst_type or NO_CATALYST_BUCKET
+            ),
+            "by_spread_bucket": _group_stats(
+                self.records, key=lambda record: record.spread_bucket
+            ),
+            "by_volatility_bucket": _group_stats(
+                self.records, key=lambda record: record.volatility_bucket
             ),
         }
 
@@ -388,6 +520,12 @@ class ExpectancyService:
                 )
             ).all()
         }
+        signal_versions = self._latest_signal_versions(signal_ids)
+        scanner_contexts = self._scanner_contexts(
+            signal_ids=signal_ids,
+            signals=signals,
+            signal_versions=signal_versions,
+        )
 
         start_utc = _as_utc(start)
         end_utc = _as_utc(end)
@@ -399,6 +537,7 @@ class ExpectancyService:
                 signal=signals.get(signal_id),
                 journal=journals.get(signal_id),
                 universe=universe,
+                context=scanner_contexts.get(signal_id, {}),
             )
             if record is None:
                 continue
@@ -409,6 +548,149 @@ class ExpectancyService:
             records.append(record)
         return records
 
+    def _latest_signal_versions(self, signal_ids: Sequence[str]) -> dict[str, models.SignalVersion]:
+        versions = self.session.scalars(
+            select(models.SignalVersion)
+            .where(models.SignalVersion.signal_id.in_(signal_ids))
+            .order_by(
+                models.SignalVersion.signal_id.asc(),
+                desc(models.SignalVersion.source_timestamp),
+                desc(models.SignalVersion.created_at),
+            )
+        ).all()
+        latest: dict[str, models.SignalVersion] = {}
+        for version in versions:
+            if version.signal_id not in latest:
+                latest[version.signal_id] = version
+        return latest
+
+    def _scanner_contexts(
+        self,
+        *,
+        signal_ids: Sequence[str],
+        signals: dict[str, models.Signal],
+        signal_versions: dict[str, models.SignalVersion],
+    ) -> dict[str, dict[str, object]]:
+        contexts: dict[str, dict[str, object]] = {signal_id: {} for signal_id in signal_ids}
+        scanner_ids = {
+            str(version.payload.get("scanner_result_id"))
+            for version in signal_versions.values()
+            if isinstance(version.payload, dict) and version.payload.get("scanner_result_id")
+        }
+        scanners_by_id: dict[str, models.ScannerResult] = {}
+        if scanner_ids:
+            scanners_by_id = {
+                row.id: row
+                for row in self.session.scalars(
+                    select(models.ScannerResult).where(models.ScannerResult.id.in_(scanner_ids))
+                ).all()
+            }
+
+        fallback_scanners = self.session.scalars(
+            select(models.ScannerResult)
+            .where(models.ScannerResult.accepted.is_(True))
+            .order_by(
+                models.ScannerResult.symbol.asc(),
+                models.ScannerResult.strategy_id.asc(),
+                desc(models.ScannerResult.source_timestamp),
+                desc(models.ScannerResult.created_at),
+            )
+        ).all()
+
+        catalyst_ids: set[str] = set()
+        selected_scanners: dict[str, models.ScannerResult] = {}
+        for signal_id in signal_ids:
+            signal = signals.get(signal_id)
+            version = signal_versions.get(signal_id)
+            scanner = None
+            version_payload = version.payload if version and isinstance(version.payload, dict) else {}
+            scanner_id = version_payload.get("scanner_result_id")
+            if scanner_id:
+                scanner = scanners_by_id.get(str(scanner_id))
+            if scanner is None and signal is not None:
+                signal_ts = _as_utc(signal.source_timestamp)
+                for candidate in fallback_scanners:
+                    candidate_ts = _as_utc(candidate.source_timestamp)
+                    if candidate.symbol.upper() != signal.symbol.upper():
+                        continue
+                    if candidate.strategy_id != signal.strategy_id:
+                        continue
+                    if signal_ts and candidate_ts and candidate_ts > signal_ts:
+                        continue
+                    scanner = candidate
+                    break
+            if scanner is None:
+                contexts[signal_id] = {"signal_version_payload": version_payload}
+                continue
+            selected_scanners[signal_id] = scanner
+            payload = scanner.payload if isinstance(scanner.payload, dict) else {}
+            catalyst_id = _first_str(
+                payload,
+                (("catalyst_id",), ("request", "catalyst_id"), ("catalyst_reference",)),
+            ) or _first_str(version_payload, (("catalyst_reference",),))
+            if catalyst_id:
+                catalyst_ids.add(catalyst_id)
+
+        catalysts = {
+            row.id: row
+            for row in self.session.scalars(
+                select(models.Catalyst).where(models.Catalyst.id.in_(catalyst_ids))
+            ).all()
+        } if catalyst_ids else {}
+        selected_symbols = {signal.symbol.upper() for signal in signals.values()}
+        daily_features = self.session.scalars(
+            select(models.FeatureDaily)
+            .where(models.FeatureDaily.symbol.in_(selected_symbols))
+            .order_by(
+                models.FeatureDaily.symbol.asc(),
+                desc(models.FeatureDaily.source_timestamp),
+                desc(models.FeatureDaily.created_at),
+            )
+        ).all() if selected_symbols else []
+        latest_daily_by_symbol: dict[str, models.FeatureDaily] = {}
+        for feature in daily_features:
+            latest_daily_by_symbol.setdefault(feature.symbol.upper(), feature)
+
+        for signal_id, scanner in selected_scanners.items():
+            payload = scanner.payload if isinstance(scanner.payload, dict) else {}
+            version = signal_versions.get(signal_id)
+            version_payload = version.payload if version and isinstance(version.payload, dict) else {}
+            catalyst_id = _first_str(
+                payload,
+                (("catalyst_id",), ("request", "catalyst_id"), ("catalyst_reference",)),
+            ) or _first_str(version_payload, (("catalyst_reference",),))
+            catalyst = catalysts.get(catalyst_id or "")
+            daily_feature = latest_daily_by_symbol.get(scanner.symbol.upper())
+            contexts[signal_id] = {
+                "scanner_payload": payload,
+                "signal_version_payload": version_payload,
+                "relative_volume": _first_float(
+                    payload,
+                    (("relative_volume",), ("snapshot", "relative_volume"), ("request", "relative_volume")),
+                ),
+                "spread_bps": _first_float(
+                    payload,
+                    (("spread_bps",), ("snapshot", "spread_bps"), ("request", "spread_bps")),
+                ),
+                "volatility_score": _first_float(
+                    payload,
+                    (("volatility_score",), ("snapshot", "volatility_score"), ("request", "volatility_score")),
+                ) or (daily_feature.volatility_score if daily_feature else None),
+                "market_regime": _first_str(
+                    payload,
+                    (
+                        ("market_regime",),
+                        ("snapshot", "market_regime"),
+                        ("request", "market_regime"),
+                        ("preflight", "regime", "market_regime"),
+                    ),
+                ) or _first_str(version_payload, (("regime_reference",),)),
+                "catalyst_type": catalyst.catalyst_type if catalyst else _first_str(
+                    payload, (("catalyst_type",), ("request", "catalyst_type"))
+                ),
+            }
+        return contexts
+
     @staticmethod
     def _build_record(
         *,
@@ -417,6 +699,7 @@ class ExpectancyService:
         signal: models.Signal | None,
         journal: models.TradeJournal | None,
         universe: dict[str, models.SymbolUniverse],
+        context: dict[str, object],
     ) -> OutcomeRecord | None:
         first_order = fills[0][1]
         symbol = (signal.symbol if signal else first_order.symbol).upper()
@@ -473,13 +756,22 @@ class ExpectancyService:
         )
         time_in_trade_seconds = max(0.0, (exit_at - entry_at).total_seconds())
         sector_row = universe.get(symbol)
+        relative_volume = context.get("relative_volume")
+        spread_bps = context.get("spread_bps")
+        market_regime = journal.market_regime if journal else None
+        if not market_regime:
+            market_regime = context.get("market_regime") if isinstance(context.get("market_regime"), str) else None
+        volatility_score = context.get("volatility_score")
+        catalyst_type = context.get("catalyst_type")
+        if not catalyst_type and journal and journal.catalyst:
+            catalyst_type = journal.catalyst
 
         return OutcomeRecord(
             signal_id=signal_id,
             symbol=symbol,
             strategy_id=signal.strategy_id if signal else None,
             sector=sector_row.sector if sector_row else None,
-            regime=journal.market_regime if journal else None,
+            regime=market_regime,
             direction=direction,
             actual_entry=actual_entry,
             actual_exit=actual_exit,
@@ -488,6 +780,17 @@ class ExpectancyService:
             pnl=pnl,
             r_multiple=r_multiple,
             time_in_trade_seconds=time_in_trade_seconds,
+            time_of_day_bucket=time_of_day_bucket(entry_at),
+            relative_volume_bucket=relative_volume_bucket(
+                float(relative_volume) if isinstance(relative_volume, int | float) else None
+            ),
+            catalyst_type=str(catalyst_type) if catalyst_type else NO_CATALYST_BUCKET,
+            spread_bucket=spread_bucket(
+                float(spread_bps) if isinstance(spread_bps, int | float) else None
+            ),
+            volatility_bucket=volatility_bucket(
+                float(volatility_score) if isinstance(volatility_score, int | float) else None
+            ),
         )
 
 

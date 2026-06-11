@@ -308,7 +308,7 @@ resource "aws_db_subnet_group" "postgres" {
 resource "aws_db_instance" "postgres" {
   identifier                = "${local.name}-postgres"
   engine                    = "postgres"
-  engine_version            = "16"
+  engine_version          = "16"
   instance_class            = "db.t4g.micro"
   allocated_storage         = 50
   db_name                   = var.db_name
@@ -316,11 +316,11 @@ resource "aws_db_instance" "postgres" {
   password                  = var.db_password
   db_subnet_group_name      = aws_db_subnet_group.postgres.name
   vpc_security_group_ids    = [aws_security_group.data.id]
-  backup_retention_period   = 14
-  deletion_protection       = true
-  storage_encrypted         = true
-  publicly_accessible       = false
-  skip_final_snapshot       = false
+  backup_retention_period = 14
+  deletion_protection     = true
+  storage_encrypted       = true
+  publicly_accessible     = false
+  skip_final_snapshot     = false
   final_snapshot_identifier = "${local.name}-postgres-final-snapshot"
 }
 

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
@@ -6,6 +6,16 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 
 from trading_system.app.core.config import get_settings
+from trading_system.app.alpha.expectancy import AlphaExpectancyRefreshService
+from trading_system.app.alpha.intelligence import (
+    MultiBaggerScoringService,
+    OptionsIntelligenceService,
+    PointInTimeUniverseService,
+    ShortInterestService,
+)
+from trading_system.app.alpha.leadership import SectorLeadershipService
+from trading_system.app.alpha.scoring import AlphaOpportunityScoringService
+from trading_system.app.alpha.strategies import ALPHA_STRATEGIES, AlphaStrategyScannerService
 from trading_system.app.core.enums import AdminRole, EnvironmentMode, MarketRegime
 from trading_system.app.data.market_calendar import get_session, opening_range_window
 from trading_system.app.db import models
@@ -202,6 +212,21 @@ class BacktestRunRequest(BaseModel):
     provider: str = "alpaca_market_data"
 
 
+class AlphaScannerRunRequest(BaseModel):
+    strategy_id: str
+    symbols: list[str] | None = None
+
+
+class AlphaRunRequest(BaseModel):
+    symbols: list[str] | None = None
+    limit: int = Field(default=100, ge=1, le=500)
+
+
+class PointInTimeUniverseRunRequest(BaseModel):
+    universe_name: str = "tradable_us_equities"
+    as_of: datetime | None = None
+
+
 class KillSwitchActivateBody(BaseModel):
     event_type: str
     reason: str
@@ -320,7 +345,9 @@ def auth_login(request: AuthLoginRequest) -> dict:
     session, service = _runtime()
     try:
         service.bootstrap()
-        result = AuthService(service.repository, service.settings).login(request.username, request.password)
+        result = AuthService(service.repository, service.settings).login(
+            request.username, request.password
+        )
         if not result.authenticated:
             raise HTTPException(status_code=401, detail=result.reason)
         return {
@@ -343,7 +370,9 @@ def auth_logout(
     session, service = _runtime()
     try:
         service.bootstrap()
-        revoked = AuthService(service.repository, service.settings).logout(token, actor=principal.username)
+        revoked = AuthService(service.repository, service.settings).logout(
+            token, actor=principal.username
+        )
         return {"revoked": revoked, "reason": "Logout processed."}
     finally:
         session.close()
@@ -371,7 +400,9 @@ def admin_user_upsert(
     if not username:
         raise HTTPException(status_code=422, detail="Username is required.")
     if username == principal.username and request.role != AdminRole.ADMIN:
-        raise HTTPException(status_code=409, detail="Admins cannot demote their own active session user.")
+        raise HTTPException(
+            status_code=409, detail="Admins cannot demote their own active session user."
+        )
     session, service = _runtime()
     try:
         service.bootstrap()
@@ -410,7 +441,9 @@ def admin_user_role(
 ) -> dict:
     username = request.username.strip()
     if username == principal.username and request.role != AdminRole.ADMIN:
-        raise HTTPException(status_code=409, detail="Admins cannot demote their own active session user.")
+        raise HTTPException(
+            status_code=409, detail="Admins cannot demote their own active session user."
+        )
     session, service = _runtime()
     try:
         service.bootstrap()
@@ -440,7 +473,9 @@ def admin_user_active(
     principal: AdminPrincipal = Depends(require_admin_token),
 ) -> dict:
     if request.username.strip() == principal.username and not request.is_active:
-        raise HTTPException(status_code=409, detail="Admins cannot deactivate their own active session user.")
+        raise HTTPException(
+            status_code=409, detail="Admins cannot deactivate their own active session user."
+        )
     session, service = _runtime()
     try:
         service.bootstrap()
@@ -577,7 +612,9 @@ def provider_capabilities(
     session, service = _runtime()
     try:
         service.bootstrap()
-        return {"provider_capabilities": service.repository.list_rows(models.ProviderCapability, 100)}
+        return {
+            "provider_capabilities": service.repository.list_rows(models.ProviderCapability, 100)
+        }
     finally:
         session.close()
 
@@ -645,6 +682,10 @@ def dashboard_snapshot(
         session.close()
 
 
+def _stats_bucket_dict(bucket_stats: dict) -> dict:
+    return {bucket: stats_to_dict(stats) for bucket, stats in bucket_stats.items()}
+
+
 def _read_rows(
     key: str,
     reader: Callable[[TradingRepository, int], list[dict]],
@@ -675,7 +716,9 @@ def market_clean_candles(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("clean_candles", lambda repo, row_limit: repo.latest_clean_candles(row_limit), limit)
+    return _read_rows(
+        "clean_candles", lambda repo, row_limit: repo.latest_clean_candles(row_limit), limit
+    )
 
 
 @app.get("/features/latest")
@@ -691,7 +734,9 @@ def daily_features(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("daily_features", lambda repo, row_limit: repo.latest_daily_features(row_limit), limit)
+    return _read_rows(
+        "daily_features", lambda repo, row_limit: repo.latest_daily_features(row_limit), limit
+    )
 
 
 @app.get("/regime/snapshots")
@@ -699,7 +744,9 @@ def regime_snapshots(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("regime_snapshots", lambda repo, row_limit: repo.latest_regime_snapshots(row_limit), limit)
+    return _read_rows(
+        "regime_snapshots", lambda repo, row_limit: repo.latest_regime_snapshots(row_limit), limit
+    )
 
 
 @app.get("/catalysts/events")
@@ -723,7 +770,9 @@ def scanner_results(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("scanner_results", lambda repo, row_limit: repo.latest_scanner_results(row_limit), limit)
+    return _read_rows(
+        "scanner_results", lambda repo, row_limit: repo.latest_scanner_results(row_limit), limit
+    )
 
 
 def _ranking_to_dict(result: OpportunityRankingResult) -> dict:
@@ -781,21 +830,372 @@ def expectancy_summary(
         summary = view.summary()
         return {
             "overall": stats_to_dict(summary["overall"]),
-            "by_symbol": {
-                bucket: stats_to_dict(stats)
-                for bucket, stats in summary["by_symbol"].items()
-            },
-            "by_sector": {
-                bucket: stats_to_dict(stats)
-                for bucket, stats in summary["by_sector"].items()
-            },
-            "by_regime": {
-                bucket: stats_to_dict(stats)
-                for bucket, stats in summary["by_regime"].items()
-            },
+            "by_strategy": _stats_bucket_dict(summary.get("by_strategy", {})),
+            "by_symbol": _stats_bucket_dict(summary.get("by_symbol", {})),
+            "by_sector": _stats_bucket_dict(summary.get("by_sector", {})),
+            "by_regime": _stats_bucket_dict(summary.get("by_regime", {})),
+            "by_market_regime": _stats_bucket_dict(summary.get("by_market_regime", {})),
+            "by_time_of_day": _stats_bucket_dict(summary.get("by_time_of_day", {})),
+            "by_relative_volume_bucket": _stats_bucket_dict(
+                summary.get("by_relative_volume_bucket", {})
+            ),
+            "by_catalyst_type": _stats_bucket_dict(summary.get("by_catalyst_type", {})),
+            "by_spread_bucket": _stats_bucket_dict(summary.get("by_spread_bucket", {})),
+            "by_volatility_bucket": _stats_bucket_dict(summary.get("by_volatility_bucket", {})),
         }
     finally:
         session.close()
+
+
+@app.get("/alpha/opportunity-scores")
+def alpha_opportunity_scores(
+    _principal: AdminPrincipal = Depends(require_principal),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    return _read_rows(
+        "opportunity_scores",
+        lambda repo, row_limit: repo.latest_opportunity_scores(row_limit),
+        limit,
+    )
+
+
+@app.get("/alpha/opportunity-scores/{symbol}")
+def alpha_opportunity_scores_by_symbol(
+    symbol: str,
+    _principal: AdminPrincipal = Depends(require_principal),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        return {
+            "symbol": symbol.upper(),
+            "scores": service.repository.latest_opportunity_scores_for_symbol(symbol, limit),
+        }
+    finally:
+        session.close()
+
+
+@app.get("/alpha/opportunity-scores/{score_id}/explanation")
+def alpha_opportunity_score_explanation(
+    score_id: str,
+    _principal: AdminPrincipal = Depends(require_principal),
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        row = session.get(models.OpportunityScore, score_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Opportunity score not found.")
+        return {
+            "score": model_to_dict(row),
+            "components": service.repository.opportunity_score_components(score_id),
+        }
+    finally:
+        session.close()
+
+
+@app.get("/alpha/expectancy")
+def alpha_expectancy(
+    _principal: AdminPrincipal = Depends(require_principal),
+    strategy_id: str | None = None,
+    setup_type: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    rows = _read_rows(
+        "expectancy", lambda repo, row_limit: repo.latest_expectancy_snapshots(row_limit), limit
+    )
+    filtered = rows["expectancy"]
+    if strategy_id:
+        filtered = [row for row in filtered if row.get("strategy_id") == strategy_id]
+    if setup_type:
+        filtered = [row for row in filtered if row.get("setup_type") == setup_type]
+    return {"expectancy": filtered}
+
+
+@app.get("/alpha/sector-leadership")
+def alpha_sector_leadership(
+    _principal: AdminPrincipal = Depends(require_principal),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        return {
+            "sectors": service.repository.latest_sector_strength(limit),
+            "symbols": service.repository.latest_symbol_relative_strength(limit),
+        }
+    finally:
+        session.close()
+
+
+@app.get("/alpha/candidates")
+def alpha_candidates(
+    _principal: AdminPrincipal = Depends(require_principal),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        return {"candidates": service.repository.latest_opportunity_scores(limit)}
+    finally:
+        session.close()
+
+
+@app.get("/alpha/rejections")
+def alpha_rejections(
+    _principal: AdminPrincipal = Depends(require_principal),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    return _read_rows(
+        "rejections", lambda repo, row_limit: repo.latest_alpha_rejections(row_limit), limit
+    )
+
+
+@app.post("/alpha/scoring/run-once")
+def alpha_scoring_run_once(
+    request: AlphaRunRequest,
+    principal: AdminPrincipal = Depends(require_trader_or_admin),
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        result = AlphaOpportunityScoringService(service.repository).score_recent_accepted(
+            limit=request.limit, symbols=request.symbols
+        )
+        _audit_manual_operation(
+            service.repository,
+            actor=principal.username,
+            operation="alpha_scoring_run_once",
+            reason="Alpha scoring run completed.",
+            payload={"limit": request.limit, "symbols": request.symbols},
+            result={"scores_created": len(result)},
+        )
+        return {"scores_created": len(result), "scores": [item.__dict__ for item in result]}
+    finally:
+        session.close()
+
+
+@app.post("/alpha/scanners/run")
+def alpha_scanner_run(
+    request: AlphaScannerRunRequest,
+    principal: AdminPrincipal = Depends(require_trader_or_admin),
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        result = AlphaStrategyScannerService(service.repository).run_strategy(
+            request.strategy_id, symbols=request.symbols
+        )
+        _audit_manual_operation(
+            service.repository,
+            actor=principal.username,
+            operation="alpha_scanner_run",
+            reason=result.reason,
+            payload={"strategy_id": request.strategy_id, "symbols": request.symbols},
+            result=result,
+        )
+        return result.__dict__
+    finally:
+        session.close()
+
+
+@app.post("/alpha/expectancy/refresh")
+def alpha_expectancy_refresh(
+    principal: AdminPrincipal = Depends(require_trader_or_admin),
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        result = AlphaExpectancyRefreshService(service.repository).refresh()
+        _audit_manual_operation(
+            service.repository,
+            actor=principal.username,
+            operation="alpha_expectancy_refresh",
+            reason=result.reason,
+            result=result,
+        )
+        return result.__dict__
+    finally:
+        session.close()
+
+
+@app.post("/alpha/regime/refresh")
+def alpha_regime_refresh(
+    principal: AdminPrincipal = Depends(require_trader_or_admin),
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        result = service.run_market_regime()
+        leadership = SectorLeadershipService(service.repository).refresh()
+        _audit_manual_operation(
+            service.repository,
+            actor=principal.username,
+            operation="alpha_regime_refresh",
+            reason=result.reason,
+            result={"regime": result.__dict__, "leadership": leadership.__dict__},
+        )
+        return {"regime": result.__dict__, "leadership": leadership.__dict__}
+    finally:
+        session.close()
+
+
+@app.get("/alpha/point-in-time-universe")
+def alpha_point_in_time_universe(
+    _principal: AdminPrincipal = Depends(require_principal),
+    as_of: datetime | None = None,
+    universe_name: str = "tradable_us_equities",
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        timestamp = as_of or datetime.now(UTC)
+        return {
+            "universe_name": universe_name,
+            "as_of": timestamp,
+            "members": service.repository.point_in_time_universe(
+                as_of=timestamp, universe_name=universe_name
+            ),
+        }
+    finally:
+        session.close()
+
+
+@app.post("/alpha/point-in-time-universe/refresh")
+def alpha_point_in_time_universe_refresh(
+    request: PointInTimeUniverseRunRequest,
+    principal: AdminPrincipal = Depends(require_trader_or_admin),
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        result = PointInTimeUniverseService(service.repository).snapshot_current_universe(
+            universe_name=request.universe_name,
+            as_of=request.as_of,
+        )
+        _audit_manual_operation(
+            service.repository,
+            actor=principal.username,
+            operation="alpha_point_in_time_universe_refresh",
+            reason=result.reason,
+            payload=request.model_dump(),
+            result={"records_created": result.records_created},
+        )
+        return result.__dict__
+    finally:
+        session.close()
+
+
+@app.get("/alpha/short-interest")
+def alpha_short_interest(
+    _principal: AdminPrincipal = Depends(require_principal),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    return _read_rows(
+        "short_interest",
+        lambda repo, row_limit: repo.latest_short_interest_snapshots(row_limit),
+        limit,
+    )
+
+
+@app.post("/alpha/short-interest/refresh")
+def alpha_short_interest_refresh(
+    request: AlphaRunRequest,
+    principal: AdminPrincipal = Depends(require_trader_or_admin),
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        result = ShortInterestService(service.repository).refresh_from_universe_payloads(
+            request.symbols
+        )
+        _audit_manual_operation(
+            service.repository,
+            actor=principal.username,
+            operation="alpha_short_interest_refresh",
+            reason=result.reason,
+            payload=request.model_dump(),
+            result={"records_created": result.records_created},
+        )
+        return result.__dict__
+    finally:
+        session.close()
+
+
+@app.get("/alpha/options-intelligence")
+def alpha_options_intelligence(
+    _principal: AdminPrincipal = Depends(require_principal),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    return _read_rows(
+        "options_intelligence",
+        lambda repo, row_limit: repo.latest_options_intelligence_snapshots(row_limit),
+        limit,
+    )
+
+
+@app.post("/alpha/options-intelligence/refresh")
+def alpha_options_intelligence_refresh(
+    request: AlphaRunRequest,
+    principal: AdminPrincipal = Depends(require_trader_or_admin),
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        result = OptionsIntelligenceService(service.repository).refresh_from_universe_payloads(
+            request.symbols
+        )
+        _audit_manual_operation(
+            service.repository,
+            actor=principal.username,
+            operation="alpha_options_intelligence_refresh",
+            reason=result.reason,
+            payload=request.model_dump(),
+            result={"records_created": result.records_created},
+        )
+        return result.__dict__
+    finally:
+        session.close()
+
+
+@app.get("/alpha/multi-bagger-candidates")
+def alpha_multi_bagger_candidates(
+    _principal: AdminPrincipal = Depends(require_principal),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    return _read_rows(
+        "multi_bagger_candidates",
+        lambda repo, row_limit: repo.latest_multi_bagger_candidate_scores(row_limit),
+        limit,
+    )
+
+
+@app.post("/alpha/multi-bagger-candidates/score")
+def alpha_multi_bagger_score(
+    request: AlphaRunRequest,
+    principal: AdminPrincipal = Depends(require_trader_or_admin),
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        result = MultiBaggerScoringService(service.repository).score_universe(request.symbols)
+        _audit_manual_operation(
+            service.repository,
+            actor=principal.username,
+            operation="alpha_multi_bagger_score",
+            reason=result.reason,
+            payload=request.model_dump(),
+            result={"records_created": result.records_created},
+        )
+        return result.__dict__
+    finally:
+        session.close()
+
+
+@app.get("/alpha/strategies")
+def alpha_strategies(_principal: AdminPrincipal = Depends(require_principal)) -> dict:
+    return {"strategies": sorted(ALPHA_STRATEGIES)}
 
 
 @app.get("/signals")
@@ -811,7 +1211,9 @@ def trade_theses(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("trade_theses", lambda repo, row_limit: repo.latest_trade_theses(row_limit), limit)
+    return _read_rows(
+        "trade_theses", lambda repo, row_limit: repo.latest_trade_theses(row_limit), limit
+    )
 
 
 @app.get("/risk/checks")
@@ -819,7 +1221,9 @@ def risk_checks(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("risk_checks", lambda repo, row_limit: repo.latest_risk_checks(row_limit), limit)
+    return _read_rows(
+        "risk_checks", lambda repo, row_limit: repo.latest_risk_checks(row_limit), limit
+    )
 
 
 @app.get("/risk/exposures")
@@ -827,7 +1231,11 @@ def exposure_snapshots(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("exposure_snapshots", lambda repo, row_limit: repo.latest_exposure_snapshots(row_limit), limit)
+    return _read_rows(
+        "exposure_snapshots",
+        lambda repo, row_limit: repo.latest_exposure_snapshots(row_limit),
+        limit,
+    )
 
 
 @app.get("/broker/account-snapshots")
@@ -847,7 +1255,9 @@ def broker_sync_logs(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("broker_sync_logs", lambda repo, row_limit: repo.latest_broker_sync_logs(row_limit), limit)
+    return _read_rows(
+        "broker_sync_logs", lambda repo, row_limit: repo.latest_broker_sync_logs(row_limit), limit
+    )
 
 
 @app.get("/providers/health")
@@ -855,7 +1265,9 @@ def provider_health(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("provider_health", lambda repo, row_limit: repo.latest_provider_health(row_limit), limit)
+    return _read_rows(
+        "provider_health", lambda repo, row_limit: repo.latest_provider_health(row_limit), limit
+    )
 
 
 @app.get("/providers/rate-limits")
@@ -863,7 +1275,11 @@ def provider_rate_limits(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("provider_rate_limits", lambda repo, row_limit: repo.latest_provider_rate_limits(row_limit), limit)
+    return _read_rows(
+        "provider_rate_limits",
+        lambda repo, row_limit: repo.latest_provider_rate_limits(row_limit),
+        limit,
+    )
 
 
 @app.get("/streams/events")
@@ -871,7 +1287,9 @@ def stream_events(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("stream_events", lambda repo, row_limit: repo.latest_stream_events(row_limit), limit)
+    return _read_rows(
+        "stream_events", lambda repo, row_limit: repo.latest_stream_events(row_limit), limit
+    )
 
 
 @app.get("/scheduler/runs")
@@ -879,7 +1297,9 @@ def scheduler_runs(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("scheduler_runs", lambda repo, row_limit: repo.latest_scheduler_runs(row_limit), limit)
+    return _read_rows(
+        "scheduler_runs", lambda repo, row_limit: repo.latest_scheduler_runs(row_limit), limit
+    )
 
 
 @app.get("/data/news")
@@ -887,7 +1307,9 @@ def clean_news(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("clean_news", lambda repo, row_limit: repo.latest_clean_news(row_limit), limit)
+    return _read_rows(
+        "clean_news", lambda repo, row_limit: repo.latest_clean_news(row_limit), limit
+    )
 
 
 @app.get("/data/sec-filings")
@@ -903,7 +1325,11 @@ def data_quality_errors(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("data_quality_errors", lambda repo, row_limit: repo.latest_data_quality_errors(row_limit), limit)
+    return _read_rows(
+        "data_quality_errors",
+        lambda repo, row_limit: repo.latest_data_quality_errors(row_limit),
+        limit,
+    )
 
 
 @app.get("/data/missing-candle-gaps")
@@ -911,7 +1337,11 @@ def missing_candle_gaps(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("missing_candle_gaps", lambda repo, row_limit: repo.latest_missing_candle_gaps(row_limit), limit)
+    return _read_rows(
+        "missing_candle_gaps",
+        lambda repo, row_limit: repo.latest_missing_candle_gaps(row_limit),
+        limit,
+    )
 
 
 @app.get("/execution/orders")
@@ -943,7 +1373,9 @@ def execution_errors(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("execution_errors", lambda repo, row_limit: repo.latest_execution_errors(row_limit), limit)
+    return _read_rows(
+        "execution_errors", lambda repo, row_limit: repo.latest_execution_errors(row_limit), limit
+    )
 
 
 @app.get("/journal/entries")
@@ -959,7 +1391,9 @@ def trade_reviews(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("ai_reviews", lambda repo, row_limit: repo.latest_ai_reviews(row_limit), limit)
+    return _read_rows(
+        "ai_reviews", lambda repo, row_limit: repo.latest_ai_reviews(row_limit), limit
+    )
 
 
 @app.get("/reviews/weekly")
@@ -967,7 +1401,9 @@ def weekly_reviews(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> dict:
-    return _read_rows("weekly_reviews", lambda repo, row_limit: repo.latest_weekly_reviews(row_limit), limit)
+    return _read_rows(
+        "weekly_reviews", lambda repo, row_limit: repo.latest_weekly_reviews(row_limit), limit
+    )
 
 
 @app.get("/learning/recommendations")
@@ -987,7 +1423,9 @@ def backtest_reports(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=50, ge=1, le=100),
 ) -> dict:
-    return _read_rows("backtest_reports", lambda repo, row_limit: repo.latest_backtest_reports(row_limit), limit)
+    return _read_rows(
+        "backtest_reports", lambda repo, row_limit: repo.latest_backtest_reports(row_limit), limit
+    )
 
 
 @app.get("/strategy-approvals/requests")
@@ -1007,7 +1445,9 @@ def kill_switches(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("kill_switches", lambda repo, row_limit: repo.latest_kill_switches(row_limit), limit)
+    return _read_rows(
+        "kill_switches", lambda repo, row_limit: repo.latest_kill_switches(row_limit), limit
+    )
 
 
 @app.get("/decisions")
@@ -1023,7 +1463,9 @@ def audit_logs(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=200, ge=1, le=500),
 ) -> dict:
-    return _read_rows("audit_logs", lambda repo, row_limit: repo.latest_audit_logs(row_limit), limit)
+    return _read_rows(
+        "audit_logs", lambda repo, row_limit: repo.latest_audit_logs(row_limit), limit
+    )
 
 
 @app.post("/symbols/activate")
@@ -1224,7 +1666,9 @@ def collect_yahoo(
         symbols = request.symbols or service.repository.active_symbols()
         results = []
         for symbol in symbols:
-            row = service.repository.add_or_activate_symbol(symbol, reason="Activated for API collection.")
+            row = service.repository.add_or_activate_symbol(
+                symbol, reason="Activated for API collection."
+            )
             if request.symbols:
                 _store_symbol_config_audit(
                     service.repository,
@@ -1298,7 +1742,9 @@ def scan_watchlist(
     try:
         service.bootstrap()
         for symbol in request.symbols or []:
-            row = service.repository.add_or_activate_symbol(symbol, reason="Activated for API scan.")
+            row = service.repository.add_or_activate_symbol(
+                symbol, reason="Activated for API scan."
+            )
             _store_symbol_config_audit(
                 service.repository,
                 actor=principal.username,
@@ -1427,13 +1873,17 @@ def replace_order(
     session, service = _runtime()
     try:
         service.bootstrap()
-        return OrderManager(service.repository).request_replace_order(
-            order_id=request.order_id,
-            reason=request.reason,
-            actor=principal.username,
-            new_limit_price=request.new_limit_price,
-            new_stop_loss=request.new_stop_loss,
-        ).__dict__
+        return (
+            OrderManager(service.repository)
+            .request_replace_order(
+                order_id=request.order_id,
+                reason=request.reason,
+                actor=principal.username,
+                new_limit_price=request.new_limit_price,
+                new_stop_loss=request.new_stop_loss,
+            )
+            .__dict__
+        )
     finally:
         session.close()
 
@@ -1662,7 +2112,6 @@ def live_readiness_reports(
         return {"live_readiness_reports": service.repository.latest_live_readiness_reports(limit)}
     finally:
         session.close()
-
 
 
 @app.get("/live-readiness/detail")

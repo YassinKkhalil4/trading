@@ -28,7 +28,10 @@ from trading_system.app.data.collectors.alpha_vantage_news import AlphaVantageNe
 from trading_system.app.data.collectors.news_rss import NewsCollectionResult
 from trading_system.app.data.collectors.sec_edgar import SecCollectionResult, SecEdgarCollector
 from trading_system.app.data.collectors.yahoo_chart import YahooChartCollector, YahooChartResult
-from trading_system.app.data.quality_repair import MissingCandleRepairResult, MissingCandleRepairService
+from trading_system.app.data.quality_repair import (
+    MissingCandleRepairResult,
+    MissingCandleRepairService,
+)
 from trading_system.app.data.universe import LiquidUniverseBuilder, UniverseRefreshResult
 from trading_system.app.db import models
 from trading_system.app.db.repositories import TradingRepository, model_to_dict
@@ -58,10 +61,19 @@ from trading_system.app.features.calculations import (
     calculate_volume_spike_score,
     calculate_vwap,
 )
-from trading_system.app.features.production_features import FeatureRunResult, ProductionFeatureEngine
+from trading_system.app.features.production_features import (
+    FeatureRunResult,
+    ProductionFeatureEngine,
+)
 from trading_system.app.journal.review_engine import ReviewRunResult, TradeReviewEngine
-from trading_system.app.learning.recommendations import LearningRecommendationEngine, LearningRunResult
-from trading_system.app.monitoring.trade_monitor_service import TradeMonitorRunResult, TradeMonitorService
+from trading_system.app.learning.recommendations import (
+    LearningRecommendationEngine,
+    LearningRunResult,
+)
+from trading_system.app.monitoring.trade_monitor_service import (
+    TradeMonitorRunResult,
+    TradeMonitorService,
+)
 from trading_system.app.ops.provider_health import ProviderHealthRunResult, ProviderHealthService
 from trading_system.app.research.vectorbt_backtests import (
     BacktestAssumptions,
@@ -615,7 +627,9 @@ class TradingRuntimeService:
                 mismatch_detected=False,
                 reason=reason,
                 payload={
-                    "configured": bool(self.settings.alpaca_live_api_key and self.settings.alpaca_live_secret_key),
+                    "configured": bool(
+                        self.settings.alpaca_live_api_key and self.settings.alpaca_live_secret_key
+                    ),
                     "blocked": True,
                     "blockers": blockers,
                     "reconciliation": reconciliation.__dict__,
@@ -633,7 +647,9 @@ class TradingRuntimeService:
                 },
             )
             return {
-                "configured": bool(self.settings.alpaca_live_api_key and self.settings.alpaca_live_secret_key),
+                "configured": bool(
+                    self.settings.alpaca_live_api_key and self.settings.alpaca_live_secret_key
+                ),
                 "success": False,
                 "blocked": True,
                 "reason": reason,
@@ -846,7 +862,12 @@ class TradingRuntimeService:
         self.bootstrap()
         order = self.repository.session.get(models.Order, order_id)
         if not order:
-            return {"accepted": False, "reason": f"Unknown order id: {order_id}.", "order": None, "broker_submit": None}
+            return {
+                "accepted": False,
+                "reason": f"Unknown order id: {order_id}.",
+                "order": None,
+                "broker_submit": None,
+            }
         if order.status != OrderStatus.SUBMITTED.value:
             self._log_internal_order_submit_block(
                 order=order,
@@ -884,7 +905,9 @@ class TradingRuntimeService:
                 "broker_submit": None,
             }
 
-        signal = self.repository.session.get(models.Signal, order.signal_id) if order.signal_id else None
+        signal = (
+            self.repository.session.get(models.Signal, order.signal_id) if order.signal_id else None
+        )
         environment = order.environment_mode
         if environment == EnvironmentMode.LIVE.value:
             gate = LiveGateService(self.repository, self.settings).evaluate(
@@ -892,7 +915,9 @@ class TradingRuntimeService:
                 signal_id=order.signal_id,
             )
             if not gate.allowed:
-                self._log_internal_order_submit_block(order=order, actor=actor, reason=gate.reason, payload=gate.__dict__)
+                self._log_internal_order_submit_block(
+                    order=order, actor=actor, reason=gate.reason, payload=gate.__dict__
+                )
                 return {
                     "accepted": False,
                     "reason": gate.reason,
@@ -908,7 +933,10 @@ class TradingRuntimeService:
             )
             broker = "alpaca_live"
             error_type = "LIVE_INTERNAL_MARKET_ORDER_SUBMIT_FAILED"
-        elif environment == EnvironmentMode.PAPER.value and self.settings.environment_mode == EnvironmentMode.PAPER:
+        elif (
+            environment == EnvironmentMode.PAPER.value
+            and self.settings.environment_mode == EnvironmentMode.PAPER
+        ):
             broker_submit = AlpacaPaperAdapter(self.settings).submit_market_order(
                 symbol=order.symbol,
                 side=order.side,
@@ -918,7 +946,9 @@ class TradingRuntimeService:
             broker = "alpaca_paper"
             error_type = "PAPER_INTERNAL_MARKET_ORDER_SUBMIT_FAILED"
         else:
-            block_reason = "Internal broker submission requires matching paper mode or fully gated live mode."
+            block_reason = (
+                "Internal broker submission requires matching paper mode or fully gated live mode."
+            )
             self._log_internal_order_submit_block(order=order, actor=actor, reason=block_reason)
             return {
                 "accepted": False,
@@ -1078,10 +1108,7 @@ class TradingRuntimeService:
                 f"strategy_trades_today={strategy_trades_today}."
             ),
         )
-        if (
-            volatility_score is not None
-            and volatility_score >= self.settings.max_volatility_score
-        ):
+        if volatility_score is not None and volatility_score >= self.settings.max_volatility_score:
             self.repository.activate_kill_switch(
                 event_type="VOLATILITY_BREACH",
                 reason=(
@@ -1127,7 +1154,11 @@ class TradingRuntimeService:
 
     def _latest_volatility_score(self, symbol: str) -> float | None:
         feature = self.repository.latest_daily_feature_for(symbol)
-        return float(feature.volatility_score) if feature and feature.volatility_score is not None else None
+        return (
+            float(feature.volatility_score)
+            if feature and feature.volatility_score is not None
+            else None
+        )
 
     def _effective_loss_controls(
         self,
@@ -1291,7 +1322,9 @@ class TradingRuntimeService:
         self.bootstrap()
         return CatalystEngine(self.repository).run_once(symbols)
 
-    def run_production_scanners(self, symbols: list[str] | None = None) -> ProductionScannerRunResult:
+    def run_production_scanners(
+        self, symbols: list[str] | None = None
+    ) -> ProductionScannerRunResult:
         self.bootstrap()
         return ProductionScannerEngine(self.repository).run_once(symbols)
 
@@ -1379,7 +1412,9 @@ class TradingRuntimeService:
         actor: str = "system",
     ) -> KillSwitchActionResult:
         self.bootstrap()
-        return KillSwitchService(self.repository).resolve(event_id=event_id, reason=reason, actor=actor)
+        return KillSwitchService(self.repository).resolve(
+            event_id=event_id, reason=reason, actor=actor
+        )
 
     def run_backtest(
         self,
@@ -1405,7 +1440,9 @@ class TradingRuntimeService:
             provider = "yahoo_chart"
         assumptions = BacktestAssumptions()
         if len(frame) < 30:
-            metrics = {"error": "At least 30 clean candles are required for a VWAP reclaim backtest."}
+            metrics = {
+                "error": "At least 30 clean candles are required for a VWAP reclaim backtest."
+            }
             report = self.repository.store_backtest_report(
                 strategy_id=strategy_id,
                 strategy_version="v1",
@@ -1484,6 +1521,17 @@ class TradingRuntimeService:
             "kill_switches": self.repository.latest_kill_switches(100),
             "strategy_approval_requests": self.repository.latest_strategy_approval_requests(100),
             "missing_candle_gaps": self.repository.latest_missing_candle_gaps(100),
+            "opportunity_scores": self.repository.latest_opportunity_scores(100),
+            "alpha_rejections": self.repository.latest_alpha_rejections(100),
+            "expectancy_snapshots": self.repository.latest_expectancy_snapshots(100),
+            "sector_strength": self.repository.latest_sector_strength(100),
+            "symbol_relative_strength": self.repository.latest_symbol_relative_strength(100),
+            "point_in_time_universe": self.repository.latest_point_in_time_universe_memberships(
+                100
+            ),
+            "short_interest": self.repository.latest_short_interest_snapshots(100),
+            "options_intelligence": self.repository.latest_options_intelligence_snapshots(100),
+            "multi_bagger_candidates": self.repository.latest_multi_bagger_candidate_scores(100),
             "providers": self.repository.list_rows(models.ProviderCapability, 100),
             "strategies": self.repository.list_rows(models.StrategyRegistry, 100),
         }
@@ -1500,7 +1548,9 @@ class TradingRuntimeService:
         previous = ordered.iloc[-2]
         session_volume = float(ordered["volume"].sum())
         current_volume = float(latest["volume"])
-        relative_volume = calculate_relative_volume(current_volume, max(1.0, float(ordered["volume"].tail(20).mean())))
+        relative_volume = calculate_relative_volume(
+            current_volume, max(1.0, float(ordered["volume"].tail(20).mean()))
+        )
         dollar_volume = float((ordered["close"] * ordered["volume"]).sum())
         spread_bps = calculate_spread_bps(float(latest["low"]), float(latest["high"]))
         volume_spike_score = calculate_volume_spike_score(relative_volume)
