@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 from trading_system.app.core.config import get_settings
@@ -285,6 +286,170 @@ def _compact_dict(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+_PRICE_CACHE: dict[tuple[str, int], pd.DataFrame] = {}
+_TERMINAL_SIGNAL_STATUSES = {"REJECTED", "FILLED", "CANCELLED", "EXPIRED"}
+
+
+def _fmt_money(value: Any) -> str:
+    if value is None:
+        return "—"
+    try:
+        return f"${float(value):,.2f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _fmt_pct(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        return f"{float(value):+.2f}%"
+    except (TypeError, ValueError):
+        return None
+
+
+def _style_fig(fig: go.Figure, *, height: int = 320) -> go.Figure:
+    fig.update_layout(
+        height=height,
+        margin=dict(l=8, r=8, t=10, b=8),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#e6edf3", size=12),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0,
+            bgcolor="rgba(0,0,0,0)",
+        ),
+        hovermode="x unified",
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="#1c2740", zeroline=False)
+    fig.update_yaxes(showgrid=True, gridcolor="#1c2740", zeroline=False)
+    return fig
+
+
+def _price_history(symbol: str, *, limit: int = 500) -> pd.DataFrame:
+    key = (symbol.upper(), limit)
+    if key in _PRICE_CACHE:
+        return _PRICE_CACHE[key]
+    try:
+        frame = service.repository.clean_candles_df(symbol, limit=limit)
+    except Exception:
+        frame = pd.DataFrame()
+    if frame is None or frame.empty:
+        _PRICE_CACHE[key] = pd.DataFrame()
+        return _PRICE_CACHE[key]
+    frame = frame.copy()
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce")
+    frame = frame.dropna(subset=["timestamp"])
+    _PRICE_CACHE[key] = frame
+    return frame
+
+
+def _series_close(frame: pd.DataFrame, position: int = -1) -> float | None:
+    if frame is None or frame.empty or "close" not in frame:
+        return None
+    closes = frame["close"].dropna()
+    if closes.empty or abs(position) > len(closes):
+        return None
+    return float(closes.iloc[position])
+
+
+def _latest_volume(frame: pd.DataFrame) -> float | None:
+    if frame is None or frame.empty or "volume" not in frame:
+        return None
+    vols = frame["volume"].dropna()
+    return float(vols.iloc[-1]) if not vols.empty else None
+
+
+def _enrich_positions(
+    positions: list[dict[str, Any]],
+    prices: dict[str, pd.DataFrame],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for pos in positions:
+        quantity = pos.get("quantity") or 0.0
+        if not quantity:
+            continue
+        symbol = pos.get("symbol", "")
+        avg_price = pos.get("average_price")
+        current = _series_close(prices.get(symbol, pd.DataFrame()))
+        cost_basis = (avg_price or 0.0) * quantity
+        market_value = current * quantity if current is not None else None
+        unrealized = (market_value - cost_basis) if market_value is not None else None
+        unrealized_pct = (
+            unrealized / abs(cost_basis) * 100.0
+            if unrealized is not None and cost_basis
+            else None
+        )
+        rows.append(
+            {
+                "symbol": symbol,
+                "quantity": quantity,
+                "average_price": avg_price,
+                "current_price": current,
+                "market_value": market_value,
+                "unrealized_pnl": unrealized,
+                "unrealized_pnl_pct": unrealized_pct,
+                "environment_mode": pos.get("environment_mode"),
+                "reconciliation_status": pos.get("reconciliation_status"),
+            }
+        )
+    return rows
+
+
+def _positions_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Symbol": r["symbol"],
+                "Qty": r["quantity"],
+                "Avg price": r["average_price"],
+                "Current": r["current_price"],
+                "Mkt value": r["market_value"],
+                "Unreal P&L": r["unrealized_pnl"],
+                "P&L %": r["unrealized_pnl_pct"],
+                "Env": r["environment_mode"],
+                "Recon": r["reconciliation_status"],
+            }
+            for r in rows
+        ]
+    )
+
+
+def _pnl_color(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return f"color: {'#29d398' if value >= 0 else '#f87171'}; font-weight: 600;"
+
+
+def _style_positions(frame: pd.DataFrame):
+    if frame.empty:
+        return frame
+    return frame.style.map(_pnl_color, subset=["Unreal P&L", "P&L %"]).format(
+        {
+            "Qty": "{:,.0f}",
+            "Avg price": "${:,.2f}",
+            "Current": "${:,.2f}",
+            "Mkt value": "${:,.2f}",
+            "Unreal P&L": "${:,.2f}",
+            "P&L %": "{:+.2f}%",
+        },
+        na_rep="—",
+    )
+
+
+def _style_board(frame: pd.DataFrame):
+    if frame.empty:
+        return frame
+    return frame.style.map(_pnl_color, subset=["Last bar %"]).format(
+        {"Price": "${:,.2f}", "Last bar %": "{:+.2f}%", "Volume": "{:,.0f}"},
+        na_rep="—",
+    )
+
+
 def _audit_symbol_config(
     repo: TradingRepository,
     *,
@@ -396,6 +561,7 @@ can_trade = principal.role in {AdminRole.ADMIN.value, AdminRole.TRADER.value}
 can_admin = principal.role == AdminRole.ADMIN.value
 
 service = _service()
+_PRICE_CACHE.clear()
 
 try:
     service.bootstrap()
@@ -842,8 +1008,22 @@ for state_key, title in [
         with st.expander(title, expanded=True):
             st.json(st.session_state[state_key])
 
-tabs = st.tabs(
+(
+    tab_overview,
+    tab_active,
+    tab_market,
+    tab_catalysts,
+    tab_signals,
+    tab_risk,
+    tab_journal,
+    tab_providers,
+    tab_decisions,
+    tab_readiness,
+    tab_admin,
+) = st.tabs(
     [
+        "Overview",
+        "Active Trades",
         "Live Market",
         "Catalysts + Stream",
         "Signals + Reasoning",
@@ -856,7 +1036,338 @@ tabs = st.tabs(
     ]
 )
 
-with tabs[0]:
+with tab_overview:
+    st.subheader("Command Center")
+    st.caption("Live snapshot of the portfolio, market regime, and system activity.")
+
+    _broker_snaps = snapshot["broker_account_snapshots"]
+    _latest_acct = _broker_snaps[0] if _broker_snaps else None
+    _prev_acct = _broker_snaps[1] if len(_broker_snaps) > 1 else None
+
+    def _acct_value(field: str) -> Any:
+        return _latest_acct.get(field) if _latest_acct else None
+
+    def _acct_delta(field: str) -> str | None:
+        if not _latest_acct or not _prev_acct:
+            return None
+        cur, prev = _latest_acct.get(field), _prev_acct.get(field)
+        if cur is None or prev is None:
+            return None
+        return _fmt_money(cur - prev)
+
+    _ov_positions = [p for p in snapshot["positions"] if (p.get("quantity") or 0)]
+    _ov_symbols = sorted({p["symbol"] for p in _ov_positions})
+    _ov_prices = {s: _price_history(s) for s in _ov_symbols}
+    _ov_enriched = _enrich_positions(_ov_positions, _ov_prices)
+    _ov_total_value = sum(r["market_value"] for r in _ov_enriched if r["market_value"] is not None)
+    _ov_total_pnl = sum(r["unrealized_pnl"] for r in _ov_enriched if r["unrealized_pnl"] is not None)
+
+    _ov_row1 = st.columns(4)
+    _ov_row1[0].metric("Equity", _fmt_money(_acct_value("equity")), delta=_acct_delta("equity"))
+    _ov_row1[1].metric("Cash", _fmt_money(_acct_value("cash")))
+    _ov_row1[2].metric("Buying power", _fmt_money(_acct_value("buying_power")))
+    _ov_row1[3].metric("Open positions", len(_ov_enriched))
+
+    _ov_row2 = st.columns(4)
+    _ov_row2[0].metric("Unrealized P&L", _fmt_money(_ov_total_pnl) if _ov_enriched else "—")
+    _ov_row2[1].metric("Positions value", _fmt_money(_ov_total_value) if _ov_enriched else "—")
+    _ov_active_signal_count = sum(
+        1
+        for row in snapshot["signals"]
+        if str(row.get("status", "")).upper() not in _TERMINAL_SIGNAL_STATUSES
+    )
+    _ov_row2[2].metric("Active signals", _ov_active_signal_count)
+    _ov_row2[3].metric("Market regime", _latest_regime)
+
+    _section("Equity curve")
+    if _broker_snaps:
+        _eq = pd.DataFrame(_broker_snaps)
+        if "equity" in _eq.columns and "created_at" in _eq.columns:
+            _eq = _eq[["created_at", "equity"]].dropna()
+            _eq["created_at"] = pd.to_datetime(_eq["created_at"], utc=True, errors="coerce")
+            _eq = _eq.dropna().sort_values("created_at")
+        else:
+            _eq = pd.DataFrame()
+        if not _eq.empty:
+            _eq_fig = go.Figure()
+            _eq_fig.add_trace(
+                go.Scatter(
+                    x=_eq["created_at"],
+                    y=_eq["equity"],
+                    mode="lines",
+                    line=dict(color="#4c8dff", width=2),
+                    fill="tozeroy",
+                    fillcolor="rgba(76,141,255,0.12)",
+                    name="Equity",
+                )
+            )
+            st.plotly_chart(
+                _style_fig(_eq_fig, height=300),
+                width="stretch",
+                config={"displayModeBar": False},
+            )
+        else:
+            st.info("No broker equity history yet. Use 'Sync Alpaca Paper' in the sidebar to populate it.")
+    else:
+        st.info("No broker account snapshots yet. Use 'Sync Alpaca Paper' in the sidebar.")
+
+    _ov_cols = st.columns([1.5, 1])
+    with _ov_cols[0]:
+        _section("Open positions")
+        if _ov_enriched:
+            st.dataframe(
+                _style_positions(_positions_frame(_ov_enriched)),
+                width="stretch",
+                height=280,
+            )
+        else:
+            st.info("No open positions yet. They appear after paper fills or an Alpaca sync.")
+    with _ov_cols[1]:
+        _section("Market regime")
+        _regimes = snapshot["regime_snapshots"]
+        if _regimes:
+            _r = _regimes[0]
+            _rc = st.columns(2)
+            _rc[0].metric("Regime", str(_r.get("market_regime") or "—"))
+            _conf = _r.get("confidence")
+            _rc[1].metric("Confidence", f"{_conf:.0f}" if _conf is not None else "—")
+            _rc2 = st.columns(2)
+            _rc2[0].metric("Allowed bias", str(_r.get("allowed_bias") or "—"))
+            _rm = _r.get("risk_multiplier")
+            _rc2[1].metric("Risk multiplier", f"{_rm:.2f}" if _rm is not None else "—")
+            if _r.get("reason"):
+                st.caption(str(_r["reason"]))
+        else:
+            st.info("No market regime computed yet. Run 'Features + Regime + Catalysts'.")
+
+    _section("Recent signals")
+    _recent_signals = [
+        {
+            "symbol": row["symbol"],
+            "strategy": row["strategy_id"],
+            "status": row["status"],
+            "direction": row["direction"],
+            "confidence": row["confidence_score"],
+            "created_at": row["created_at"],
+        }
+        for row in snapshot["signals"][:8]
+    ]
+    _table(_recent_signals, label="signal", height=240)
+
+with tab_active:
+    st.subheader("Active Trades")
+    st.caption("Positions you currently hold plus active signal setups the system is tracking.")
+
+    _act_positions = [p for p in snapshot["positions"] if (p.get("quantity") or 0)]
+    _act_symbols = sorted({p["symbol"] for p in _act_positions})
+    _act_prices = {s: _price_history(s) for s in _act_symbols}
+    _act_enriched = _enrich_positions(_act_positions, _act_prices)
+
+    if _act_enriched:
+        _act_mv = sum(r["market_value"] for r in _act_enriched if r["market_value"] is not None)
+        _act_cost = sum(
+            (r["average_price"] or 0.0) * r["quantity"]
+            for r in _act_enriched
+            if r["average_price"] is not None
+        )
+        _act_pnl = sum(r["unrealized_pnl"] for r in _act_enriched if r["unrealized_pnl"] is not None)
+        _act_winners = sum(1 for r in _act_enriched if (r["unrealized_pnl"] or 0) > 0)
+        _act_k = st.columns(4)
+        _act_k[0].metric("Open positions", len(_act_enriched))
+        _act_k[1].metric("Market value", _fmt_money(_act_mv))
+        _act_k[2].metric(
+            "Unrealized P&L",
+            _fmt_money(_act_pnl),
+            delta=_fmt_pct(_act_pnl / _act_cost * 100.0) if _act_cost else None,
+        )
+        _act_k[3].metric("Winners / losers", f"{_act_winners} / {len(_act_enriched) - _act_winners}")
+
+        _section("Open positions")
+        st.caption("Current price and P&L use the latest collected candle for each symbol.")
+        st.dataframe(
+            _style_positions(_positions_frame(_act_enriched)),
+            width="stretch",
+            height=340,
+        )
+
+        _act_priced = [r for r in _act_enriched if r["unrealized_pnl"] is not None]
+        if _act_priced:
+            _section("Unrealized P&L by position")
+            _act_bar = go.Figure(
+                go.Bar(
+                    x=[r["symbol"] for r in _act_priced],
+                    y=[r["unrealized_pnl"] for r in _act_priced],
+                    marker_color=[
+                        "#29d398" if (r["unrealized_pnl"] or 0) >= 0 else "#f87171"
+                        for r in _act_priced
+                    ],
+                )
+            )
+            st.plotly_chart(
+                _style_fig(_act_bar, height=280),
+                width="stretch",
+                config={"displayModeBar": False},
+            )
+        else:
+            st.info("Collect market data for these symbols to compute live P&L.")
+    else:
+        st.info("No open positions right now. Run a paper submission or 'Sync Alpaca Paper'.")
+
+    _active_signals = [
+        row
+        for row in snapshot["signals"]
+        if str(row.get("status", "")).upper() not in _TERMINAL_SIGNAL_STATUSES
+    ]
+    _section("Active signal setups")
+    st.caption("Generated signals not yet filled, cancelled, or expired.")
+    _act_sig_rows = [
+        {
+            "symbol": row["symbol"],
+            "strategy": row["strategy_id"],
+            "status": row["status"],
+            "direction": row["direction"],
+            "entry_zone": _compact_dict(row["entry_zone"]),
+            "stop_loss": row["stop_loss"],
+            "target_1": row["target_1"],
+            "risk_reward": row["risk_reward"],
+            "confidence": row["confidence_score"],
+            "created_at": row["created_at"],
+        }
+        for row in _active_signals
+    ]
+    _table(_act_sig_rows, label="active signal", height=300)
+
+with tab_market:
+    st.subheader("Market Overview")
+    st.caption("Live board, performance vs the S&P 500, and intraday price action from collected candles.")
+
+    _mkt_symbols = list(snapshot["active_symbols"])[:50]
+    _section("Live market board")
+    if _mkt_symbols:
+        _board_prices = {s: _price_history(s) for s in _mkt_symbols}
+        _board_rows = []
+        for _s in _mkt_symbols:
+            _f = _board_prices[_s]
+            _cur = _series_close(_f)
+            _prev = _series_close(_f, -2)
+            _chg = ((_cur - _prev) / _prev * 100.0) if (_cur is not None and _prev) else None
+            _board_rows.append(
+                {"Symbol": _s, "Price": _cur, "Last bar %": _chg, "Volume": _latest_volume(_f)}
+            )
+        _board_df = pd.DataFrame(_board_rows)
+        if _board_df["Price"].notna().any():
+            st.dataframe(
+                _style_board(_board_df),
+                width="stretch",
+                height=min(420, 60 + 35 * len(_board_rows)),
+            )
+            _chg_rows = sorted(
+                [r for r in _board_rows if r["Last bar %"] is not None],
+                key=lambda r: r["Last bar %"],
+            )
+            if _chg_rows:
+                _board_fig = go.Figure(
+                    go.Bar(
+                        x=[r["Last bar %"] for r in _chg_rows],
+                        y=[r["Symbol"] for r in _chg_rows],
+                        orientation="h",
+                        marker_color=[
+                            "#29d398" if r["Last bar %"] >= 0 else "#f87171" for r in _chg_rows
+                        ],
+                    )
+                )
+                st.plotly_chart(
+                    _style_fig(_board_fig, height=max(220, 26 * len(_chg_rows))),
+                    width="stretch",
+                    config={"displayModeBar": False},
+                )
+        else:
+            st.info("No price data collected yet. Use 'Collect Real Market Data' in the sidebar.")
+    else:
+        st.info("No active symbols. Add symbols in the sidebar, then collect market data.")
+
+    _section("Performance vs S&P 500 (SPY)")
+    _cmp_choices = _mkt_symbols or ["AAPL"]
+    _cmp_symbol = st.selectbox("Symbol to chart", _cmp_choices, key="market_cmp_symbol")
+    _sym_frame = _price_history(_cmp_symbol)
+    if _sym_frame.empty:
+        st.info(f"No candle data for {_cmp_symbol} yet. Collect market data for it first.")
+    else:
+        def _rebased(frame: pd.DataFrame) -> pd.DataFrame:
+            closes = frame[["timestamp", "close"]].dropna()
+            if closes.empty:
+                return pd.DataFrame()
+            base = closes["close"].iloc[0]
+            if not base:
+                return pd.DataFrame()
+            closes = closes.copy()
+            closes["rebased"] = closes["close"] / base * 100.0
+            return closes
+
+        _sym_re = _rebased(_sym_frame)
+        if _sym_re.empty:
+            st.info(f"Not enough valid price data to chart {_cmp_symbol}.")
+        else:
+            _cmp_fig = go.Figure()
+            _cmp_fig.add_trace(
+                go.Scatter(
+                    x=_sym_re["timestamp"],
+                    y=_sym_re["rebased"],
+                    mode="lines",
+                    line=dict(color="#4c8dff", width=2),
+                    name=_cmp_symbol,
+                )
+            )
+            _spy_frame = _price_history("SPY")
+            if _cmp_symbol != "SPY" and not _spy_frame.empty:
+                _spy_re = _rebased(_spy_frame)
+                if not _spy_re.empty:
+                    _cmp_fig.add_trace(
+                        go.Scatter(
+                            x=_spy_re["timestamp"],
+                            y=_spy_re["rebased"],
+                            mode="lines",
+                            line=dict(color="#8a98b0", width=1.6, dash="dot"),
+                            name="SPY (S&P 500)",
+                        )
+                    )
+                    st.caption("Both series rebased to 100 at the start of the window for a like-for-like comparison.")
+            elif _cmp_symbol != "SPY":
+                st.caption("Collect candles for SPY to overlay the S&P 500 benchmark.")
+            st.plotly_chart(
+                _style_fig(_cmp_fig, height=320),
+                width="stretch",
+                config={"displayModeBar": False},
+            )
+
+            _section(f"{_cmp_symbol} price & VWAP")
+            _price_fig = go.Figure()
+            _price_fig.add_trace(
+                go.Scatter(
+                    x=_sym_frame["timestamp"],
+                    y=_sym_frame["close"],
+                    mode="lines",
+                    line=dict(color="#4c8dff", width=2),
+                    name="Close",
+                )
+            )
+            if "vwap" in _sym_frame.columns and _sym_frame["vwap"].notna().any():
+                _price_fig.add_trace(
+                    go.Scatter(
+                        x=_sym_frame["timestamp"],
+                        y=_sym_frame["vwap"],
+                        mode="lines",
+                        line=dict(color="#f5b14c", width=1.4, dash="dot"),
+                        name="VWAP",
+                    )
+                )
+            st.plotly_chart(
+                _style_fig(_price_fig, height=300),
+                width="stretch",
+                config={"displayModeBar": False},
+            )
+
+    st.divider()
     st.subheader("Real Market Data")
     st.caption("Rows are persisted from collector calls. Empty tables mean no data has been collected yet.")
     market_cols = st.columns([1, 1])
@@ -892,7 +1403,7 @@ with tabs[0]:
     _section("Market regime snapshots")
     _table(snapshot["regime_snapshots"], label="market regime snapshot", height=260)
 
-with tabs[1]:
+with tab_catalysts:
     st.subheader("Catalyst And Stream Intelligence")
     catalyst_cols = st.columns(2)
     with catalyst_cols[0]:
@@ -954,7 +1465,7 @@ with tabs[1]:
         _section("Catalysts")
         _table(snapshot["catalysts"], label="catalyst", height=360)
 
-with tabs[2]:
+with tab_signals:
     st.subheader("Signals And Reasoning")
     signal_rows = []
     for row in snapshot["signals"]:
@@ -1085,7 +1596,7 @@ with tabs[2]:
                 height=240,
             )
 
-with tabs[3]:
+with tab_risk:
     st.subheader("Risk And Execution")
     st.caption("Paper submission requires `ENVIRONMENT_MODE=paper`; otherwise the order is blocked and logged.")
     signals = snapshot["signals"]
@@ -1157,7 +1668,7 @@ with tabs[3]:
     _section("Exposure snapshots")
     _table(snapshot["exposure_snapshots"], label="exposure snapshot", height=300)
 
-with tabs[4]:
+with tab_journal:
     st.subheader("Trades And Journal")
     with st.form("journal_form", clear_on_submit=True):
         cols = st.columns(4)
@@ -1201,7 +1712,7 @@ with tabs[4]:
         _section("Learning recommendations")
         _table(snapshot["strategy_recommendations"], label="strategy recommendation", height=300)
 
-with tabs[5]:
+with tab_providers:
     st.subheader("Providers, API Calls, And Data Quality")
     quality_cols = st.columns(4)
     with quality_cols[0]:
@@ -1232,7 +1743,7 @@ with tabs[5]:
     _section("Backtest reports")
     _table(snapshot["backtest_reports"], label="backtest report", height=260)
 
-with tabs[6]:
+with tab_decisions:
     st.subheader("Decision Logs")
     st.caption("Scanner, signal, risk, execution, journal, and AI reasoning decisions are recorded here.")
     _table(snapshot["decisions"], label="decision log", height=520)
@@ -1240,7 +1751,7 @@ with tabs[6]:
     _section("Audit logs")
     _table(snapshot["audit_logs"], label="audit log", height=360)
 
-with tabs[7]:
+with tab_readiness:
     st.subheader("Live Readiness")
     st.caption("Live execution is disabled by default and requires every readiness, approval, and gate check.")
     if can_admin:
@@ -1328,7 +1839,7 @@ with tabs[7]:
     _section("Strategy approval requests")
     _table(snapshot["strategy_approval_requests"], label="strategy approval request", height=300)
 
-with tabs[8]:
+with tab_admin:
     st.subheader("Admin Users")
     if not can_admin:
         st.info("Admin role is required to manage users.")
