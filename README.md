@@ -9,7 +9,7 @@ The platform now supports:
 3. Compute features.
 4. Scan for VWAP Reclaim, Post-Earnings Continuation, Opening Range Breakout, News Momentum, Catalyst Run-Up, Relative Strength, and Sector Leadership candidates behind production preflight gates.
 5. Backtest with explicit slippage, commission, spread, and entry-delay assumptions.
-6. Journal trades from entry through exit with PnL, MFE, MAE, slippage, time in trade, reviews, and rule violations.
+6. Journal trades from entry through exit with PnL, MFE, MAE, slippage, time in trade, decision-support reviews, and rule violations.
 7. Paper trade through Alpaca.
 8. Evaluate live readiness, kill switches, provider health, and broker reconciliation before any live order path can run.
 
@@ -21,8 +21,8 @@ The platform now supports:
 - Live order submission requires `ENVIRONMENT_MODE=live`, `ALLOW_LIVE_TRADING=true`, `CONFIRM_LIVE_TRADING=I_UNDERSTAND_RISK`, `ENABLE_LIVE_ORDER_PATH=true`, live keys, active human approval, healthy providers, clean live reconciliation, approved strategies, and no active kill switch.
 - Admin user management is API-backed, bcrypt-hashed, role-gated, redacted on read, and audited for create/update, role, active-state, and unlock actions.
 - Alpaca paper trading is treated as simulated execution, not proof of live fill quality.
-- AI may score and explain, but cannot trade, override risk, or change rules.
-- Learning recommendations are audited, stored as recommendations, and cannot auto-apply changes.
+- Decision support may score, explain, review, and recommend, but cannot trade, override risk, change rules, or bypass live gates.
+- Learning recommendations are audited, stored as proposed-only recommendations, and cannot auto-apply changes.
 - Public health exposes only liveness. Detailed API read surfaces such as operational health, environment state, provider capabilities, strategy approvals, dashboard snapshots, and worker status require authenticated viewer-or-higher access.
 
 ## Quick Start
@@ -53,7 +53,7 @@ The dashboard is database-backed. It shows only real provider calls and persiste
 - paper orders, fills, broker sync logs, and reconciliation results
 - SEC filings and news catalyst rows
 - scheduler runs, audit logs, decision logs, and live-readiness reports
-- journal lifecycle metrics, AI reviews, weekly reviews, and learning recommendations
+- journal lifecycle metrics, decision-support reviews, weekly reviews, learning recommendations, provider artifacts, and scorecard evaluations
 - provider health, data quality, missing-candle gaps, backtest reports, live approvals, and kill switches
 
 Run tests:
@@ -90,6 +90,8 @@ Production deployment runs Alembic migrations as a one-off task before service r
 - `POST /collect/news` fetches configured RSS feeds and stores raw/clean news with confidence, duplicate, and rumor flags.
 - `POST /collect/sec` fetches SEC company submissions and stores filing context.
 - `POST /scheduler/run-once` runs one scheduled job: `market_data`, `features`, `regime`, `news`, `sec`, `catalysts`, `production_scanners`, `provider_health`, `universe`, `missing_candle_repair`, `live_readiness`, `fill_reconciliation`, `trade_monitor`, `reviews`, `learning`, or `all`.
+- `GET /decision-support/status`, `GET /decision-support/artifacts`, `GET /scorecards/opportunities`, and `GET /scorecards/evaluations` expose the read-only decision-support audit trail for authenticated users.
+- `POST /scorecards/evaluations/run` recalculates scorecard calibration reports from persisted scorecards and journal outcomes; it does not submit trades or mutate strategy rules.
 - `POST /live-readiness/report` stores a live-readiness report. It does not bypass live gates.
 - `POST /execution/live/submit`, `POST /execution/live/cancel-all`, and `POST /execution/live/flatten-all` exist for live operations but return blocked responses unless live mode, live path, keys, readiness, approval, provider health, reconciliation, strategy approval, risk, and kill-switch gates pass.
 

@@ -466,6 +466,7 @@ class NewsCatalystScore(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     materiality_score: Mapped[float] = mapped_column(Float, default=0.0)
     rumor_flag: Mapped[bool] = mapped_column(Boolean, default=False)
     duplicate_headline: Mapped[bool] = mapped_column(Boolean, default=False)
+    taxonomy: Mapped[dict | None] = mapped_column(JSON)
     reason: Mapped[str | None] = mapped_column(Text)
 
 
@@ -617,6 +618,10 @@ class TradeThesis(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     invalidation_reason: Mapped[str] = mapped_column(Text)
     risks: Mapped[list[str]] = mapped_column(JSON, default=list)
     suggested_holding_period: Mapped[str] = mapped_column(String(80))
+    decision_support_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("decision_support_artifacts.id"), index=True
+    )
+    support_payload: Mapped[dict | None] = mapped_column(JSON)
     reason: Mapped[str | None] = mapped_column(Text)
 
 
@@ -830,6 +835,54 @@ class DecisionLog(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     payload: Mapped[dict | None] = mapped_column(JSON)
 
 
+class DecisionSupportArtifact(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
+    __tablename__ = "decision_support_artifacts"
+
+    artifact_type: Mapped[str] = mapped_column(String(80), index=True)
+    provider_name: Mapped[str] = mapped_column(String(80), index=True)
+    provider_version: Mapped[str] = mapped_column(String(80), index=True)
+    prompt_version: Mapped[str] = mapped_column(String(80), index=True)
+    input_payload_hash: Mapped[str] = mapped_column(String(64), index=True)
+    input_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    output_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    validation_status: Mapped[str] = mapped_column(String(32), default="ACCEPTED", index=True)
+    validation_reason: Mapped[str] = mapped_column(Text)
+    fallback_used: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    reason: Mapped[str] = mapped_column(Text)
+
+
+class OpportunityScorecardSnapshot(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
+    __tablename__ = "opportunity_scorecard_snapshots"
+
+    scanner_result_id: Mapped[str | None] = mapped_column(ForeignKey("scanner_results.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    strategy_id: Mapped[str] = mapped_column(String(80), index=True)
+    scanner_name: Mapped[str] = mapped_column(String(80), index=True)
+    scorecard_version: Mapped[str] = mapped_column(String(80), index=True)
+    opportunity_score: Mapped[float] = mapped_column(Float, default=0.0)
+    grade: Mapped[str] = mapped_column(String(32), index=True)
+    component_scores: Mapped[dict] = mapped_column(JSON, default=dict)
+    reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
+    blocked_reason: Mapped[str | None] = mapped_column(Text)
+    missing_data: Mapped[list[str]] = mapped_column(JSON, default=list)
+    grade_rationale: Mapped[str] = mapped_column(Text)
+
+
+class ScorecardEvaluation(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
+    __tablename__ = "scorecard_evaluations"
+
+    scorecard_version: Mapped[str] = mapped_column(String(80), index=True)
+    grade: Mapped[str] = mapped_column(String(32), index=True)
+    trade_count: Mapped[int] = mapped_column(Integer, default=0)
+    win_rate: Mapped[float | None] = mapped_column(Float)
+    average_pnl: Mapped[float | None] = mapped_column(Float)
+    average_r: Mapped[float | None] = mapped_column(Float)
+    average_slippage_bps: Mapped[float | None] = mapped_column(Float)
+    rule_violation_rate: Mapped[float | None] = mapped_column(Float)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    reason: Mapped[str] = mapped_column(Text)
+
+
 class AIPromptTemplate(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     __tablename__ = "ai_prompt_templates"
     __table_args__ = (UniqueConstraint("template_name", "version", name="uq_prompt_template_version"),)
@@ -849,6 +902,10 @@ class AIReview(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     prompt_version: Mapped[str] = mapped_column(String(32), default="v1")
     review_text: Mapped[str] = mapped_column(Text)
     confidence_score: Mapped[float | None] = mapped_column(Float)
+    decision_support_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("decision_support_artifacts.id"), index=True
+    )
+    structured_payload: Mapped[dict | None] = mapped_column(JSON)
     reason: Mapped[str | None] = mapped_column(Text)
 
 
@@ -881,6 +938,11 @@ class StrategyRecommendation(IdMixin, TimestampMixin, SourceTimestampMixin, Base
     strategy_id: Mapped[str | None] = mapped_column(String(80), index=True)
     recommendation: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32), default=RecommendationStatus.PROPOSED.value)
+    severity: Mapped[str] = mapped_column(String(32), default="LOW", index=True)
+    evidence: Mapped[dict | None] = mapped_column(JSON)
+    decision_support_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("decision_support_artifacts.id"), index=True
+    )
     reason: Mapped[str] = mapped_column(Text)
     applied: Mapped[bool] = mapped_column(Boolean, default=False)
 

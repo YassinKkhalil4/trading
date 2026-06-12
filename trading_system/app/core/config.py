@@ -33,6 +33,8 @@ class Settings:
     aws_region: str = "us-east-1"
     redis_url: str = "redis://localhost:6379/0"
     raw_archive_bucket: str = ""
+    decision_support_provider: str = "deterministic"
+    external_decision_support_enabled: bool = False
 
     alpaca_paper_api_key: str = ""
     alpaca_paper_secret_key: str = ""
@@ -159,6 +161,8 @@ def get_settings() -> Settings:
         aws_region=os.getenv("AWS_REGION", "us-east-1"),
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
         raw_archive_bucket=os.getenv("RAW_ARCHIVE_BUCKET", ""),
+        decision_support_provider=os.getenv("DECISION_SUPPORT_PROVIDER", "deterministic"),
+        external_decision_support_enabled=_env_bool("EXTERNAL_DECISION_SUPPORT_ENABLED", False),
         alpaca_paper_api_key=os.getenv("ALPACA_PAPER_API_KEY", ""),
         alpaca_paper_secret_key=os.getenv("ALPACA_PAPER_SECRET_KEY", ""),
         alpaca_paper_base_url=os.getenv(

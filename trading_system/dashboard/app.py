@@ -582,7 +582,7 @@ tabs = st.tabs(
     [
         "Live Market",
         "Catalysts + Stream",
-        "Signals + Reasoning",
+        "Signals + Decision Support",
         "Risk + Execution",
         "Trades + Journal",
         "Providers + Quality",
@@ -838,7 +838,7 @@ with tabs[4]:
 
     _table(snapshot["journal"], label="journal", height=420)
 
-    st.markdown("**Trade reviews**")
+    st.markdown("**Decision-support trade reviews**")
     _table(snapshot["ai_reviews"], label="trade review", height=320)
 
     review_cols = st.columns(2)
@@ -848,6 +848,9 @@ with tabs[4]:
     with review_cols[1]:
         st.markdown("**Learning recommendations**")
         _table(snapshot["strategy_recommendations"], label="strategy recommendation", height=300)
+
+    st.markdown("**Decision-support artifacts**")
+    _table(snapshot["decision_support_artifacts"], label="decision-support artifact", height=300)
 
 with tabs[5]:
     st.subheader("Providers, API Calls, And Data Quality")
@@ -882,8 +885,16 @@ with tabs[5]:
 
 with tabs[6]:
     st.subheader("Decision Logs")
-    st.caption("Scanner, signal, risk, execution, journal, and AI reasoning decisions are recorded here.")
+    st.caption("Scanner, signal, risk, execution, journal, and decision-support records are stored here.")
+    st.markdown("**Decision-support status**")
+    st.json(snapshot["decision_support_status"])
     _table(snapshot["decisions"], label="decision log", height=520)
+
+    st.markdown("**Opportunity scorecards**")
+    _table(snapshot["opportunity_scorecards"], label="opportunity scorecard", height=300)
+
+    st.markdown("**Scorecard evaluations**")
+    _table(snapshot["scorecard_evaluations"], label="scorecard evaluation", height=260)
 
     st.markdown("**Audit logs**")
     _table(snapshot["audit_logs"], label="audit log", height=360)

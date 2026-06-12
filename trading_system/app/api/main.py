@@ -901,6 +901,54 @@ def learning_recommendations(
     )
 
 
+@app.get("/decision-support/status")
+def decision_support_status(
+    _principal: AdminPrincipal = Depends(require_principal),
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        return {"decision_support_status": service.decision_support_status()}
+    finally:
+        session.close()
+
+
+@app.get("/decision-support/artifacts")
+def decision_support_artifacts(
+    _principal: AdminPrincipal = Depends(require_principal),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    return _read_rows(
+        "decision_support_artifacts",
+        lambda repo, row_limit: repo.latest_decision_support_artifacts(row_limit),
+        limit,
+    )
+
+
+@app.get("/scorecards/opportunities")
+def opportunity_scorecards(
+    _principal: AdminPrincipal = Depends(require_principal),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    return _read_rows(
+        "opportunity_scorecards",
+        lambda repo, row_limit: repo.latest_opportunity_scorecards(row_limit),
+        limit,
+    )
+
+
+@app.get("/scorecards/evaluations")
+def scorecard_evaluations(
+    _principal: AdminPrincipal = Depends(require_principal),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    return _read_rows(
+        "scorecard_evaluations",
+        lambda repo, row_limit: repo.latest_scorecard_evaluations(row_limit),
+        limit,
+    )
+
+
 @app.get("/backtests/reports")
 def backtest_reports(
     _principal: AdminPrincipal = Depends(require_principal),
@@ -1843,6 +1891,25 @@ def weekly_reviews_run(
             result=result,
         )
         return result.__dict__
+    finally:
+        session.close()
+
+
+@app.post("/scorecards/evaluations/run")
+def scorecard_evaluations_run(
+    principal: AdminPrincipal = Depends(require_trader_or_admin),
+) -> dict:
+    session, service = _runtime()
+    try:
+        evaluations = service.run_scorecard_evaluation()
+        _audit_manual_operation(
+            service.repository,
+            actor=principal.username,
+            operation="scorecard_evaluations_run",
+            reason="Manual opportunity scorecard evaluation requested.",
+            payload={"evaluations_created": len(evaluations)},
+        )
+        return {"scorecard_evaluations": evaluations}
     finally:
         session.close()
 

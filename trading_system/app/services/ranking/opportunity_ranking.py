@@ -79,6 +79,9 @@ class OpportunityRankingResult:
     grade: OpportunityGrade
     reasons: list[str]
     blocked_reason: str | None
+    component_scores: dict[str, float]
+    missing_data: list[str]
+    grade_rationale: str
     ranking_rule_version: str = RANKING_RULE_VERSION
 
 
@@ -97,6 +100,9 @@ def compute_opportunity_ranking(
             grade=OpportunityGrade.REJECT,
             reasons=[],
             blocked_reason=blocked_reason,
+            component_scores={},
+            missing_data=_missing_data(inputs),
+            grade_rationale=f"Rejected by hard block: {blocked_reason}",
         )
 
     component_scores, reasons = _score_components(inputs, settings)
@@ -104,15 +110,19 @@ def compute_opportunity_ranking(
         sum(component_scores[name] * COMPONENT_WEIGHTS[name] / 100.0 for name in COMPONENT_WEIGHTS),
         2,
     )
+    grade = _grade_from_score(opportunity_score)
     return OpportunityRankingResult(
         scanner_result_id=inputs.scanner_result_id,
         symbol=inputs.symbol,
         strategy_id=inputs.strategy_id,
         scanner_name=inputs.scanner_name,
         opportunity_score=opportunity_score,
-        grade=_grade_from_score(opportunity_score),
+        grade=grade,
         reasons=reasons,
         blocked_reason=None,
+        component_scores=component_scores,
+        missing_data=_missing_data(inputs),
+        grade_rationale=_grade_rationale(grade, opportunity_score, reasons),
     )
 
 
@@ -143,7 +153,23 @@ class OpportunityRankingService:
     ) -> OpportunityRankingResult:
         now = _as_utc(now)
         inputs = self._build_ranking_inputs(scanner_result, now)
-        return compute_opportunity_ranking(inputs, self.settings)
+        ranking = compute_opportunity_ranking(inputs, self.settings)
+        self.repository.store_opportunity_scorecard_snapshot(
+            scanner_result_id=scanner_result.id,
+            symbol=ranking.symbol,
+            strategy_id=ranking.strategy_id,
+            scanner_name=ranking.scanner_name,
+            scorecard_version=ranking.ranking_rule_version,
+            opportunity_score=ranking.opportunity_score,
+            grade=ranking.grade.value,
+            component_scores=ranking.component_scores,
+            reasons=ranking.reasons,
+            blocked_reason=ranking.blocked_reason,
+            missing_data=ranking.missing_data,
+            grade_rationale=ranking.grade_rationale,
+            source_timestamp=now,
+        )
+        return ranking
 
     def _build_ranking_inputs(
         self,
@@ -223,6 +249,70 @@ class OpportunityRankingService:
             .order_by(desc(models.FeatureIntraday.created_at))
             .limit(1)
         )
+
+
+class ScorecardEvaluationService:
+    def __init__(self, repository: TradingRepository) -> None:
+        self.repository = repository
+
+    def evaluate_latest(self, *, limit: int = 500, now: datetime | None = None) -> list[models.ScorecardEvaluation]:
+        snapshots = self.repository.session.scalars(
+            select(models.OpportunityScorecardSnapshot)
+            .order_by(desc(models.OpportunityScorecardSnapshot.created_at))
+            .limit(limit)
+        ).all()
+        grouped: dict[tuple[str, str], list[models.TradeJournal]] = {}
+        seen: set[tuple[str, str, str]] = set()
+        for snapshot in snapshots:
+            journals = self.repository.session.scalars(
+                select(models.TradeJournal).where(
+                    models.TradeJournal.symbol == snapshot.symbol,
+                    models.TradeJournal.strategy_id == snapshot.strategy_id,
+                )
+            ).all()
+            key = (snapshot.scorecard_version, snapshot.grade)
+            bucket = grouped.setdefault(key, [])
+            for journal in journals:
+                dedupe = (snapshot.scorecard_version, snapshot.grade, journal.id)
+                if dedupe not in seen:
+                    seen.add(dedupe)
+                    bucket.append(journal)
+
+        rows = []
+        source_timestamp = _as_utc(now)
+        for (version, grade), journals in grouped.items():
+            rows.append(
+                self.repository.store_scorecard_evaluation(
+                    scorecard_version=version,
+                    grade=grade,
+                    trade_count=len(journals),
+                    win_rate=_win_rate(journals),
+                    average_pnl=_average([journal.pnl for journal in journals]),
+                    average_r=_average_r(journals),
+                    average_slippage_bps=_average([journal.slippage_bps for journal in journals]),
+                    rule_violation_rate=_rule_violation_rate(journals),
+                    payload={"journal_ids": [journal.id for journal in journals]},
+                    reason="Scorecard evaluation compared persisted ranking grades with journal outcomes.",
+                    source_timestamp=source_timestamp,
+                )
+            )
+        if not rows:
+            rows.append(
+                self.repository.store_scorecard_evaluation(
+                    scorecard_version=RANKING_RULE_VERSION,
+                    grade="NO_DATA",
+                    trade_count=0,
+                    win_rate=None,
+                    average_pnl=None,
+                    average_r=None,
+                    average_slippage_bps=None,
+                    rule_violation_rate=None,
+                    payload={},
+                    reason="No scorecard snapshots with journal outcomes were available.",
+                    source_timestamp=source_timestamp,
+                )
+            )
+        return rows
 
 
 def build_preflight_payload(
@@ -371,6 +461,34 @@ def _grade_from_score(score: float) -> OpportunityGrade:
     return OpportunityGrade.REJECT
 
 
+def _grade_rationale(grade: OpportunityGrade, score: float, reasons: list[str]) -> str:
+    reason_text = "; ".join(reasons)
+    return f"Grade {grade.value} assigned from score {score:.2f}. Components: {reason_text}."
+
+
+def _missing_data(inputs: RankingInputs) -> list[str]:
+    missing = []
+    checks = {
+        "strategy_status": inputs.strategy_status,
+        "provider_health_status": inputs.provider_health_status,
+        "provider_health_reliability": inputs.provider_health_reliability,
+        "provider_health_timestamp": inputs.provider_health_timestamp,
+        "latest_data_timestamp": inputs.latest_data_timestamp,
+        "market_regime": inputs.market_regime,
+        "regime_confidence": inputs.regime_confidence,
+        "regime_timestamp": inputs.regime_timestamp,
+        "relative_strength_20d": inputs.relative_strength_20d,
+        "liquidity_score": inputs.liquidity_score,
+        "spread_score": inputs.spread_score,
+    }
+    for name, value in checks.items():
+        if value is None or value == "":
+            missing.append(name)
+    if inputs.strategy_id in CATALYST_REQUIRED_STRATEGY_IDS and not inputs.catalyst_id:
+        missing.append("required_catalyst")
+    return missing
+
+
 def _freshness_seconds_for_timeframe(timeframe: str, settings: Settings) -> int:
     if timeframe == "1D":
         return DAILY_DATA_FRESHNESS_SECONDS
@@ -407,3 +525,35 @@ def _as_utc(value: datetime | None = None) -> datetime:
 
 def _clamp(value: float) -> float:
     return max(0.0, min(100.0, value))
+
+
+def _average(values: list[float | None]) -> float | None:
+    numeric = [float(value) for value in values if value is not None]
+    if not numeric:
+        return None
+    return sum(numeric) / len(numeric)
+
+
+def _win_rate(journals: list[models.TradeJournal]) -> float | None:
+    pnls = [float(journal.pnl) for journal in journals if journal.pnl is not None]
+    if not pnls:
+        return None
+    return sum(1 for pnl in pnls if pnl > 0) / len(pnls)
+
+
+def _average_r(journals: list[models.TradeJournal]) -> float | None:
+    values = []
+    for journal in journals:
+        pnl = journal.pnl
+        mae = journal.max_adverse_excursion
+        if pnl is not None and mae not in (None, 0):
+            values.append(float(pnl) / abs(float(mae)))
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _rule_violation_rate(journals: list[models.TradeJournal]) -> float | None:
+    if not journals:
+        return None
+    return sum(1 for journal in journals if journal.rule_violations) / len(journals)

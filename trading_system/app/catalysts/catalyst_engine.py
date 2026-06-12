@@ -42,8 +42,16 @@ class CatalystEngine:
             .limit(200)
         ).all()
         events = catalysts = 0
+        now = datetime.now(UTC)
         for news in news_rows:
-            catalyst_type, direction, materiality = classify_news_catalyst(news.headline)
+            taxonomy = classify_news_catalyst_taxonomy(
+                news.headline,
+                source_timestamp=news.source_timestamp,
+                now=now,
+            )
+            catalyst_type = str(taxonomy["catalyst_type"])
+            direction = CatalystDirection(str(taxonomy["direction"]))
+            materiality = float(taxonomy["materiality_score"])
             score = max(0.0, materiality * (news.source_confidence_score / 100.0))
             self.repository.store_news_catalyst_score(
                 clean_news_id=news.id,
@@ -53,7 +61,8 @@ class CatalystEngine:
                 materiality_score=score,
                 rumor_flag=news.rumor_flag,
                 duplicate_headline=news.duplicate_headline,
-                reason="News converted to catalyst score.",
+                taxonomy=taxonomy,
+                reason=str(taxonomy["reason"]),
                 source_timestamp=news.source_timestamp,
             )
             event = self.repository.store_event(
@@ -66,7 +75,7 @@ class CatalystEngine:
                 time_horizon="1_day_to_2_weeks",
                 confidence=news.source_confidence_score,
                 source=news.provider,
-                reason="Clean news converted into normalized event.",
+                reason=str(taxonomy["reason"]),
                 source_timestamp=news.source_timestamp,
             )
             events += 1
@@ -79,7 +88,7 @@ class CatalystEngine:
                     materiality_score=score,
                     confidence=news.source_confidence_score,
                     source=news.provider,
-                    reason="News event converted into catalyst.",
+                    reason=str(taxonomy["reason"]),
                     source_timestamp=news.source_timestamp,
                 )
                 catalysts += 1
@@ -124,14 +133,60 @@ class CatalystEngine:
 
 
 def classify_news_catalyst(headline: str) -> tuple[str, CatalystDirection, float]:
+    taxonomy = classify_news_catalyst_taxonomy(headline)
+    return (
+        str(taxonomy["catalyst_type"]),
+        CatalystDirection(str(taxonomy["direction"])),
+        float(taxonomy["materiality_score"]),
+    )
+
+
+def classify_news_catalyst_taxonomy(
+    headline: str,
+    *,
+    source_timestamp: datetime | None = None,
+    now: datetime | None = None,
+) -> dict[str, object]:
     text = headline.lower()
     bullish_terms = ["beat", "raise", "upgrade", "approval", "partnership", "wins", "launch"]
     bearish_terms = ["miss", "cut", "downgrade", "lawsuit", "probe", "recall", "delay"]
     if any(term in text for term in bullish_terms):
-        return "news_momentum", CatalystDirection.BULLISH, 70.0
-    if any(term in text for term in bearish_terms):
-        return "news_risk", CatalystDirection.BEARISH, 70.0
-    return "news_context", CatalystDirection.NEUTRAL, 35.0
+        catalyst_type, direction, base = "news_momentum", CatalystDirection.BULLISH, 70.0
+    elif any(term in text for term in bearish_terms):
+        catalyst_type, direction, base = "news_risk", CatalystDirection.BEARISH, 70.0
+    else:
+        catalyst_type, direction, base = "news_context", CatalystDirection.NEUTRAL, 35.0
+    freshness_multiplier = _freshness_multiplier(source_timestamp, now)
+    materiality = round(base * freshness_multiplier, 2)
+    return {
+        "catalyst_type": catalyst_type,
+        "direction": direction.value,
+        "base_materiality_score": base,
+        "materiality_score": materiality,
+        "freshness_multiplier": freshness_multiplier,
+        "engine_version": CATALYST_ENGINE_VERSION,
+        "reason": (
+            f"Deterministic catalyst taxonomy assigned {catalyst_type}; "
+            f"freshness multiplier {freshness_multiplier:.2f}."
+        ),
+    }
+
+
+def _freshness_multiplier(source_timestamp: datetime | None, now: datetime | None = None) -> float:
+    if source_timestamp is None:
+        return 0.75
+    current = now or datetime.now(UTC)
+    timestamp = source_timestamp
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    age_hours = max(0.0, (current - timestamp.astimezone(UTC)).total_seconds() / 3600.0)
+    if age_hours <= 24:
+        return 1.0
+    if age_hours <= 72:
+        return 0.75
+    if age_hours <= 168:
+        return 0.5
+    return 0.25
 
 
 def classify_filing_catalyst(form_type: str | None) -> tuple[str, CatalystDirection, float]:

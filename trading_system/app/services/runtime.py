@@ -7,7 +7,7 @@ from typing import Any
 import pandas as pd
 from sqlalchemy import desc, select
 
-from trading_system.app.ai.thesis_engine import build_rule_based_thesis
+from trading_system.app.ai.thesis_engine import build_decision_support_thesis
 from trading_system.app.catalysts.catalyst_engine import CatalystEngine, CatalystRunResult
 from trading_system.app.core.config import Settings, get_settings
 from trading_system.app.core.enums import (
@@ -79,6 +79,7 @@ from trading_system.app.scanners.production_scanners import (
 from trading_system.app.security.auth import AuthService
 from trading_system.app.scanners.vwap_reclaim import VwapReclaimScanner, VwapReclaimSnapshot
 from trading_system.app.services.replay.decision_snapshot_service import DecisionSnapshotService
+from trading_system.app.services.ranking.opportunity_ranking import ScorecardEvaluationService
 from trading_system.app.services.scheduler import ScheduledCollectorRunner, ScheduledJobResult
 from trading_system.app.signals.signal_engine import SignalEngine, TradeSignal
 from trading_system.app.strategies.approval import (
@@ -237,18 +238,25 @@ class TradingRuntimeService:
             payload=_trade_signal_to_payload(signal),
             source_timestamp=snapshot.timestamp,
         )
-        thesis = build_rule_based_thesis(
+        thesis, support_payload, artifact = build_decision_support_thesis(
             symbol=normalized,
             setup_name="VWAP_RECLAIM",
             scanner_reason=decision.reason,
             catalyst_summary=None,
             market_context=f"Market regime input: {snapshot.market_regime.value}",
         )
+        artifact_row = self.repository.store_decision_support_artifact(
+            artifact,
+            reason="Decision-support thesis generated from accepted scanner signal.",
+            source_timestamp=snapshot.timestamp,
+        )
         thesis_row = self.repository.store_trade_thesis(
             thesis,
             signal_id=signal_row.id,
             symbol=normalized,
             strategy_id=signal.strategy_id,
+            decision_support_artifact_id=artifact_row.id,
+            support_payload=support_payload,
             source_timestamp=snapshot.timestamp,
         )
         return ScanCycleResult(
@@ -1232,6 +1240,11 @@ class TradingRuntimeService:
         self.bootstrap()
         return LearningRecommendationEngine(self.repository).run_weekly_review()
 
+    def run_scorecard_evaluation(self) -> list[dict[str, Any]]:
+        self.bootstrap()
+        rows = ScorecardEvaluationService(self.repository).evaluate_latest()
+        return [model_to_dict(row) for row in rows]
+
     def generate_live_readiness_report(self, *, actor: str = "system") -> LiveReadinessResult:
         self.bootstrap()
         return LiveReadinessService(self.repository, self.settings).generate_report(actor=actor)
@@ -1370,6 +1383,7 @@ class TradingRuntimeService:
         self.bootstrap()
         return {
             "counts": self.repository.counts(),
+            "decision_support_status": self.decision_support_status(),
             "active_symbols": self.repository.active_symbols(),
             "clean_candles": self.repository.latest_clean_candles(200),
             "features": self.repository.latest_features(100),
@@ -1400,6 +1414,9 @@ class TradingRuntimeService:
             "fills": self.repository.latest_fills(100),
             "broker_sync_logs": self.repository.latest_broker_sync_logs(100),
             "ai_reviews": self.repository.latest_ai_reviews(100),
+            "decision_support_artifacts": self.repository.latest_decision_support_artifacts(100),
+            "opportunity_scorecards": self.repository.latest_opportunity_scorecards(100),
+            "scorecard_evaluations": self.repository.latest_scorecard_evaluations(100),
             "weekly_reviews": self.repository.latest_weekly_reviews(20),
             "strategy_recommendations": self.repository.latest_strategy_recommendations(100),
             "backtest_reports": self.repository.latest_backtest_reports(50),
@@ -1410,6 +1427,19 @@ class TradingRuntimeService:
             "missing_candle_gaps": self.repository.latest_missing_candle_gaps(100),
             "providers": self.repository.list_rows(models.ProviderCapability, 100),
             "strategies": self.repository.list_rows(models.StrategyRegistry, 100),
+        }
+
+    def decision_support_status(self) -> dict[str, Any]:
+        return {
+            "role": "decision_support_only",
+            "provider": self.settings.decision_support_provider,
+            "external_provider_enabled": self.settings.external_decision_support_enabled,
+            "default_provider": "deterministic_decision_support",
+            "can_trade": False,
+            "can_override_risk": False,
+            "can_change_rules": False,
+            "can_bypass_live_gates": False,
+            "reason": "Decision support may explain, review, score, and recommend only.",
         }
 
     def _build_vwap_snapshot(

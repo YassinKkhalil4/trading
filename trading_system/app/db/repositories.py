@@ -11,6 +11,7 @@ from sqlalchemy import Select, desc, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from trading_system.app.ai.decision_support import DecisionSupportArtifactPayload
 from trading_system.app.ai.thesis_engine import AIThesis
 from trading_system.app.core.enums import (
     DataQualityStatus,
@@ -1293,6 +1294,8 @@ class TradingRepository:
         symbol: str,
         strategy_id: str,
         source_timestamp: datetime,
+        decision_support_artifact_id: str | None = None,
+        support_payload: dict[str, Any] | None = None,
     ) -> models.TradeThesis:
         row = models.TradeThesis(
             signal_id=signal_id,
@@ -1307,7 +1310,9 @@ class TradingRepository:
             invalidation_reason=thesis.invalidation_reason,
             risks=thesis.risks,
             suggested_holding_period=thesis.suggested_holding_period,
-            reason="Rule-based thesis generated for dashboard review; not trade authority.",
+            decision_support_artifact_id=decision_support_artifact_id,
+            support_payload=support_payload,
+            reason="Decision-support thesis generated for dashboard review; not trade authority.",
             source_timestamp=source_timestamp,
         )
         self.session.add(row)
@@ -1320,7 +1325,7 @@ class TradingRepository:
             strategy_id=strategy_id,
             rule_version=thesis.prompt_version,
             reason=row.reason or "Thesis recorded.",
-            payload={"confidence": thesis.confidence},
+            payload={"confidence": thesis.confidence, "decision_support_artifact_id": decision_support_artifact_id},
             source_timestamp=source_timestamp,
         )
         return row
@@ -2096,6 +2101,7 @@ class TradingRepository:
         rumor_flag: bool,
         duplicate_headline: bool,
         reason: str,
+        taxonomy: dict[str, Any] | None = None,
         source_timestamp: datetime | None = None,
     ) -> models.NewsCatalystScore:
         row = models.NewsCatalystScore(
@@ -2106,6 +2112,7 @@ class TradingRepository:
             materiality_score=materiality_score,
             rumor_flag=rumor_flag,
             duplicate_headline=duplicate_headline,
+            taxonomy=taxonomy,
             reason=reason,
             source_timestamp=source_timestamp or _now(),
         )
@@ -2637,6 +2644,8 @@ class TradingRepository:
         review_text: str,
         confidence_score: float | None,
         reason: str,
+        decision_support_artifact_id: str | None = None,
+        structured_payload: dict[str, Any] | None = None,
         source_timestamp: datetime | None = None,
     ) -> models.AIReview:
         row = models.AIReview(
@@ -2645,6 +2654,8 @@ class TradingRepository:
             prompt_version=prompt_version,
             review_text=review_text,
             confidence_score=confidence_score,
+            decision_support_artifact_id=decision_support_artifact_id,
+            structured_payload=structured_payload,
             reason=reason,
             source_timestamp=source_timestamp or _now(),
         )
@@ -2679,10 +2690,16 @@ class TradingRepository:
         strategy_id: str | None,
         recommendation: str,
         reason: str,
+        severity: str = "LOW",
+        evidence: dict[str, Any] | None = None,
+        decision_support_artifact_id: str | None = None,
     ) -> models.StrategyRecommendation:
         row = models.StrategyRecommendation(
             strategy_id=strategy_id,
             recommendation=recommendation,
+            severity=severity,
+            evidence=evidence,
+            decision_support_artifact_id=decision_support_artifact_id,
             reason=reason,
             source_timestamp=_now(),
         )
@@ -2694,9 +2711,124 @@ class TradingRepository:
             entity_type="strategy_recommendation",
             entity_id=row.id,
             reason=reason,
-            payload={"strategy_id": strategy_id, "recommendation": recommendation},
+            payload={
+                "strategy_id": strategy_id,
+                "recommendation": recommendation,
+                "severity": severity,
+                "evidence": evidence or {},
+                "decision_support_artifact_id": decision_support_artifact_id,
+            },
             source_timestamp=row.source_timestamp,
         )
+        return row
+
+    def store_decision_support_artifact(
+        self,
+        artifact: DecisionSupportArtifactPayload,
+        *,
+        reason: str,
+        source_timestamp: datetime | None = None,
+    ) -> models.DecisionSupportArtifact:
+        row = models.DecisionSupportArtifact(
+            artifact_type=artifact.artifact_type,
+            provider_name=artifact.provider_name,
+            provider_version=artifact.provider_version,
+            prompt_version=artifact.prompt_version,
+            input_payload_hash=artifact.input_payload_hash,
+            input_payload=_json_safe(artifact.input_payload),
+            output_payload=_json_safe(artifact.output_payload),
+            validation_status="ACCEPTED" if artifact.validation.accepted else "REJECTED",
+            validation_reason=artifact.validation.reason,
+            fallback_used=artifact.fallback_used,
+            reason=reason,
+            source_timestamp=source_timestamp or _now(),
+        )
+        self.session.add(row)
+        self.session.commit()
+        self.store_decision_log(
+            decision_type=DecisionType.AI_REVIEW,
+            outcome=DecisionOutcome.RECORDED if artifact.validation.accepted else DecisionOutcome.REJECTED,
+            entity_type="decision_support_artifact",
+            entity_id=row.id,
+            strategy_id=_strategy_from_payload(artifact.input_payload),
+            rule_version=artifact.prompt_version,
+            reason=reason,
+            payload={
+                "artifact_type": artifact.artifact_type,
+                "provider_name": artifact.provider_name,
+                "validation_status": row.validation_status,
+                "fallback_used": artifact.fallback_used,
+            },
+            source_timestamp=row.source_timestamp,
+        )
+        return row
+
+    def store_opportunity_scorecard_snapshot(
+        self,
+        *,
+        scanner_result_id: str | None,
+        symbol: str,
+        strategy_id: str,
+        scanner_name: str,
+        scorecard_version: str,
+        opportunity_score: float,
+        grade: str,
+        component_scores: dict[str, float],
+        reasons: list[str],
+        blocked_reason: str | None,
+        missing_data: list[str],
+        grade_rationale: str,
+        source_timestamp: datetime | None = None,
+    ) -> models.OpportunityScorecardSnapshot:
+        row = models.OpportunityScorecardSnapshot(
+            scanner_result_id=scanner_result_id,
+            symbol=symbol.upper(),
+            strategy_id=strategy_id,
+            scanner_name=scanner_name,
+            scorecard_version=scorecard_version,
+            opportunity_score=opportunity_score,
+            grade=grade,
+            component_scores=component_scores,
+            reasons=reasons,
+            blocked_reason=blocked_reason,
+            missing_data=missing_data,
+            grade_rationale=grade_rationale,
+            source_timestamp=source_timestamp or _now(),
+        )
+        self.session.add(row)
+        self.session.commit()
+        return row
+
+    def store_scorecard_evaluation(
+        self,
+        *,
+        scorecard_version: str,
+        grade: str,
+        trade_count: int,
+        win_rate: float | None,
+        average_pnl: float | None,
+        average_r: float | None,
+        average_slippage_bps: float | None,
+        rule_violation_rate: float | None,
+        payload: dict[str, Any],
+        reason: str,
+        source_timestamp: datetime | None = None,
+    ) -> models.ScorecardEvaluation:
+        row = models.ScorecardEvaluation(
+            scorecard_version=scorecard_version,
+            grade=grade,
+            trade_count=trade_count,
+            win_rate=win_rate,
+            average_pnl=average_pnl,
+            average_r=average_r,
+            average_slippage_bps=average_slippage_bps,
+            rule_violation_rate=rule_violation_rate,
+            payload=payload,
+            reason=reason,
+            source_timestamp=source_timestamp or _now(),
+        )
+        self.session.add(row)
+        self.session.commit()
         return row
 
     def store_backtest_report(
@@ -2774,6 +2906,9 @@ class TradingRepository:
             "kill_switches": models.KillSwitchEvent,
             "weekly_reviews": models.WeeklyReview,
             "recommendations": models.StrategyRecommendation,
+            "decision_support_artifacts": models.DecisionSupportArtifact,
+            "opportunity_scorecards": models.OpportunityScorecardSnapshot,
+            "scorecard_evaluations": models.ScorecardEvaluation,
         }
         return {
             name: int(self.session.scalar(select(func.count()).select_from(model)) or 0)
@@ -2826,6 +2961,15 @@ class TradingRepository:
 
     def latest_ai_reviews(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.list_rows(models.AIReview, limit)
+
+    def latest_decision_support_artifacts(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self.list_rows(models.DecisionSupportArtifact, limit)
+
+    def latest_opportunity_scorecards(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self.list_rows(models.OpportunityScorecardSnapshot, limit)
+
+    def latest_scorecard_evaluations(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self.list_rows(models.ScorecardEvaluation, limit)
 
     def latest_decisions(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.list_rows(models.DecisionLog, limit)
@@ -3165,3 +3309,8 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_json_safe(item) for item in value]
     return value
+
+
+def _strategy_from_payload(payload: dict[str, Any]) -> str | None:
+    value = payload.get("strategy_id") or payload.get("strategy")
+    return str(value) if value else None
