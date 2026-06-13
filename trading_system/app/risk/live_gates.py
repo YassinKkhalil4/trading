@@ -95,7 +95,10 @@ class LiveGateService:
 
     def _latest_readiness_passed(self) -> bool:
         row = self.repository.latest_live_readiness_report()
-        if not row or not row.live_allowed or not row.source_timestamp:
+        if not row:
+            return False
+        live_allowed = row.live_allowed if hasattr(row, "live_allowed") else bool(row.success)
+        if not live_allowed or not row.source_timestamp:
             return False
         ts = row.source_timestamp
         if ts.tzinfo is None:
@@ -119,7 +122,14 @@ class LiveGateService:
             environment_mode=EnvironmentMode.LIVE.value,
             broker="alpaca_live",
         )
-        return bool(row and row.success and not row.mismatch_detected)
+        if not row:
+            return False
+        mismatch_detected = (
+            row.mismatch_detected
+            if hasattr(row, "mismatch_detected")
+            else isinstance(row.payload, dict) and row.payload.get("mismatch_detected")
+        )
+        return bool(row.success and not mismatch_detected)
 
     def _live_account_snapshot_usable(self) -> bool:
         row = self.repository.latest_broker_account_snapshot(

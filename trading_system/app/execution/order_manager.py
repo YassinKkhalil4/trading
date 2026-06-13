@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from trading_system.app.core.config import Settings, get_settings
 from trading_system.app.core.enums import DecisionOutcome, DecisionType, EnvironmentMode, OrderStatus
@@ -46,6 +48,7 @@ class OrderManager:
     def __init__(self, repository: TradingRepository, settings: Settings | None = None) -> None:
         self.repository = repository
         self.settings = settings or get_settings()
+        self.logger = logging.getLogger(__name__)
 
     @staticmethod
     def build_client_order_id(
@@ -162,7 +165,24 @@ class OrderManager:
             )
             self.repository.session.add(row)
             rows.append((leg, row))
-        self.repository.session.commit()
+        try:
+            self.repository.session.commit()
+        except IntegrityError:
+            self.repository.session.rollback()
+            self.logger.warning(
+                "Idempotency collision for bracket order keys: %s",
+                sorted(client_order_ids.values()),
+            )
+            existing = self.repository.session.scalars(
+                select(models.Order).where(models.Order.idempotency_key.in_(client_order_ids.values()))
+            ).all()
+            return OrderManagerResult(
+                False,
+                len(existing),
+                0,
+                "Duplicate idempotency key rejected during bracket order commit.",
+                {"orders": [model_to_dict(row) for row in existing], "client_order_ids": client_order_ids},
+            )
         payload = {
             "order_class": "bracket",
             "client_order_ids": client_order_ids,
@@ -458,7 +478,21 @@ class OrderManager:
             source_timestamp=datetime.now(UTC),
         )
         self.repository.session.add(replacement)
-        self.repository.session.commit()
+        try:
+            self.repository.session.commit()
+        except IntegrityError:
+            self.repository.session.rollback()
+            self.logger.warning("Idempotency collision for replacement order key: %s", replacement.idempotency_key)
+            existing = self.repository.session.scalar(
+                select(models.Order).where(models.Order.idempotency_key == replacement.idempotency_key)
+            )
+            return OrderManagerResult(
+                False,
+                1 if existing else 0,
+                0,
+                "Duplicate idempotency key rejected during replacement order commit.",
+                {"order": model_to_dict(existing) if existing else None},
+            )
         self.repository.store_decision_log(
             decision_type=DecisionType.EXECUTION,
             outcome=DecisionOutcome.CHANGED,
@@ -567,7 +601,21 @@ class OrderManager:
             source_timestamp=datetime.now(UTC),
         )
         self.repository.session.add(row)
-        self.repository.session.commit()
+        try:
+            self.repository.session.commit()
+        except IntegrityError:
+            self.repository.session.rollback()
+            self.logger.warning("Idempotency collision for key: %s", idempotency_key)
+            existing = self.repository.session.scalar(
+                select(models.Order).where(models.Order.idempotency_key == idempotency_key)
+            )
+            return OrderManagerResult(
+                False,
+                1 if existing else 0,
+                0,
+                "Duplicate idempotency key rejected during protective exit order commit.",
+                {"order": model_to_dict(existing) if existing else None},
+            )
         self.repository.store_decision_log(
             decision_type=DecisionType.EXECUTION,
             outcome=DecisionOutcome.CHANGED,

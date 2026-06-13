@@ -1623,15 +1623,25 @@ class TradingRepository:
         mismatch_detected: bool,
         reason: str,
         payload: dict | None = None,
-    ) -> models.BrokerSyncLog:
-        row = models.BrokerSyncLog(
-            environment_mode=environment_mode,
-            broker=broker,
+    ) -> models.SystemLog:
+        source_timestamp = _now()
+        row = models.SystemLog(
+            log_type="BROKER_SYNC",
+            entity_type="broker",
+            entity_id=broker,
+            actor="system",
+            status=environment_mode,
+            severity="WARNING" if mismatch_detected or not success else "INFO",
             success=success,
-            mismatch_detected=mismatch_detected,
             reason=reason,
-            payload=payload,
-            source_timestamp=_now(),
+            payload={
+                "environment_mode": environment_mode,
+                "broker": broker,
+                "success": success,
+                "mismatch_detected": mismatch_detected,
+                "payload": _json_safe(payload or {}),
+            },
+            source_timestamp=source_timestamp,
         )
         self.session.add(row)
         self.session.commit()
@@ -1660,13 +1670,22 @@ class TradingRepository:
         error_type: str,
         reason: str,
         payload: dict | None = None,
-    ) -> models.ExecutionError:
-        row = models.ExecutionError(
-            order_id=order_id,
-            environment_mode=environment_mode,
-            error_type=error_type,
+    ) -> models.SystemLog:
+        row = models.SystemLog(
+            log_type="EXECUTION_ERROR",
+            entity_type="order",
+            entity_id=order_id,
+            actor="system",
+            status=environment_mode,
+            severity="ERROR",
+            success=False,
             reason=reason,
-            payload=_json_safe(payload),
+            payload={
+                "order_id": order_id,
+                "environment_mode": environment_mode,
+                "error_type": error_type,
+                "payload": _json_safe(payload or {}),
+            },
             source_timestamp=_now(),
         )
         self.session.add(row)
@@ -1689,13 +1708,13 @@ class TradingRepository:
         *,
         environment_mode: str | None = None,
         broker: str | None = None,
-    ) -> models.BrokerSyncLog | None:
-        stmt = select(models.BrokerSyncLog)
+    ) -> models.SystemLog | None:
+        stmt = select(models.SystemLog).where(models.SystemLog.log_type == "BROKER_SYNC")
         if environment_mode:
-            stmt = stmt.where(models.BrokerSyncLog.environment_mode == environment_mode)
+            stmt = stmt.where(models.SystemLog.status == environment_mode)
         if broker:
-            stmt = stmt.where(models.BrokerSyncLog.broker == broker)
-        return self.session.scalar(stmt.order_by(desc(models.BrokerSyncLog.created_at)).limit(1))
+            stmt = stmt.where(models.SystemLog.entity_id == broker)
+        return self.session.scalar(stmt.order_by(desc(models.SystemLog.created_at)).limit(1))
 
     def activate_kill_switch(
         self,
@@ -1784,9 +1803,10 @@ class TradingRepository:
     def execution_error_exists(self, *, order_id: str | None, error_type: str) -> bool:
         return bool(
             self.session.scalar(
-                select(models.ExecutionError.id)
-                .where(models.ExecutionError.order_id == order_id)
-                .where(models.ExecutionError.error_type == error_type)
+                select(models.SystemLog.id)
+                .where(models.SystemLog.log_type == "EXECUTION_ERROR")
+                .where(models.SystemLog.entity_id == order_id)
+                .where(models.SystemLog.payload["error_type"].as_string() == error_type)
                 .limit(1)
             )
         )
@@ -2810,41 +2830,61 @@ class TradingRepository:
         return [model_to_dict(row) for row in rows]
 
     def counts(self) -> dict[str, int]:
-        tracked = {
-            "symbols": models.SymbolUniverse,
-            "raw_ingestion_events": models.RawIngestionEvent,
-            "raw_trade_ticks": models.RawTradeTick,
-            "clean_candles": models.CleanMarketData,
-            "stream_events": models.MarketDataStreamEvent,
-            "provider_health": models.ProviderHealthSnapshot,
-            "provider_rate_limits": models.ProviderRateLimitState,
-            "worker_heartbeats": models.WorkerHeartbeat,
-            "clean_news": models.CleanNews,
-            "filings": models.RawFiling,
-            "scanner_results": models.ScannerResult,
-            "signals": models.Signal,
-            "risk_checks": models.RiskCheck,
-            "broker_account_snapshots": models.BrokerAccountSnapshot,
-            "orders": models.Order,
-            "fills": models.Fill,
-            "positions": models.Position,
-            "execution_errors": models.ExecutionError,
-            "journal_entries": models.TradeJournal,
-            "scheduler_runs": models.SchedulerRun,
-            "live_readiness_reports": models.LiveReadinessReport,
-            "strategy_approval_requests": models.StrategyApprovalRequest,
-            "kill_switches": models.KillSwitchEvent,
-            "weekly_reviews": models.WeeklyReview,
-            "recommendations": models.StrategyRecommendation,
-            "pit_universe_memberships": models.PointInTimeUniverseMembership,
-            "short_interest_snapshots": models.ShortInterestSnapshot,
-            "options_intelligence_snapshots": models.OptionsIntelligenceSnapshot,
-            "multi_bagger_candidate_scores": models.MultiBaggerCandidateScore,
+        tracked_model_names = {
+            "symbols": "SymbolUniverse",
+            "raw_ingestion_events": "RawIngestionEvent",
+            "raw_trade_ticks": "RawTradeTick",
+            "clean_candles": "CleanMarketData",
+            "stream_events": "MarketDataStreamEvent",
+            "provider_health": "ProviderHealthSnapshot",
+            "provider_rate_limits": "ProviderRateLimitState",
+            "worker_heartbeats": "WorkerHeartbeat",
+            "clean_news": "CleanNews",
+            "filings": "RawFiling",
+            "scanner_results": "ScannerResult",
+            "signals": "Signal",
+            "risk_checks": "RiskCheck",
+            "broker_account_snapshots": "BrokerAccountSnapshot",
+            "orders": "Order",
+            "fills": "Fill",
+            "positions": "Position",
+            "system_logs": "SystemLog",
+            "journal_entries": "TradeJournal",
+            "scheduler_runs": "SchedulerRun",
+            "live_readiness_reports": "LiveReadinessReport",
+            "strategy_approval_requests": "StrategyApprovalRequest",
+            "kill_switches": "KillSwitchEvent",
+            "weekly_reviews": "WeeklyReview",
+            "recommendations": "StrategyRecommendation",
+            "pit_universe_memberships": "PointInTimeUniverseMembership",
+            "short_interest_snapshots": "ShortInterestSnapshot",
+            "options_intelligence_snapshots": "OptionsIntelligenceSnapshot",
+            "multi_bagger_candidate_scores": "MultiBaggerCandidateScore",
         }
-        return {
-            name: int(self.session.scalar(select(func.count()).select_from(model)) or 0)
-            for name, model in tracked.items()
-        }
+        counts = {}
+        for name, model_name in tracked_model_names.items():
+            model = getattr(models, model_name, None)
+            if model is None:
+                counts[name] = 0
+                continue
+            counts[name] = int(self.session.scalar(select(func.count()).select_from(model)) or 0)
+        counts["execution_errors"] = int(
+            self.session.scalar(
+                select(func.count())
+                .select_from(models.SystemLog)
+                .where(models.SystemLog.log_type == "EXECUTION_ERROR")
+            )
+            or 0
+        )
+        counts["broker_sync_logs"] = int(
+            self.session.scalar(
+                select(func.count())
+                .select_from(models.SystemLog)
+                .where(models.SystemLog.log_type == "BROKER_SYNC")
+            )
+            or 0
+        )
+        return counts
 
     def latest_clean_candles(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.list_rows(models.CleanMarketData, limit)
@@ -3146,6 +3186,8 @@ class TradingRepository:
         )
 
     def latest_point_in_time_universe_memberships(self, limit: int = 100) -> list[dict[str, Any]]:
+        if not hasattr(models, "PointInTimeUniverseMembership"):
+            return []
         return self.list_rows(models.PointInTimeUniverseMembership, limit)
 
     def latest_short_interest_snapshots(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -3155,6 +3197,8 @@ class TradingRepository:
         return self.list_rows(models.OptionsIntelligenceSnapshot, limit)
 
     def latest_multi_bagger_candidate_scores(self, limit: int = 100) -> list[dict[str, Any]]:
+        if not hasattr(models, "MultiBaggerCandidateScore"):
+            return []
         return self.list_rows(models.MultiBaggerCandidateScore, limit)
 
     def latest_opportunity_scores(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -3231,6 +3275,8 @@ class TradingRepository:
         return self.list_rows(models.Signal, limit)
 
     def latest_trade_theses(self, limit: int = 100) -> list[dict[str, Any]]:
+        if not hasattr(models, "TradeThesis"):
+            return []
         return self.list_rows(models.TradeThesis, limit)
 
     def latest_risk_checks(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -3249,6 +3295,8 @@ class TradingRepository:
         return self.list_rows(models.TradeJournal, limit)
 
     def latest_ai_reviews(self, limit: int = 100) -> list[dict[str, Any]]:
+        if not hasattr(models, "AIReview"):
+            return []
         return self.list_rows(models.AIReview, limit)
 
     def latest_decisions(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -3297,10 +3345,48 @@ class TradingRepository:
         return self.list_rows(models.Fill, limit)
 
     def latest_broker_sync_logs(self, limit: int = 100) -> list[dict[str, Any]]:
-        return self.list_rows(models.BrokerSyncLog, limit)
+        rows = self.session.scalars(
+            select(models.SystemLog)
+            .where(models.SystemLog.log_type == "BROKER_SYNC")
+            .order_by(desc(models.SystemLog.created_at))
+            .limit(limit)
+        ).all()
+        result = []
+        for row in rows:
+            data = model_to_dict(row)
+            if isinstance(row.payload, dict):
+                data.update(
+                    {
+                        "environment_mode": row.payload.get("environment_mode"),
+                        "broker": row.payload.get("broker"),
+                        "mismatch_detected": row.payload.get("mismatch_detected"),
+                        "payload": row.payload.get("payload", {}),
+                    }
+                )
+            result.append(data)
+        return result
 
     def latest_execution_errors(self, limit: int = 100) -> list[dict[str, Any]]:
-        return self.list_rows(models.ExecutionError, limit)
+        rows = self.session.scalars(
+            select(models.SystemLog)
+            .where(models.SystemLog.log_type == "EXECUTION_ERROR")
+            .order_by(desc(models.SystemLog.created_at))
+            .limit(limit)
+        ).all()
+        result = []
+        for row in rows:
+            data = model_to_dict(row)
+            if isinstance(row.payload, dict):
+                data.update(
+                    {
+                        "order_id": row.payload.get("order_id"),
+                        "environment_mode": row.payload.get("environment_mode"),
+                        "error_type": row.payload.get("error_type"),
+                        "payload": row.payload.get("payload", {}),
+                    }
+                )
+            result.append(data)
+        return result
 
     def store_live_readiness_report(
         self,
@@ -3311,29 +3397,28 @@ class TradingRepository:
         checks: list[dict],
         actor: str = "system",
         source_timestamp: datetime | None = None,
-    ) -> models.LiveReadinessReport:
+    ) -> models.SystemLog:
         ts = source_timestamp or _now()
         safe_checks = _json_safe(checks)
-        for check in safe_checks:
-            self.session.add(
-                models.LiveReadinessCheck(
-                    check_name=check["check_name"],
-                    passed=bool(check["passed"]),
-                    severity=check.get("severity", "BLOCKER"),
-                    reason=check["reason"],
-                    payload=check.get("payload"),
-                    source_timestamp=ts,
-                )
-            )
-        row = models.LiveReadinessReport(
-            overall_status=overall_status,
-            live_allowed=live_allowed,
+        row = models.SystemLog(
+            log_type="LIVE_READINESS_REPORT",
+            entity_type="live_readiness_report",
+            entity_id=None,
+            actor=actor,
+            status=overall_status,
+            severity="INFO" if live_allowed else "WARNING",
+            success=live_allowed,
             reason=reason,
-            checks=safe_checks,
+            payload={
+                "overall_status": overall_status,
+                "live_allowed": live_allowed,
+                "checks": safe_checks,
+            },
             source_timestamp=ts,
         )
         self.session.add(row)
         self.session.flush()
+        row.entity_id = row.id
         self.session.add(
             models.AuditLog(
                 actor=actor,
@@ -3354,52 +3439,74 @@ class TradingRepository:
         approved_by: str,
         reason: str,
         expires_at: datetime | None,
-    ) -> models.LiveTradingApproval:
-        row = models.LiveTradingApproval(
+    ) -> models.SystemLog:
+        row = models.SystemLog(
+            log_type="LIVE_TRADING_APPROVAL",
+            entity_type="live_trading_approval",
+            entity_id=None,
+            actor=approved_by,
             status=LiveApprovalStatus.ACTIVE.value,
-            approved_by=approved_by,
+            severity="INFO",
+            success=True,
             reason=reason,
-            expires_at=expires_at,
+            payload={
+                "approved_by": approved_by,
+                "expires_at": expires_at.isoformat() if expires_at else None,
+                "revoked_at": None,
+                "revoke_reason": None,
+            },
             source_timestamp=_now(),
         )
         self.session.add(row)
         self.session.commit()
+        row.entity_id = row.id
+        self.session.commit()
         return row
 
-    def active_live_trading_approval(self) -> models.LiveTradingApproval | None:
+    def active_live_trading_approval(self) -> models.SystemLog | None:
         now = _now()
         self.expire_live_trading_approvals(now=now)
-        return self.session.scalar(
-            select(models.LiveTradingApproval)
+        rows = self.session.scalars(
+            select(models.SystemLog)
             .where(
-                models.LiveTradingApproval.status == LiveApprovalStatus.ACTIVE.value,
-                models.LiveTradingApproval.revoked_at.is_(None),
+                models.SystemLog.log_type == "LIVE_TRADING_APPROVAL",
+                models.SystemLog.status == LiveApprovalStatus.ACTIVE.value,
             )
-            .where(
-                (models.LiveTradingApproval.expires_at.is_(None))
-                | (models.LiveTradingApproval.expires_at > now)
-            )
-            .order_by(desc(models.LiveTradingApproval.created_at))
-            .limit(1)
-        )
+            .order_by(desc(models.SystemLog.created_at))
+        ).all()
+        for row in rows:
+            expires_at = None
+            if isinstance(row.payload, dict) and row.payload.get("expires_at"):
+                expires_at = datetime.fromisoformat(row.payload["expires_at"])
+            if expires_at is None or expires_at > now:
+                return row
+        return None
 
     def expire_live_trading_approvals(self, *, now: datetime | None = None) -> int:
         ts = now or _now()
         rows = self.session.scalars(
-            select(models.LiveTradingApproval).where(
-                models.LiveTradingApproval.status == LiveApprovalStatus.ACTIVE.value,
-                models.LiveTradingApproval.revoked_at.is_(None),
-                models.LiveTradingApproval.expires_at.is_not(None),
-                models.LiveTradingApproval.expires_at <= ts,
+            select(models.SystemLog).where(
+                models.SystemLog.log_type == "LIVE_TRADING_APPROVAL",
+                models.SystemLog.status == LiveApprovalStatus.ACTIVE.value,
             )
         ).all()
+        expired = []
         for row in rows:
-            row.status = LiveApprovalStatus.EXPIRED.value
-            row.revoked_at = ts
-            row.revoke_reason = "Live approval expired automatically."
-        if rows:
+            expires_at = None
+            if isinstance(row.payload, dict) and row.payload.get("expires_at"):
+                expires_at = datetime.fromisoformat(row.payload["expires_at"])
+            if expires_at is not None and expires_at <= ts:
+                row.status = LiveApprovalStatus.EXPIRED.value
+                row.success = False
+                payload = dict(row.payload or {})
+                payload["revoked_at"] = ts.isoformat()
+                payload["revoke_reason"] = "Live approval expired automatically."
+                row.payload = payload
+                expired.append(row)
+        if expired:
             self.session.commit()
-            for row in rows:
+            for row in expired:
+                payload = row.payload or {}
                 self.store_audit_log(
                     actor="system",
                     event_type="LIVE_APPROVAL_EXPIRED",
@@ -3407,11 +3514,11 @@ class TradingRepository:
                     entity_id=row.id,
                     reason="Live approval expired automatically.",
                     payload={
-                        "approved_by": row.approved_by,
-                        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+                        "approved_by": payload.get("approved_by"),
+                        "expires_at": payload.get("expires_at"),
                     },
                 )
-        return len(rows)
+        return len(expired)
 
     def revoke_live_trading_approval(
         self,
@@ -3419,13 +3526,16 @@ class TradingRepository:
         approval_id: str,
         revoked_by: str,
         reason: str,
-    ) -> models.LiveTradingApproval:
-        row = self.session.get(models.LiveTradingApproval, approval_id)
-        if not row:
+    ) -> models.SystemLog:
+        row = self.session.get(models.SystemLog, approval_id)
+        if not row or row.log_type != "LIVE_TRADING_APPROVAL":
             raise ValueError(f"Unknown live trading approval: {approval_id}")
         row.status = LiveApprovalStatus.REVOKED.value
-        row.revoked_at = _now()
-        row.revoke_reason = reason
+        row.success = False
+        payload = dict(row.payload or {})
+        payload["revoked_at"] = _now().isoformat()
+        payload["revoke_reason"] = reason
+        row.payload = payload
         self.session.commit()
         self.store_audit_log(
             actor=revoked_by,
@@ -3433,14 +3543,15 @@ class TradingRepository:
             entity_type="live_trading_approval",
             entity_id=row.id,
             reason=reason,
-            payload={"approved_by": row.approved_by},
+            payload={"approved_by": payload.get("approved_by")},
         )
         return row
 
-    def latest_live_readiness_report(self) -> models.LiveReadinessReport | None:
+    def latest_live_readiness_report(self) -> models.SystemLog | None:
         return self.session.scalar(
-            select(models.LiveReadinessReport)
-            .order_by(desc(models.LiveReadinessReport.created_at))
+            select(models.SystemLog)
+            .where(models.SystemLog.log_type == "LIVE_READINESS_REPORT")
+            .order_by(desc(models.SystemLog.created_at))
             .limit(1)
         )
 
@@ -3459,10 +3570,22 @@ class TradingRepository:
         return bool(row and row.status == ProviderHealthStatus.HEALTHY.value)
 
     def latest_live_readiness_reports(self, limit: int = 20) -> list[dict[str, Any]]:
-        return self.list_rows(models.LiveReadinessReport, limit)
+        rows = self.session.scalars(
+            select(models.SystemLog)
+            .where(models.SystemLog.log_type == "LIVE_READINESS_REPORT")
+            .order_by(desc(models.SystemLog.created_at))
+            .limit(limit)
+        ).all()
+        return [model_to_dict(row) for row in rows]
 
     def latest_live_trading_approvals(self, limit: int = 20) -> list[dict[str, Any]]:
-        return self.list_rows(models.LiveTradingApproval, limit)
+        rows = self.session.scalars(
+            select(models.SystemLog)
+            .where(models.SystemLog.log_type == "LIVE_TRADING_APPROVAL")
+            .order_by(desc(models.SystemLog.created_at))
+            .limit(limit)
+        ).all()
+        return [model_to_dict(row) for row in rows]
 
     def latest_events(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.list_rows(models.Event, limit)
