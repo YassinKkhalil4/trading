@@ -157,7 +157,7 @@ class LiveReadinessService:
                 self._latest_broker_sync_ok(),
                 "BLOCKER",
                 "Latest live broker/internal reconciliation must be successful and mismatch-free.",
-                {"latest_broker_sync": self._latest_row(models.BrokerSyncLog)},
+                {"latest_broker_sync": self._latest_system_log("BROKER_SYNC")},
             ),
             self._check(
                 "approved_live_strategy_exists",
@@ -414,7 +414,12 @@ class LiveReadinessService:
             environment_mode=EnvironmentMode.LIVE.value,
             broker="alpaca_live",
         )
-        return bool(latest and latest.success and not latest.mismatch_detected)
+        return bool(
+            latest
+            and latest.success
+            and isinstance(latest.payload, dict)
+            and not latest.payload.get("mismatch_detected")
+        )
 
     def _provider_health_ok(self, provider_name: str) -> bool:
         row = self.repository.latest_provider_health_for(provider_name)
@@ -458,6 +463,15 @@ class LiveReadinessService:
         latest = self.repository.session.scalar(select(model).order_by(desc(model.created_at)).limit(1))
         return model_to_dict(latest) if latest else None
 
+    def _latest_system_log(self, log_type: str) -> dict[str, Any] | None:
+        latest = self.repository.session.scalar(
+            select(models.SystemLog)
+            .where(models.SystemLog.log_type == log_type)
+            .order_by(desc(models.SystemLog.created_at))
+            .limit(1)
+        )
+        return model_to_dict(latest) if latest else None
+
     def _duplicate_idempotency_keys(self) -> dict[str, list[str]]:
         duplicate_signals = self.repository.session.execute(
             select(models.Signal.idempotency_key)
@@ -496,7 +510,7 @@ class LiveReadinessService:
             "risk_checks": _count(self.repository, models.RiskCheck),
             "orders": _count(self.repository, models.Order),
             "fills": _count(self.repository, models.Fill),
-            "broker_sync_logs": _count(self.repository, models.BrokerSyncLog),
+            "broker_sync_logs": _system_log_count(self.repository, "BROKER_SYNC"),
         }
 
     def _paper_evidence_ok(self) -> bool:
@@ -506,6 +520,15 @@ class LiveReadinessService:
 
 def _count(repository: TradingRepository, model: type) -> int:
     return int(repository.session.scalar(select(func.count()).select_from(model)) or 0)
+
+
+def _system_log_count(repository: TradingRepository, log_type: str) -> int:
+    return int(
+        repository.session.scalar(
+            select(func.count()).select_from(models.SystemLog).where(models.SystemLog.log_type == log_type)
+        )
+        or 0
+    )
 
 
 def _timestamp_fresh_at(
