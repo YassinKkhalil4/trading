@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from typing import Any, Callable
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field, model_validator
 
@@ -15,10 +15,7 @@ from trading_system.app.alpha.intelligence import (
 )
 from trading_system.app.alpha.leadership import SectorLeadershipService
 from trading_system.app.alpha.scoring import AlphaOpportunityScoringService
-from trading_system.app.alpha.strategies import (
-    ALPHA_STRATEGIES,
-    AlphaStrategyScannerService,
-)
+from trading_system.app.alpha.strategies import ALPHA_STRATEGIES
 from trading_system.app.core.enums import AdminRole, EnvironmentMode, MarketRegime
 from trading_system.app.data.market_calendar import get_session, opening_range_window
 from trading_system.app.db import models
@@ -58,6 +55,7 @@ from trading_system.app.security.auth import (
 from trading_system.app.signals.signal_engine import SignalEngine
 from trading_system.app.strategies.cooldowns import StrategyCooldownBook
 from trading_system.app.strategies.registry import StrategyRegistryService
+from trading_system.app.tasks import run_alpha_strategy_scanner, run_production_scanners
 
 app = FastAPI(title="Autonomous Trading Intelligence Platform", version="0.1.0")
 
@@ -1061,28 +1059,19 @@ def alpha_scoring_run_once(
         session.close()
 
 
-@app.post("/alpha/scanners/run")
+@app.post("/alpha/scanners/run", status_code=status.HTTP_202_ACCEPTED)
 def alpha_scanner_run(
     request: AlphaScannerRunRequest,
     principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
-    session, service = _runtime()
-    try:
-        service.bootstrap()
-        result = AlphaStrategyScannerService(service.repository).run_strategy(
-            request.strategy_id, symbols=request.symbols
-        )
-        _audit_manual_operation(
-            service.repository,
-            actor=principal.username,
-            operation="alpha_scanner_run",
-            reason=result.reason,
-            payload={"strategy_id": request.strategy_id, "symbols": request.symbols},
-            result=result,
-        )
-        return result.__dict__
-    finally:
-        session.close()
+    task = run_alpha_strategy_scanner.delay(
+        request.strategy_id, symbols=request.symbols, actor=principal.username
+    )
+    return {
+        "accepted": True,
+        "task_id": task.id,
+        "reason": "Alpha scanner execution queued in Celery.",
+    }
 
 
 @app.post("/alpha/expectancy/refresh")
@@ -2473,25 +2462,17 @@ def catalysts_score_run(
         session.close()
 
 
-@app.post("/scanners/production/run")
+@app.post("/scanners/production/run", status_code=status.HTTP_202_ACCEPTED)
 def production_scanners_run(
     request: CollectRequest,
     principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
-    session, service = _runtime()
-    try:
-        result = service.run_production_scanners(request.symbols)
-        _audit_manual_operation(
-            service.repository,
-            actor=principal.username,
-            operation="production_scanners_run",
-            reason=result.reason,
-            payload={"symbols": request.symbols},
-            result=result,
-        )
-        return result.__dict__
-    finally:
-        session.close()
+    task = run_production_scanners.delay(request.symbols, actor=principal.username)
+    return {
+        "accepted": True,
+        "task_id": task.id,
+        "reason": "Production scanner execution queued in Celery.",
+    }
 
 
 @app.post("/monitor/trades/run-once")
