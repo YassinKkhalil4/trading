@@ -692,12 +692,6 @@ def test_direct_vwap_scanner_and_risk_endpoints_persist_decisions(monkeypatch):
         "strong_relative_strength": True,
     }
     risk = {
-        "account_equity": 100_000,
-        "open_positions": 0,
-        "daily_loss_pct": 0.0,
-        "weekly_loss_pct": 0.0,
-        "sector_exposure_pct": 0.0,
-        "trades_today": 0,
         "trades_by_strategy_today": {},
     }
 
@@ -728,7 +722,7 @@ def test_direct_vwap_scanner_and_risk_endpoints_persist_decisions(monkeypatch):
     assert order_response.json()["order_id"] == "order-1"
     assert repository.scanner_payloads[0]["scanner_name"] == "VWAP_RECLAIM_DIRECT_API"
     assert repository.scanner_payloads[0]["accepted"] is True
-    assert repository.risk_payloads[0]["risk"].approved is True
+    assert repository.risk_payloads[0]["risk"].approved is False
     assert repository.risk_payloads[0]["payload"]["source"] == "api:/risk/check-vwap-reclaim"
     assert repository.risk_payloads[1]["payload"]["source"] == "api:/execution/paper/submit-vwap-reclaim"
     assert repository.orders[0]["signal_id"] == "signal-3"

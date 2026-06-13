@@ -1211,11 +1211,6 @@ def test_live_submit_is_testable_but_records_blocked_order_by_default():
 
     result = service.submit_signal_to_live(
         signal_id=signal.id,
-        account_equity=100_000,
-        open_positions=0,
-        daily_loss_pct=0.0,
-        weekly_loss_pct=0.0,
-        sector_exposure_pct=0.0,
         internal_quantity=0.0,
         broker_quantity=0.0,
     )
