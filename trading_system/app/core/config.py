@@ -24,6 +24,10 @@ def _env_float(name: str, default: float) -> float:
     return float(raw) if raw not in (None, "") else default
 
 
+class ImproperlyConfigured(RuntimeError):
+    """Raised when required production safety configuration is missing."""
+
+
 @dataclass(frozen=True)
 class Settings:
     environment_mode: EnvironmentMode = EnvironmentMode.RESEARCH
@@ -194,6 +198,7 @@ def get_settings() -> Settings:
     mode = EnvironmentMode(
         os.getenv("ENVIRONMENT_MODE", EnvironmentMode.RESEARCH.value)
     )
+    admin_session_secret = os.getenv("ADMIN_SESSION_SECRET")
     if mode == EnvironmentMode.LIVE:
         allow_live = _env_bool("ALLOW_LIVE_TRADING", False)
         confirmation = os.getenv("CONFIRM_LIVE_TRADING", "")
@@ -201,6 +206,10 @@ def get_settings() -> Settings:
             raise RuntimeError(
                 "ENVIRONMENT_MODE=live requires explicit live confirmation. "
                 "Live trading is not wired unless every live gate is explicitly enabled."
+            )
+        if not admin_session_secret or admin_session_secret == "change-me":
+            raise ImproperlyConfigured(
+                "ADMIN_SESSION_SECRET must be securely set in LIVE mode. Refusing to start."
             )
 
     return Settings(
@@ -257,7 +266,7 @@ def get_settings() -> Settings:
         live_approval_max_age_minutes=_env_int("LIVE_APPROVAL_MAX_AGE_MINUTES", 240),
         admin_username=os.getenv("ADMIN_USERNAME", "admin"),
         admin_password=os.getenv("ADMIN_PASSWORD", ""),
-        admin_session_secret=os.getenv("ADMIN_SESSION_SECRET", "change-me"),
+        admin_session_secret=admin_session_secret or "change-me",
         api_admin_token=os.getenv("API_ADMIN_TOKEN", ""),
         auth_session_minutes=_env_int("AUTH_SESSION_MINUTES", 480),
         admin_failed_login_lockout_attempts=_env_int(

@@ -147,7 +147,7 @@ def decode_session_token(token: str, settings: Settings | None = None) -> dict[s
 
 def hash_session_token(token: str, settings: Settings | None = None) -> str:
     settings = settings or get_settings()
-    secret = settings.admin_session_secret or "change-me"
+    secret = _require_session_secret(settings)
     return hmac.new(secret.encode("utf-8"), token.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
@@ -339,7 +339,13 @@ def _b64url_decode_json(payload: str) -> dict[str, Any]:
     return json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
 
 
+def _require_session_secret(settings: Settings) -> str:
+    if not settings.admin_session_secret or settings.admin_session_secret == "change-me":
+        raise RuntimeError("ADMIN_SESSION_SECRET must be securely set before issuing admin sessions.")
+    return settings.admin_session_secret
+
+
 def _sign_jwt(signing_input: str, settings: Settings) -> str:
-    secret = settings.admin_session_secret or "change-me"
+    secret = _require_session_secret(settings)
     digest = hmac.new(secret.encode("utf-8"), signing_input.encode("ascii"), hashlib.sha256).digest()
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")

@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 
 from trading_system.app.ai.thesis_engine import build_rule_based_thesis
 from trading_system.app.catalysts.catalyst_engine import CatalystEngine, CatalystRunResult
@@ -113,6 +113,70 @@ class ScanCycleResult:
     signal_id: str | None
     thesis_id: str | None
     reason: str
+
+
+class PortfolioService:
+    """Builds server-authoritative portfolio state for risk checks."""
+
+    def __init__(self, repository: TradingRepository) -> None:
+        self.repository = repository
+
+    def build_state(
+        self,
+        *,
+        signal: TradeSignal,
+        environment_mode: str,
+        broker: str,
+        loss_controls: dict[str, float],
+    ) -> PortfolioState:
+        snapshot = self.repository.latest_broker_account_snapshot(
+            environment_mode=environment_mode,
+            broker=broker,
+        )
+        if not snapshot or snapshot.equity is None or snapshot.equity <= 0:
+            raise RuntimeError(
+                f"No authoritative broker account equity snapshot available for {environment_mode}/{broker}."
+            )
+        today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        open_positions = int(
+            self.repository.session.scalar(
+                select(func.count(models.Position.id)).where(
+                    models.Position.environment_mode == environment_mode,
+                    models.Position.quantity != 0,
+                )
+            )
+            or 0
+        )
+        trades_today = int(
+            self.repository.session.scalar(
+                select(func.count(models.Order.id)).where(
+                    models.Order.environment_mode == environment_mode,
+                    models.Order.created_at >= today_start,
+                )
+            )
+            or 0
+        )
+        strategy_trades_today = int(
+            self.repository.session.scalar(
+                select(func.count(models.Order.id))
+                .join(models.Signal, models.Signal.id == models.Order.signal_id)
+                .where(
+                    models.Order.environment_mode == environment_mode,
+                    models.Signal.strategy_id == signal.strategy_id,
+                    models.Order.created_at >= today_start,
+                )
+            )
+            or 0
+        )
+        return PortfolioState(
+            account_equity=float(snapshot.equity),
+            open_positions=open_positions,
+            daily_loss_pct=loss_controls["daily_loss_pct"],
+            weekly_loss_pct=loss_controls["weekly_loss_pct"],
+            sector_exposure_pct=0.0,
+            trades_today=trades_today,
+            trades_by_strategy_today={signal.strategy_id: strategy_trades_today},
+        )
 
 
 class TradingRuntimeService:
@@ -351,9 +415,6 @@ class TradingRuntimeService:
         self,
         *,
         signal_id: str,
-        account_equity: float,
-        open_positions: int,
-        daily_loss_pct: float,
         weekly_loss_pct: float,
         sector_exposure_pct: float,
         symbol_exposure_pct: float = 0.0,
@@ -363,8 +424,6 @@ class TradingRuntimeService:
         event_risk_active: bool = False,
         spread_bps: float = 0.0,
         expected_slippage_bps: float = 0.0,
-        trades_today: int = 0,
-        strategy_trades_today: int = 0,
         internal_quantity: float = 0.0,
         broker_quantity: float = 0.0,
     ) -> dict[str, Any]:
@@ -372,6 +431,16 @@ class TradingRuntimeService:
         if not signal_row:
             raise ValueError(f"Unknown signal id: {signal_id}")
         signal = _db_signal_to_trade_signal(signal_row)
+        authoritative_state = self._authoritative_portfolio_state(
+            signal=signal,
+            environment_mode=EnvironmentMode.PAPER.value,
+            broker="alpaca_paper",
+        )
+        account_equity = authoritative_state.account_equity
+        open_positions = authoritative_state.open_positions
+        daily_loss_pct = authoritative_state.daily_loss_pct
+        trades_today = authoritative_state.trades_today
+        strategy_trades_today = authoritative_state.trades_by_strategy_today.get(signal.strategy_id, 0)
         live_sync = self.sync_alpaca_live()
         if live_sync.get("configured") and "reconciliation" in live_sync:
             sync_reconciliation = live_sync["reconciliation"]
@@ -724,9 +793,6 @@ class TradingRuntimeService:
         self,
         *,
         signal_id: str,
-        account_equity: float,
-        open_positions: int,
-        daily_loss_pct: float,
         weekly_loss_pct: float,
         sector_exposure_pct: float,
         symbol_exposure_pct: float = 0.0,
@@ -736,8 +802,6 @@ class TradingRuntimeService:
         event_risk_active: bool = False,
         spread_bps: float = 0.0,
         expected_slippage_bps: float = 0.0,
-        trades_today: int = 0,
-        strategy_trades_today: int = 0,
         internal_quantity: float = 0.0,
         broker_quantity: float = 0.0,
     ) -> LiveExecutionResult:
@@ -746,6 +810,19 @@ class TradingRuntimeService:
         if not signal_row:
             raise ValueError(f"Unknown signal id: {signal_id}")
         signal = _db_signal_to_trade_signal(signal_row)
+        live_sync = self.sync_alpaca_live()
+        if not live_sync.get("success"):
+            raise RuntimeError(f"Unable to fetch authoritative live broker state: {live_sync.get('reason')}")
+        authoritative_state = self._authoritative_portfolio_state(
+            signal=signal,
+            environment_mode=EnvironmentMode.LIVE.value,
+            broker="alpaca_live",
+        )
+        account_equity = authoritative_state.account_equity
+        open_positions = authoritative_state.open_positions
+        daily_loss_pct = authoritative_state.daily_loss_pct
+        trades_today = authoritative_state.trades_today
+        strategy_trades_today = authoritative_state.trades_by_strategy_today.get(signal.strategy_id, 0)
         reconciliation = reconcile_positions(
             [
                 PositionSnapshot(
@@ -1040,6 +1117,26 @@ class TradingRuntimeService:
             risk_decision=risk_decision,
             risk_context=risk_context,
             source_timestamp=signal.source_timestamp,
+        )
+
+    def _authoritative_portfolio_state(
+        self,
+        *,
+        signal: TradeSignal,
+        environment_mode: str,
+        broker: str,
+    ) -> PortfolioState:
+        loss_controls = self._effective_loss_controls(
+            environment_mode=environment_mode,
+            broker=broker,
+            daily_loss_pct=0.0,
+            weekly_loss_pct=0.0,
+        )
+        return PortfolioService(self.repository).build_state(
+            signal=signal,
+            environment_mode=environment_mode,
+            broker=broker,
+            loss_controls=loss_controls,
         )
 
     def _risk_snapshot_context(
