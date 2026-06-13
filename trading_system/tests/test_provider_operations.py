@@ -149,19 +149,13 @@ def _store_submitted_test_order(repo: TradingRepository) -> None:
     )
 
 
-def test_runtime_primary_collection_blocks_yahoo_fallback_outside_research(monkeypatch):
+def test_runtime_primary_collection_uses_alpaca_without_yahoo_fallback(monkeypatch):
     repo = _repo()
     FakeAlpacaBarsFailureCollector.calls = []
-    FakeYahooCollector.calls = []
     monkeypatch.setattr(
         "trading_system.app.services.runtime.AlpacaBarsCollector",
         FakeAlpacaBarsFailureCollector,
     )
-    monkeypatch.setattr(
-        "trading_system.app.services.runtime.YahooChartCollector",
-        FakeYahooCollector,
-    )
-
     result = TradingRuntimeService(
         repo,
         settings=Settings(environment_mode=EnvironmentMode.PAPER),
@@ -170,33 +164,25 @@ def test_runtime_primary_collection_blocks_yahoo_fallback_outside_research(monke
     assert isinstance(result, AlpacaBarsResult)
     assert result.success is False
     assert FakeAlpacaBarsFailureCollector.calls == ["AMD"]
-    assert FakeYahooCollector.calls == []
 
 
-def test_scheduler_market_data_blocks_yahoo_fallback_outside_research(monkeypatch):
+def test_scheduler_market_data_uses_alpaca_without_yahoo_fallback(monkeypatch):
     repo = _repo()
     FakeAlpacaBarsFailureCollector.calls = []
-    FakeYahooCollector.calls = []
     monkeypatch.setattr(
         "trading_system.app.services.scheduler.AlpacaBarsCollector",
         FakeAlpacaBarsFailureCollector,
     )
-    monkeypatch.setattr(
-        "trading_system.app.services.scheduler.YahooChartCollector",
-        FakeYahooCollector,
-    )
-
     result = ScheduledCollectorRunner(
         repo,
         settings=Settings(environment_mode=EnvironmentMode.PAPER),
     ).run_once("market_data", symbols=["AMD"])
 
     assert result.success is False
-    assert result.payload["results"][0]["fallback"] is None
-    assert result.payload["results"][0]["fallback_allowed"] is False
-    assert "research-only" in result.payload["results"][0]["reason"]
+    assert "fallback" not in result.payload["results"][0]
+    assert "fallback_allowed" not in result.payload["results"][0]
+    assert "Alpaca Market Data is the exclusive production OHLCV source" in result.reason
     assert FakeAlpacaBarsFailureCollector.calls == ["AMD"]
-    assert FakeYahooCollector.calls == []
 
 
 def test_news_rss_collector_stores_raw_clean_duplicate_and_rumor_flags():

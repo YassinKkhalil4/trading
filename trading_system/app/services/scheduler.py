@@ -5,14 +5,13 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from typing import Any
 
-from trading_system.app.core.enums import EnvironmentMode, SessionStatus
+from trading_system.app.core.enums import SessionStatus
 from trading_system.app.core.config import Settings, get_settings
 from trading_system.app.data.market_calendar import get_session, to_eastern
 from trading_system.app.catalysts.catalyst_engine import CatalystEngine
 from trading_system.app.data.collectors.alpaca_bars import AlpacaBarsCollector
-from trading_system.app.data.collectors.alpha_vantage_news import AlphaVantageNewsCollector
+from trading_system.app.data.collectors.alpaca_stream import AlpacaNewsStreamCollector
 from trading_system.app.data.collectors.sec_edgar import SecEdgarCollector
-from trading_system.app.data.collectors.yahoo_chart import YahooChartCollector
 from trading_system.app.data.quality_repair import MissingCandleRepairService
 from trading_system.app.data.universe import LiquidUniverseBuilder
 from trading_system.app.services.universe import MasterUniverseRefreshWorker
@@ -33,7 +32,7 @@ from trading_system.app.scanners.production_scanners import ProductionScannerEng
 SCHEDULER_VERSION = "scheduled_collector_runner_v1"
 
 # Jobs that depend on stock-market (price/candle) data. In news-only mode the
-# platform pulls only Alpha Vantage news, so these are skipped entirely.
+# platform pulls only Alpaca websocket news, so these are skipped entirely.
 _PRICE_ONLY_JOBS = frozenset(
     {
         "market_data",
@@ -200,42 +199,12 @@ class ScheduledCollectorRunner:
         symbols = symbols or self.repository.active_symbols()
         if job_name == "market_data":
             alpaca = AlpacaBarsCollector(self.repository, self.settings)
-            yahoo = YahooChartCollector(self.repository)
             results = []
             for symbol in symbols:
                 result = alpaca.collect(symbol)
-                if not result.success:
-                    if self.settings.environment_mode == EnvironmentMode.RESEARCH:
-                        fallback = yahoo.collect(symbol)
-                        results.append(
-                            {
-                                "primary": result.__dict__,
-                                "fallback": fallback.__dict__,
-                                "success": fallback.candles_seen > 0,
-                                "fallback_allowed": True,
-                            }
-                        )
-                    else:
-                        results.append(
-                            {
-                                "primary": result.__dict__,
-                                "fallback": None,
-                                "success": False,
-                                "fallback_allowed": False,
-                                "reason": "Yahoo fallback is research-only and blocked outside research mode.",
-                            }
-                        )
-                else:
-                    results.append(
-                        {
-                            "primary": result.__dict__,
-                            "fallback": None,
-                            "success": True,
-                            "fallback_allowed": False,
-                        }
-                    )
+                results.append({"primary": result.__dict__, "success": result.success})
             success = any(item["success"] for item in results)
-            fallback_mode = "Yahoo research fallback allowed." if self.settings.environment_mode == EnvironmentMode.RESEARCH else "Yahoo fallback blocked outside research mode."
+            fallback_mode = "Yahoo fallback disabled; Alpaca Market Data is the exclusive production OHLCV source."
             return ScheduledJobResult(
                 job_name,
                 success,
@@ -249,7 +218,7 @@ class ScheduledCollectorRunner:
             result = MarketRegimeService(self.repository).run_once()
             return ScheduledJobResult(job_name, result.computed, result.reason, {"result": asdict(result)})
         if job_name == "news":
-            result = AlphaVantageNewsCollector(self.repository, self.settings).collect(symbols)
+            result = AlpacaNewsStreamCollector(self.repository, self.settings).collect(symbols)
             return ScheduledJobResult(job_name, result.success, result.reason, {"result": asdict(result)})
         if job_name == "sec":
             result = SecEdgarCollector(self.repository, self.settings).collect(symbols)
@@ -323,7 +292,7 @@ def news_pull_due(
     premarket (before the open) and then a configurable number of pulls spread
     evenly across the 6.5-hour regular session. Outside those windows
     (after-hours, overnight, weekends, holidays) news pulls are paused so the
-    rate-limited Alpha Vantage budget is spent when news actually moves.
+    streaming-news processing runs only when news actually moves.
     """
     if now.tzinfo is None:
         now = now.replace(tzinfo=UTC)
