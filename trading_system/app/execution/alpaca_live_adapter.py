@@ -6,6 +6,7 @@ from typing import Any
 import requests
 
 from trading_system.app.core.config import Settings, get_settings
+from trading_system.app.execution.broker_adapter import AbstractBrokerAdapter
 from trading_system.app.execution.alpaca_retry import request_with_retries
 
 
@@ -36,7 +37,7 @@ class AlpacaLiveEmergencyResult:
     payload: dict[str, Any] | None
 
 
-class AlpacaLiveAdapter:
+class AlpacaLiveAdapter(AbstractBrokerAdapter):
     def __init__(self, settings: Settings | None = None, http: requests.Session | None = None) -> None:
         self.settings = settings or get_settings()
         self.http = http or requests.Session()

@@ -415,8 +415,8 @@ class TradingRuntimeService:
         self,
         *,
         signal_id: str,
-        weekly_loss_pct: float = 0.0,
-        sector_exposure_pct: float = 0.0,
+        weekly_loss_pct: float,
+        sector_exposure_pct: float,
         symbol_exposure_pct: float = 0.0,
         strategy_exposure_pct: float = 0.0,
         correlated_exposure_pct: float = 0.0,
@@ -793,8 +793,8 @@ class TradingRuntimeService:
         self,
         *,
         signal_id: str,
-        weekly_loss_pct: float = 0.0,
-        sector_exposure_pct: float = 0.0,
+        weekly_loss_pct: float,
+        sector_exposure_pct: float,
         symbol_exposure_pct: float = 0.0,
         strategy_exposure_pct: float = 0.0,
         correlated_exposure_pct: float = 0.0,
@@ -810,25 +810,14 @@ class TradingRuntimeService:
         if not signal_row:
             raise ValueError(f"Unknown signal id: {signal_id}")
         signal = _db_signal_to_trade_signal(signal_row)
-        if self.settings.environment_mode == EnvironmentMode.LIVE:
-            live_sync = self.sync_alpaca_live()
-            if not live_sync.get("success"):
-                raise RuntimeError(f"Unable to fetch authoritative live broker state: {live_sync.get('reason')}")
-            authoritative_state = self._authoritative_portfolio_state(
-                signal=signal,
-                environment_mode=EnvironmentMode.LIVE.value,
-                broker="alpaca_live",
-            )
-        else:
-            authoritative_state = PortfolioState(
-                account_equity=1.0,
-                open_positions=0,
-                daily_loss_pct=0.0,
-                weekly_loss_pct=0.0,
-                sector_exposure_pct=0.0,
-                trades_today=0,
-                trades_by_strategy_today={signal.strategy_id: 0},
-            )
+        live_sync = self.sync_alpaca_live()
+        if not live_sync.get("success"):
+            raise RuntimeError(f"Unable to fetch authoritative live broker state: {live_sync.get('reason')}")
+        authoritative_state = self._authoritative_portfolio_state(
+            signal=signal,
+            environment_mode=EnvironmentMode.LIVE.value,
+            broker="alpaca_live",
+        )
         account_equity = authoritative_state.account_equity
         open_positions = authoritative_state.open_positions
         daily_loss_pct = authoritative_state.daily_loss_pct

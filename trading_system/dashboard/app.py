@@ -836,11 +836,15 @@ with st.sidebar:
             None,
             actor=principal.username,
             operation="dashboard_run_production_scanners",
-            reason=result.get("reason", "Manual dashboard operation requested."),
-            payload={"symbols": selected_symbols},
+            reason=result.get("reason", "Manual dashboard scanner task queued."),
+            payload={"symbols": selected_symbols, "task_id": result.get("task_id")},
             result=result,
         )
         st.session_state["last_production_scanners"] = result
+        st.success(
+            "Production scanner task queued. Scanner results and orders will appear "
+            "below as the auto-refresh loop reloads database state."
+        )
         st.rerun()
 
     if st.button(
@@ -1043,7 +1047,7 @@ for state_key, title in [
     ("last_feature_result", "Last feature result"),
     ("last_regime_result", "Last regime result"),
     ("last_catalyst_result", "Last catalyst result"),
-    ("last_production_scanners", "Last production scanner result"),
+    ("last_production_scanners", "Last production scanner task"),
     ("last_trade_monitor", "Last trade monitor result"),
     ("last_reviews", "Last trade review result"),
     ("last_learning", "Last learning review result"),
