@@ -12,6 +12,8 @@ from trading_system.app.core.config import get_settings
 from trading_system.app.db.repositories import TradingRepository
 from trading_system.app.db.session import SessionLocal
 from trading_system.app.research.backtest_service import BacktestService
+from trading_system.app.alpha.strategies import AlphaStrategyScannerService
+from trading_system.app.execution.order_manager import OrderManager
 from trading_system.app.services.runtime import TradingRuntimeService
 from trading_system.app.services.scheduler import _job_cadences
 
@@ -34,6 +36,9 @@ celery.conf.update(
         "trading_system.app.tasks.run_fill_reconciliation": {"queue": "execution"},
         "trading_system.app.tasks.run_trade_monitor": {"queue": "execution"},
         "trading_system.app.tasks.run_backtest": {"queue": "analytics"},
+        "trading_system.app.tasks.run_production_scanners": {"queue": "execution"},
+        "trading_system.app.tasks.run_alpha_strategy_scanner": {"queue": "execution"},
+        "trading_system.app.tasks.request_bracket_order": {"queue": "execution"},
     },
     task_acks_late=True,
     task_reject_on_worker_lost=True,
@@ -198,4 +203,38 @@ def run_backtest(
             symbols=symbols,
             provider=provider,
         ),
+    )
+
+@celery.task(bind=True, name="trading_system.app.tasks.run_production_scanners", **_TASK_OPTIONS)
+def run_production_scanners(
+    self,
+    symbols: list[str] | None = None,
+    actor: str = "celery",
+) -> Any:
+    return _with_runtime(
+        "production_scanners",
+        lambda service: service.run_production_scanners(symbols),
+    )
+
+
+@celery.task(bind=True, name="trading_system.app.tasks.run_alpha_strategy_scanner", **_TASK_OPTIONS)
+def run_alpha_strategy_scanner(
+    self,
+    strategy_id: str,
+    symbols: list[str] | None = None,
+    actor: str = "celery",
+) -> Any:
+    return _with_runtime(
+        "alpha_scanner_run",
+        lambda service: AlphaStrategyScannerService(service.repository).run_strategy(
+            strategy_id, symbols=symbols
+        ),
+    )
+
+
+@celery.task(bind=True, name="trading_system.app.tasks.request_bracket_order", **_TASK_OPTIONS)
+def request_bracket_order(self, **kwargs: Any) -> Any:
+    return _with_runtime(
+        "request_bracket_order",
+        lambda service: OrderManager(service.repository).request_bracket_order(**kwargs),
     )

@@ -20,6 +20,7 @@ from trading_system.app.execution.alpaca_live_adapter import (
     AlpacaLiveEmergencyResult,
     AlpacaLiveOrderResult,
 )
+from trading_system.app.execution.broker_adapter import AbstractBrokerAdapter
 from trading_system.app.execution.order_manager import OrderManager
 from trading_system.app.execution.order_side import entry_side_from_direction
 from trading_system.app.execution.paper_execution import PaperOrder
@@ -47,7 +48,7 @@ class LiveExecutionService:
         self,
         repository: TradingRepository,
         *,
-        adapter: AlpacaLiveAdapter | None = None,
+        adapter: AbstractBrokerAdapter | None = None,
     ) -> None:
         self.repository = repository
         self.adapter = adapter or AlpacaLiveAdapter()
