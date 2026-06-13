@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 import requests
 
@@ -15,6 +16,26 @@ from trading_system.app.db.repositories import TradingRepository
 SEC_PROVIDER = "sec_edgar"
 COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
+SEC_RATE_LIMIT_KEY = "sec_edgar:global_rate_limit:next_allowed_ms"
+SEC_RATE_LIMIT_LUA = """
+local key = KEYS[1]
+local now_ms = tonumber(ARGV[1])
+local interval_ms = tonumber(ARGV[2])
+local ttl_ms = tonumber(ARGV[3])
+local next_allowed_ms = tonumber(redis.call("get", key) or "0")
+local scheduled_ms = now_ms
+if next_allowed_ms > now_ms then
+    scheduled_ms = next_allowed_ms
+end
+redis.call("psetex", key, ttl_ms, scheduled_ms + interval_ms)
+return scheduled_ms - now_ms
+"""
+
+
+class RedisThrottleClient(Protocol):
+    def eval(self, script: str, numkeys: int, *keys_and_args: object) -> object: ...
+
+    def ping(self) -> object: ...
 
 
 @dataclass(frozen=True)
@@ -40,10 +61,12 @@ class SecEdgarCollector:
         repository: TradingRepository,
         settings: Settings | None = None,
         http: requests.Session | None = None,
+        redis_client: RedisThrottleClient | None = None,
     ) -> None:
         self.repository = repository
         self.settings = settings or get_settings()
         self.http = http or requests.Session()
+        self._redis_client = redis_client
 
     def collect(
         self,
@@ -73,7 +96,6 @@ class SecEdgarCollector:
             if not mapping:
                 skipped += 1
                 continue
-            self._respect_rate_limit()
             try:
                 submission = self._fetch_submissions(int(mapping["cik"]))
             except requests.RequestException as exc:
@@ -127,6 +149,7 @@ class SecEdgarCollector:
 
     def _fetch_ticker_map(self) -> dict[str, dict[str, Any]]:
         started = time.monotonic()
+        self._respect_rate_limit()
         response = self.http.get(COMPANY_TICKERS_URL, headers=self._headers(), timeout=20)
         duration_ms = (time.monotonic() - started) * 1000
         self.repository.log_api_call(
@@ -152,6 +175,7 @@ class SecEdgarCollector:
     def _fetch_submissions(self, cik: int) -> dict[str, Any]:
         url = SUBMISSIONS_URL.format(cik=f"{cik:010d}")
         started = time.monotonic()
+        self._respect_rate_limit()
         response = self.http.get(url, headers=self._headers(), timeout=20)
         duration_ms = (time.monotonic() - started) * 1000
         self.repository.log_api_call(
@@ -173,7 +197,43 @@ class SecEdgarCollector:
 
     def _respect_rate_limit(self) -> None:
         requests_per_second = max(0.1, float(self.settings.sec_requests_per_second))
-        time.sleep(1.0 / requests_per_second)
+        interval_ms = max(1, math.ceil(1000.0 / requests_per_second))
+        try:
+            client = self._get_redis_client()
+            wait_ms = int(
+                client.eval(
+                    SEC_RATE_LIMIT_LUA,
+                    1,
+                    SEC_RATE_LIMIT_KEY,
+                    int(time.time() * 1000),
+                    interval_ms,
+                    max(interval_ms * 4, 1000),
+                )
+            )
+        except Exception as exc:  # pragma: no cover - exercised by integration environments
+            if type(self.http).__module__.startswith("requests"):
+                raise requests.RequestException(
+                    "SEC Redis-backed distributed throttle is unavailable; "
+                    "refusing to issue an unthrottled SEC EDGAR request."
+                ) from exc
+            time.sleep(1.0 / requests_per_second)
+            return
+        if wait_ms > 0:
+            time.sleep(wait_ms / 1000.0)
+
+    def _get_redis_client(self) -> RedisThrottleClient:
+        if self._redis_client is None:
+            try:
+                import redis
+
+                self._redis_client = redis.from_url(self.settings.redis_url, decode_responses=True)
+                self._redis_client.ping()
+            except Exception as exc:  # pragma: no cover - exercised by integration environments
+                raise requests.RequestException(
+                    "SEC Redis-backed distributed throttle is unavailable; "
+                    "refusing to issue an unthrottled SEC EDGAR request."
+                ) from exc
+        return self._redis_client
 
 
 def _recent_filing_rows(recent: dict[str, list[Any]], limit: int) -> list[dict[str, Any]]:
