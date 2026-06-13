@@ -9,6 +9,7 @@ VARIABLES_TF = ROOT / "infra" / "aws" / "variables.tf"
 CI_CD = ROOT / ".github" / "workflows" / "ci-cd.yml"
 DOCKER_COMPOSE = ROOT / "docker-compose.yml"
 WORKER = ROOT / "trading_system" / "app" / "services" / "worker.py"
+TASKS = ROOT / "trading_system" / "app" / "tasks.py"
 
 
 def _read(path: Path) -> str:
@@ -159,26 +160,26 @@ def test_docker_compose_preserves_local_service_parity():
         "image: redis:7",
         "api:",
         "dashboard:",
-        "scheduler-worker:",
-        "market-stream-worker:",
-        "reconciliation-worker:",
-        "trade-monitor-worker:",
-        "review-worker:",
-        "learning-worker:",
-        "command: python -m trading_system.app.services.worker scheduler",
-        "command: python -m trading_system.app.services.worker market-stream",
-        "command: python -m trading_system.app.services.worker reconciliation",
-        "command: python -m trading_system.app.services.worker trade-monitor",
-        "command: python -m trading_system.app.services.worker review",
-        "command: python -m trading_system.app.services.worker learning",
+        "celery-worker:",
+        "celery-beat:",
+        "REDIS_URL: redis://redis:6379/0",
+        "command: celery -A trading_system.app.tasks worker --loglevel=info -Q market_data,execution,analytics",
+        "command: celery -A trading_system.app.tasks beat --loglevel=info",
     ]
 
     for fragment in expected_fragments:
         assert fragment in compose, fragment
 
 
-def test_review_worker_name_matches_production_service_with_legacy_alias():
+def test_celery_tasks_replace_blocking_worker_loops():
     worker = _read(WORKER)
+    tasks = _read(TASKS)
 
-    assert '"review"' in worker
-    assert 'worker in {"review", "reviews"}' in worker
+    assert "while True" not in worker
+    assert "time.sleep" not in worker
+    assert "Celery(" in tasks
+    assert "broker=settings.redis_url" in tasks
+    assert "@celery.task" in tasks
+    assert "autoretry_for" in tasks
+    assert '"review": run_scheduled_job' in worker
+    assert '"reviews": run_scheduled_job' in worker

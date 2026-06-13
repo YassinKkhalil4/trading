@@ -15,7 +15,10 @@ from trading_system.app.alpha.intelligence import (
 )
 from trading_system.app.alpha.leadership import SectorLeadershipService
 from trading_system.app.alpha.scoring import AlphaOpportunityScoringService
-from trading_system.app.alpha.strategies import ALPHA_STRATEGIES, AlphaStrategyScannerService
+from trading_system.app.alpha.strategies import (
+    ALPHA_STRATEGIES,
+    AlphaStrategyScannerService,
+)
 from trading_system.app.core.enums import AdminRole, EnvironmentMode, MarketRegime
 from trading_system.app.data.market_calendar import get_session, opening_range_window
 from trading_system.app.db import models
@@ -23,11 +26,17 @@ from trading_system.app.db.repositories import TradingRepository, model_to_dict
 from trading_system.app.db.session import SessionLocal
 from trading_system.app.execution.order_manager import OrderManager
 from trading_system.app.execution.paper_execution import PaperExecutionEngine
-from trading_system.app.execution.reconciliation import PositionSnapshot, reconcile_positions
+from trading_system.app.execution.reconciliation import (
+    PositionSnapshot,
+    reconcile_positions,
+)
 from trading_system.app.features.calculations import LiquidityGates
 from trading_system.app.risk.live_readiness import LiveReadinessService
 from trading_system.app.risk.risk_engine import PortfolioState, RiskEngine
-from trading_system.app.scanners.vwap_reclaim import VwapReclaimScanner, VwapReclaimSnapshot
+from trading_system.app.scanners.vwap_reclaim import (
+    VwapReclaimScanner,
+    VwapReclaimSnapshot,
+)
 from trading_system.app.services.ranking.expectancy import (
     ExpectancyService,
     latest_market_regime,
@@ -49,7 +58,6 @@ from trading_system.app.security.auth import (
 from trading_system.app.signals.signal_engine import SignalEngine
 from trading_system.app.strategies.cooldowns import StrategyCooldownBook
 from trading_system.app.strategies.registry import StrategyRegistryService
-
 
 app = FastAPI(title="Autonomous Trading Intelligence Platform", version="0.1.0")
 
@@ -121,6 +129,7 @@ class SymbolTradabilityRequest(BaseModel):
 
 class CollectRequest(BaseModel):
     symbols: list[str] | None = None
+    collect_first: bool = True
 
 
 class AlpacaBarsCollectRequest(BaseModel):
@@ -252,6 +261,17 @@ class LiveApprovalRevokeBody(BaseModel):
     reason: str
 
 
+class JournalEntryCreateBody(BaseModel):
+    symbol: str
+    strategy_id: str | None = None
+    entry_thesis: str
+    actual_entry: float | None = None
+    actual_exit: float | None = None
+    pnl: float = 0.0
+    human_notes: str | None = None
+    mistake_tags: list[str] = Field(default_factory=list)
+
+
 class OrderReplaceBody(BaseModel):
     order_id: str
     reason: str
@@ -378,6 +398,11 @@ def auth_logout(
         session.close()
 
 
+@app.get("/auth/me")
+def auth_me(principal: AdminPrincipal = Depends(require_principal)) -> dict:
+    return {"username": principal.username, "role": principal.role}
+
+
 @app.get("/admin/users")
 def admin_users(
     _principal: AdminPrincipal = Depends(require_admin_token),
@@ -401,7 +426,8 @@ def admin_user_upsert(
         raise HTTPException(status_code=422, detail="Username is required.")
     if username == principal.username and request.role != AdminRole.ADMIN:
         raise HTTPException(
-            status_code=409, detail="Admins cannot demote their own active session user."
+            status_code=409,
+            detail="Admins cannot demote their own active session user.",
         )
     session, service = _runtime()
     try:
@@ -442,7 +468,8 @@ def admin_user_role(
     username = request.username.strip()
     if username == principal.username and request.role != AdminRole.ADMIN:
         raise HTTPException(
-            status_code=409, detail="Admins cannot demote their own active session user."
+            status_code=409,
+            detail="Admins cannot demote their own active session user.",
         )
     session, service = _runtime()
     try:
@@ -474,7 +501,8 @@ def admin_user_active(
 ) -> dict:
     if request.username.strip() == principal.username and not request.is_active:
         raise HTTPException(
-            status_code=409, detail="Admins cannot deactivate their own active session user."
+            status_code=409,
+            detail="Admins cannot deactivate their own active session user.",
         )
     session, service = _runtime()
     try:
@@ -613,7 +641,9 @@ def provider_capabilities(
     try:
         service.bootstrap()
         return {
-            "provider_capabilities": service.repository.list_rows(models.ProviderCapability, 100)
+            "provider_capabilities": service.repository.list_rows(
+                models.ProviderCapability, 100
+            )
         }
     finally:
         session.close()
@@ -715,10 +745,25 @@ def universe(
 def market_clean_candles(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
+    symbol: str | None = Query(default=None),
 ) -> dict:
-    return _read_rows(
-        "clean_candles", lambda repo, row_limit: repo.latest_clean_candles(row_limit), limit
-    )
+    if not symbol:
+        return _read_rows(
+            "clean_candles",
+            lambda repo, row_limit: repo.latest_clean_candles(row_limit),
+            limit,
+        )
+    session, service = _runtime()
+    try:
+        frame = service.repository.clean_candles_df(symbol, limit=limit)
+        rows = (
+            []
+            if frame is None or frame.empty
+            else jsonable_encoder(frame.to_dict(orient="records"))
+        )
+        return {"clean_candles": rows}
+    finally:
+        session.close()
 
 
 @app.get("/features/latest")
@@ -726,7 +771,9 @@ def latest_features(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("features", lambda repo, row_limit: repo.latest_features(row_limit), limit)
+    return _read_rows(
+        "features", lambda repo, row_limit: repo.latest_features(row_limit), limit
+    )
 
 
 @app.get("/features/daily")
@@ -735,7 +782,9 @@ def daily_features(
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
     return _read_rows(
-        "daily_features", lambda repo, row_limit: repo.latest_daily_features(row_limit), limit
+        "daily_features",
+        lambda repo, row_limit: repo.latest_daily_features(row_limit),
+        limit,
     )
 
 
@@ -745,7 +794,9 @@ def regime_snapshots(
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
     return _read_rows(
-        "regime_snapshots", lambda repo, row_limit: repo.latest_regime_snapshots(row_limit), limit
+        "regime_snapshots",
+        lambda repo, row_limit: repo.latest_regime_snapshots(row_limit),
+        limit,
     )
 
 
@@ -754,7 +805,9 @@ def catalyst_events(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("events", lambda repo, row_limit: repo.latest_events(row_limit), limit)
+    return _read_rows(
+        "events", lambda repo, row_limit: repo.latest_events(row_limit), limit
+    )
 
 
 @app.get("/catalysts/scores")
@@ -762,7 +815,9 @@ def catalyst_scores(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("catalysts", lambda repo, row_limit: repo.latest_catalysts(row_limit), limit)
+    return _read_rows(
+        "catalysts", lambda repo, row_limit: repo.latest_catalysts(row_limit), limit
+    )
 
 
 @app.get("/scanners/results")
@@ -771,7 +826,9 @@ def scanner_results(
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
     return _read_rows(
-        "scanner_results", lambda repo, row_limit: repo.latest_scanner_results(row_limit), limit
+        "scanner_results",
+        lambda repo, row_limit: repo.latest_scanner_results(row_limit),
+        limit,
     )
 
 
@@ -841,7 +898,9 @@ def expectancy_summary(
             ),
             "by_catalyst_type": _stats_bucket_dict(summary.get("by_catalyst_type", {})),
             "by_spread_bucket": _stats_bucket_dict(summary.get("by_spread_bucket", {})),
-            "by_volatility_bucket": _stats_bucket_dict(summary.get("by_volatility_bucket", {})),
+            "by_volatility_bucket": _stats_bucket_dict(
+                summary.get("by_volatility_bucket", {})
+            ),
         }
     finally:
         session.close()
@@ -870,7 +929,9 @@ def alpha_opportunity_scores_by_symbol(
         service.bootstrap()
         return {
             "symbol": symbol.upper(),
-            "scores": service.repository.latest_opportunity_scores_for_symbol(symbol, limit),
+            "scores": service.repository.latest_opportunity_scores_for_symbol(
+                symbol, limit
+            ),
         }
     finally:
         session.close()
@@ -903,7 +964,9 @@ def alpha_expectancy(
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
     rows = _read_rows(
-        "expectancy", lambda repo, row_limit: repo.latest_expectancy_snapshots(row_limit), limit
+        "expectancy",
+        lambda repo, row_limit: repo.latest_expectancy_snapshots(row_limit),
+        limit,
     )
     filtered = rows["expectancy"]
     if strategy_id:
@@ -948,7 +1011,9 @@ def alpha_rejections(
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
     return _read_rows(
-        "rejections", lambda repo, row_limit: repo.latest_alpha_rejections(row_limit), limit
+        "rejections",
+        lambda repo, row_limit: repo.latest_alpha_rejections(row_limit),
+        limit,
     )
 
 
@@ -960,9 +1025,9 @@ def alpha_scoring_run_once(
     session, service = _runtime()
     try:
         service.bootstrap()
-        result = AlphaOpportunityScoringService(service.repository).score_recent_accepted(
-            limit=request.limit, symbols=request.symbols
-        )
+        result = AlphaOpportunityScoringService(
+            service.repository
+        ).score_recent_accepted(limit=request.limit, symbols=request.symbols)
         _audit_manual_operation(
             service.repository,
             actor=principal.username,
@@ -971,7 +1036,10 @@ def alpha_scoring_run_once(
             payload={"limit": request.limit, "symbols": request.symbols},
             result={"scores_created": len(result)},
         )
-        return {"scores_created": len(result), "scores": [item.__dict__ for item in result]}
+        return {
+            "scores_created": len(result),
+            "scores": [item.__dict__ for item in result],
+        }
     finally:
         session.close()
 
@@ -1070,7 +1138,9 @@ def alpha_point_in_time_universe_refresh(
     session, service = _runtime()
     try:
         service.bootstrap()
-        result = PointInTimeUniverseService(service.repository).snapshot_current_universe(
+        result = PointInTimeUniverseService(
+            service.repository
+        ).snapshot_current_universe(
             universe_name=request.universe_name,
             as_of=request.as_of,
         )
@@ -1107,9 +1177,9 @@ def alpha_short_interest_refresh(
     session, service = _runtime()
     try:
         service.bootstrap()
-        result = ShortInterestService(service.repository).refresh_from_universe_payloads(
-            request.symbols
-        )
+        result = ShortInterestService(
+            service.repository
+        ).refresh_from_universe_payloads(request.symbols)
         _audit_manual_operation(
             service.repository,
             actor=principal.username,
@@ -1143,9 +1213,9 @@ def alpha_options_intelligence_refresh(
     session, service = _runtime()
     try:
         service.bootstrap()
-        result = OptionsIntelligenceService(service.repository).refresh_from_universe_payloads(
-            request.symbols
-        )
+        result = OptionsIntelligenceService(
+            service.repository
+        ).refresh_from_universe_payloads(request.symbols)
         _audit_manual_operation(
             service.repository,
             actor=principal.username,
@@ -1179,7 +1249,9 @@ def alpha_multi_bagger_score(
     session, service = _runtime()
     try:
         service.bootstrap()
-        result = MultiBaggerScoringService(service.repository).score_universe(request.symbols)
+        result = MultiBaggerScoringService(service.repository).score_universe(
+            request.symbols
+        )
         _audit_manual_operation(
             service.repository,
             actor=principal.username,
@@ -1203,7 +1275,9 @@ def signals(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("signals", lambda repo, row_limit: repo.latest_signals(row_limit), limit)
+    return _read_rows(
+        "signals", lambda repo, row_limit: repo.latest_signals(row_limit), limit
+    )
 
 
 @app.get("/signals/theses")
@@ -1212,7 +1286,9 @@ def trade_theses(
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
     return _read_rows(
-        "trade_theses", lambda repo, row_limit: repo.latest_trade_theses(row_limit), limit
+        "trade_theses",
+        lambda repo, row_limit: repo.latest_trade_theses(row_limit),
+        limit,
     )
 
 
@@ -1256,7 +1332,9 @@ def broker_sync_logs(
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
     return _read_rows(
-        "broker_sync_logs", lambda repo, row_limit: repo.latest_broker_sync_logs(row_limit), limit
+        "broker_sync_logs",
+        lambda repo, row_limit: repo.latest_broker_sync_logs(row_limit),
+        limit,
     )
 
 
@@ -1266,7 +1344,9 @@ def provider_health(
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
     return _read_rows(
-        "provider_health", lambda repo, row_limit: repo.latest_provider_health(row_limit), limit
+        "provider_health",
+        lambda repo, row_limit: repo.latest_provider_health(row_limit),
+        limit,
     )
 
 
@@ -1288,7 +1368,9 @@ def stream_events(
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
     return _read_rows(
-        "stream_events", lambda repo, row_limit: repo.latest_stream_events(row_limit), limit
+        "stream_events",
+        lambda repo, row_limit: repo.latest_stream_events(row_limit),
+        limit,
     )
 
 
@@ -1298,7 +1380,9 @@ def scheduler_runs(
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
     return _read_rows(
-        "scheduler_runs", lambda repo, row_limit: repo.latest_scheduler_runs(row_limit), limit
+        "scheduler_runs",
+        lambda repo, row_limit: repo.latest_scheduler_runs(row_limit),
+        limit,
     )
 
 
@@ -1317,7 +1401,9 @@ def sec_filings(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("filings", lambda repo, row_limit: repo.latest_filings(row_limit), limit)
+    return _read_rows(
+        "filings", lambda repo, row_limit: repo.latest_filings(row_limit), limit
+    )
 
 
 @app.get("/data/quality-errors")
@@ -1349,7 +1435,9 @@ def execution_orders(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("orders", lambda repo, row_limit: repo.latest_orders(row_limit), limit)
+    return _read_rows(
+        "orders", lambda repo, row_limit: repo.latest_orders(row_limit), limit
+    )
 
 
 @app.get("/execution/fills")
@@ -1357,7 +1445,9 @@ def execution_fills(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("fills", lambda repo, row_limit: repo.latest_fills(row_limit), limit)
+    return _read_rows(
+        "fills", lambda repo, row_limit: repo.latest_fills(row_limit), limit
+    )
 
 
 @app.get("/execution/positions")
@@ -1365,7 +1455,9 @@ def execution_positions(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("positions", lambda repo, row_limit: repo.latest_positions(row_limit), limit)
+    return _read_rows(
+        "positions", lambda repo, row_limit: repo.latest_positions(row_limit), limit
+    )
 
 
 @app.get("/execution/errors")
@@ -1374,8 +1466,41 @@ def execution_errors(
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
     return _read_rows(
-        "execution_errors", lambda repo, row_limit: repo.latest_execution_errors(row_limit), limit
+        "execution_errors",
+        lambda repo, row_limit: repo.latest_execution_errors(row_limit),
+        limit,
     )
+
+
+@app.post("/journal/entries")
+def journal_entry_create(
+    request: JournalEntryCreateBody,
+    principal: AdminPrincipal = Depends(require_trader_or_admin),
+) -> dict:
+    session, service = _runtime()
+    try:
+        row = service.repository.store_journal_entry(
+            symbol=request.symbol,
+            strategy_id=request.strategy_id,
+            entry_thesis=request.entry_thesis,
+            actual_entry=request.actual_entry,
+            actual_exit=request.actual_exit,
+            pnl=request.pnl,
+            human_notes=request.human_notes,
+            mistake_tags=request.mistake_tags,
+            change_reason="Manual dashboard journal entry.",
+        )
+        service.repository.store_audit_log(
+            actor=principal.username,
+            event_type="JOURNAL_ENTRY_CREATED",
+            entity_type="journal_entry",
+            entity_id=row.id,
+            reason="Manual dashboard journal entry.",
+            payload={"symbol": request.symbol, "source": "api"},
+        )
+        return {"journal_entry": model_to_dict(row)}
+    finally:
+        session.close()
 
 
 @app.get("/journal/entries")
@@ -1383,7 +1508,9 @@ def journal_entries(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows("journal", lambda repo, row_limit: repo.latest_journal(row_limit), limit)
+    return _read_rows(
+        "journal", lambda repo, row_limit: repo.latest_journal(row_limit), limit
+    )
 
 
 @app.get("/reviews/trades")
@@ -1402,7 +1529,9 @@ def weekly_reviews(
     limit: int = Query(default=20, ge=1, le=100),
 ) -> dict:
     return _read_rows(
-        "weekly_reviews", lambda repo, row_limit: repo.latest_weekly_reviews(row_limit), limit
+        "weekly_reviews",
+        lambda repo, row_limit: repo.latest_weekly_reviews(row_limit),
+        limit,
     )
 
 
@@ -1424,7 +1553,9 @@ def backtest_reports(
     limit: int = Query(default=50, ge=1, le=100),
 ) -> dict:
     return _read_rows(
-        "backtest_reports", lambda repo, row_limit: repo.latest_backtest_reports(row_limit), limit
+        "backtest_reports",
+        lambda repo, row_limit: repo.latest_backtest_reports(row_limit),
+        limit,
     )
 
 
@@ -1446,7 +1577,9 @@ def kill_switches(
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
     return _read_rows(
-        "kill_switches", lambda repo, row_limit: repo.latest_kill_switches(row_limit), limit
+        "kill_switches",
+        lambda repo, row_limit: repo.latest_kill_switches(row_limit),
+        limit,
     )
 
 
@@ -1455,7 +1588,9 @@ def decisions(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=200, ge=1, le=500),
 ) -> dict:
-    return _read_rows("decisions", lambda repo, row_limit: repo.latest_decisions(row_limit), limit)
+    return _read_rows(
+        "decisions", lambda repo, row_limit: repo.latest_decisions(row_limit), limit
+    )
 
 
 @app.get("/audit/logs")
@@ -1490,7 +1625,11 @@ def activate_symbol(
             reason=request.reason,
             payload={"source": "api", "name": request.name},
         )
-        return {"symbol": row.symbol, "is_active": row.is_active, "reason": row.change_reason}
+        return {
+            "symbol": row.symbol,
+            "is_active": row.is_active,
+            "reason": row.change_reason,
+        }
     finally:
         session.close()
 
@@ -1503,7 +1642,9 @@ def deactivate_symbol(
     session, service = _runtime()
     try:
         service.bootstrap()
-        row = service.repository.deactivate_symbol(request.symbol, reason=request.reason)
+        row = service.repository.deactivate_symbol(
+            request.symbol, reason=request.reason
+        )
         if not row:
             raise HTTPException(status_code=404, detail="Symbol not found.")
         _store_symbol_config_audit(
@@ -1514,7 +1655,11 @@ def deactivate_symbol(
             reason=request.reason,
             payload={"source": "api"},
         )
-        return {"symbol": row.symbol, "is_active": row.is_active, "reason": row.change_reason}
+        return {
+            "symbol": row.symbol,
+            "is_active": row.is_active,
+            "reason": row.change_reason,
+        }
     finally:
         session.close()
 
@@ -1649,7 +1794,9 @@ def approve_strategy_status_change(
             decision_reason=request.decision_reason,
         )
         if result.request and result.request["strategy_id"] != strategy_id:
-            raise HTTPException(status_code=409, detail="Request does not belong to strategy path.")
+            raise HTTPException(
+                status_code=409, detail="Request does not belong to strategy path."
+            )
         return result.__dict__
     finally:
         session.close()
@@ -1719,7 +1866,9 @@ def collect_alpaca_bars(
                     reason="Activated for Alpaca bar collection.",
                     payload={"source": "api", "collector": "alpaca_bars"},
                 )
-            results.append(collector.collect(symbol, timeframe=request.timeframe).__dict__)
+            results.append(
+                collector.collect(symbol, timeframe=request.timeframe).__dict__
+            )
         _audit_manual_operation(
             service.repository,
             actor=principal.username,
@@ -1753,7 +1902,7 @@ def scan_watchlist(
                 reason="Activated for API scan.",
                 payload={"source": "api"},
             )
-        results = service.run_watchlist_scan(collect_first=True)
+        results = service.run_watchlist_scan(collect_first=request.collect_first)
         _audit_manual_operation(
             service.repository,
             actor=principal.username,
@@ -1848,7 +1997,9 @@ def cancel_all_live_orders(
 ) -> dict:
     session, service = _runtime()
     try:
-        return service.cancel_all_live_orders(actor=principal.username, reason=request.reason)
+        return service.cancel_all_live_orders(
+            actor=principal.username, reason=request.reason
+        )
     finally:
         session.close()
 
@@ -1860,7 +2011,9 @@ def flatten_all_live_positions(
 ) -> dict:
     session, service = _runtime()
     try:
-        return service.flatten_all_live_positions(actor=principal.username, reason=request.reason)
+        return service.flatten_all_live_positions(
+            actor=principal.username, reason=request.reason
+        )
     finally:
         session.close()
 
@@ -2109,7 +2262,11 @@ def live_readiness_reports(
     session, service = _runtime()
     try:
         service.bootstrap()
-        return {"live_readiness_reports": service.repository.latest_live_readiness_reports(limit)}
+        return {
+            "live_readiness_reports": service.repository.latest_live_readiness_reports(
+                limit
+            )
+        }
     finally:
         session.close()
 
@@ -2121,7 +2278,9 @@ def live_readiness_detail(
     session, service = _runtime()
     try:
         service.bootstrap()
-        detail = LiveReadinessService(service.repository, service.settings).get_detail_report()
+        detail = LiveReadinessService(
+            service.repository, service.settings
+        ).get_detail_report()
         return detail.to_dict()
     finally:
         session.close()
@@ -2135,7 +2294,11 @@ def live_readiness_approvals(
     session, service = _runtime()
     try:
         service.bootstrap()
-        return {"live_trading_approvals": service.repository.latest_live_trading_approvals(limit)}
+        return {
+            "live_trading_approvals": service.repository.latest_live_trading_approvals(
+                limit
+            )
+        }
     finally:
         session.close()
 
@@ -2159,7 +2322,11 @@ def live_readiness_approve(
             entity_type="live_trading_approval",
             entity_id=row.id,
             reason=request.reason,
-            payload={"expires_at": request.expires_at.isoformat() if request.expires_at else None},
+            payload={
+                "expires_at": (
+                    request.expires_at.isoformat() if request.expires_at else None
+                )
+            },
         )
         return {"approval": service.repository.latest_live_trading_approvals(1)[0]}
     finally:

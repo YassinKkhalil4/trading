@@ -32,6 +32,7 @@ class Settings:
     deployment_target: str = "local"
     aws_region: str = "us-east-1"
     redis_url: str = "redis://localhost:6379/0"
+    api_url: str = "http://localhost:8000"
     raw_archive_bucket: str = ""
 
     alpaca_paper_api_key: str = ""
@@ -94,7 +95,9 @@ class Settings:
     min_dollar_volume: float = 20_000_000.0
     max_spread_bps: float = 20.0
     dashboard_refresh_seconds: int = 15
-    news_rss_feeds: str = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
+    news_rss_feeds: str = (
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
+    )
     alpha_vantage_api_key: str = ""
     alpha_vantage_news_limit: int = 1000
     sec_user_agent: str = "AutonomousTradingIntelligence contact@example.com"
@@ -166,11 +169,15 @@ class Settings:
 
     @property
     def auto_create_schema_enabled(self) -> bool:
-        return self.deployment_target == "local" and self.database_url.startswith("sqlite")
+        return self.deployment_target == "local" and self.database_url.startswith(
+            "sqlite"
+        )
 
     def require_research_or_paper(self) -> None:
         if self.environment_mode == EnvironmentMode.LIVE:
-            raise RuntimeError("This operation is only allowed in research or paper mode.")
+            raise RuntimeError(
+                "This operation is only allowed in research or paper mode."
+            )
 
     def require_paper_mode(self) -> None:
         if self.environment_mode != EnvironmentMode.PAPER:
@@ -178,12 +185,16 @@ class Settings:
 
     def require_live_disabled(self) -> None:
         if self.live_order_path_enabled:
-            raise RuntimeError("This operation requires the live order path to be disabled.")
+            raise RuntimeError(
+                "This operation requires the live order path to be disabled."
+            )
 
 
 @lru_cache
 def get_settings() -> Settings:
-    mode = EnvironmentMode(os.getenv("ENVIRONMENT_MODE", EnvironmentMode.RESEARCH.value))
+    mode = EnvironmentMode(
+        os.getenv("ENVIRONMENT_MODE", EnvironmentMode.RESEARCH.value)
+    )
     if mode == EnvironmentMode.LIVE:
         allow_live = _env_bool("ALLOW_LIVE_TRADING", False)
         confirmation = os.getenv("CONFIRM_LIVE_TRADING", "")
@@ -203,13 +214,16 @@ def get_settings() -> Settings:
         deployment_target=os.getenv("DEPLOYMENT_TARGET", "local"),
         aws_region=os.getenv("AWS_REGION", "us-east-1"),
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+        api_url=os.getenv("API_URL", "http://localhost:8000"),
         raw_archive_bucket=os.getenv("RAW_ARCHIVE_BUCKET", ""),
         alpaca_paper_api_key=os.getenv("ALPACA_PAPER_API_KEY", ""),
         alpaca_paper_secret_key=os.getenv("ALPACA_PAPER_SECRET_KEY", ""),
         alpaca_paper_base_url=os.getenv(
             "ALPACA_PAPER_BASE_URL", "https://paper-api.alpaca.markets"
         ),
-        alpaca_paper_data_url=os.getenv("ALPACA_PAPER_DATA_URL", "https://data.alpaca.markets"),
+        alpaca_paper_data_url=os.getenv(
+            "ALPACA_PAPER_DATA_URL", "https://data.alpaca.markets"
+        ),
         alpaca_market_data_stream_url=os.getenv(
             "ALPACA_MARKET_DATA_STREAM_URL", "wss://stream.data.alpaca.markets/v2/iex"
         ),
@@ -218,18 +232,28 @@ def get_settings() -> Settings:
         ),
         alpaca_market_data_feed=os.getenv("ALPACA_MARKET_DATA_FEED", "iex"),
         alpaca_primary_data_feed=os.getenv("ALPACA_PRIMARY_DATA_FEED", "iex"),
-        alpaca_stream_symbols=os.getenv("ALPACA_STREAM_SYMBOLS", "SPY,QQQ,AMD,NVDA,TSLA"),
-        alpaca_stream_channels=os.getenv("ALPACA_STREAM_CHANNELS", "bars,quotes,trades,statuses,news"),
+        alpaca_stream_symbols=os.getenv(
+            "ALPACA_STREAM_SYMBOLS", "SPY,QQQ,AMD,NVDA,TSLA"
+        ),
+        alpaca_stream_channels=os.getenv(
+            "ALPACA_STREAM_CHANNELS", "bars,quotes,trades,statuses"
+        ),
         alpaca_stream_max_reconnects=_env_int("ALPACA_STREAM_MAX_RECONNECTS", 10),
         alpaca_stream_max_messages=_env_int("ALPACA_STREAM_MAX_MESSAGES", 0),
         alpaca_bars_timeframe=os.getenv("ALPACA_BARS_TIMEFRAME", "1Min"),
         alpaca_bars_limit=_env_int("ALPACA_BARS_LIMIT", 1000),
         alpaca_order_max_attempts=_env_int("ALPACA_ORDER_MAX_ATTEMPTS", 3),
-        alpaca_order_retry_backoff_seconds=_env_float("ALPACA_ORDER_RETRY_BACKOFF_SECONDS", 0.0),
+        alpaca_order_retry_backoff_seconds=_env_float(
+            "ALPACA_ORDER_RETRY_BACKOFF_SECONDS", 0.0
+        ),
         alpaca_live_api_key=os.getenv("ALPACA_LIVE_API_KEY", ""),
         alpaca_live_secret_key=os.getenv("ALPACA_LIVE_SECRET_KEY", ""),
-        alpaca_live_base_url=os.getenv("ALPACA_LIVE_BASE_URL", "https://api.alpaca.markets"),
-        alpaca_live_data_url=os.getenv("ALPACA_LIVE_DATA_URL", "https://data.alpaca.markets"),
+        alpaca_live_base_url=os.getenv(
+            "ALPACA_LIVE_BASE_URL", "https://api.alpaca.markets"
+        ),
+        alpaca_live_data_url=os.getenv(
+            "ALPACA_LIVE_DATA_URL", "https://data.alpaca.markets"
+        ),
         allow_live_trading=_env_bool("ALLOW_LIVE_TRADING", False),
         confirm_live_trading=os.getenv("CONFIRM_LIVE_TRADING", ""),
         enable_live_order_path=_env_bool("ENABLE_LIVE_ORDER_PATH", False),
@@ -240,13 +264,17 @@ def get_settings() -> Settings:
         admin_session_secret=os.getenv("ADMIN_SESSION_SECRET", "change-me"),
         api_admin_token=os.getenv("API_ADMIN_TOKEN", ""),
         auth_session_minutes=_env_int("AUTH_SESSION_MINUTES", 480),
-        admin_failed_login_lockout_attempts=_env_int("ADMIN_FAILED_LOGIN_LOCKOUT_ATTEMPTS", 5),
+        admin_failed_login_lockout_attempts=_env_int(
+            "ADMIN_FAILED_LOGIN_LOCKOUT_ATTEMPTS", 5
+        ),
         admin_lockout_minutes=_env_int("ADMIN_LOCKOUT_MINUTES", 15),
         risk_per_trade_pct=_env_float("RISK_PER_TRADE_PCT", 0.25),
         max_daily_loss_pct=_env_float("MAX_DAILY_LOSS_PCT", 1.0),
         max_weekly_loss_pct=_env_float("MAX_WEEKLY_LOSS_PCT", 3.0),
         max_open_positions=_env_int("MAX_OPEN_POSITIONS", 3),
-        max_single_sector_exposure_pct=_env_float("MAX_SINGLE_SECTOR_EXPOSURE_PCT", 30.0),
+        max_single_sector_exposure_pct=_env_float(
+            "MAX_SINGLE_SECTOR_EXPOSURE_PCT", 30.0
+        ),
         max_symbol_exposure_pct=_env_float("MAX_SYMBOL_EXPOSURE_PCT", 20.0),
         max_strategy_exposure_pct=_env_float("MAX_STRATEGY_EXPOSURE_PCT", 40.0),
         max_correlated_exposure_pct=_env_float("MAX_CORRELATED_EXPOSURE_PCT", 50.0),
@@ -271,10 +299,14 @@ def get_settings() -> Settings:
         ),
         alpha_vantage_api_key=os.getenv("ALPHA_VANTAGE_API_KEY", ""),
         alpha_vantage_news_limit=_env_int("ALPHA_VANTAGE_NEWS_LIMIT", 1000),
-        sec_user_agent=os.getenv("SEC_USER_AGENT", "AutonomousTradingIntelligence contact@example.com"),
+        sec_user_agent=os.getenv(
+            "SEC_USER_AGENT", "AutonomousTradingIntelligence contact@example.com"
+        ),
         sec_requests_per_second=_env_float("SEC_REQUESTS_PER_SECOND", 5.0),
         scheduler_market_data_seconds=_env_int("SCHEDULER_MARKET_DATA_SECONDS", 60),
-        scheduler_fill_reconciliation_seconds=_env_int("SCHEDULER_FILL_RECONCILIATION_SECONDS", 30),
+        scheduler_fill_reconciliation_seconds=_env_int(
+            "SCHEDULER_FILL_RECONCILIATION_SECONDS", 30
+        ),
         scheduler_sec_seconds=_env_int("SCHEDULER_SEC_SECONDS", 3600),
         scheduler_news_seconds=_env_int("SCHEDULER_NEWS_SECONDS", 300),
         scheduler_news_premarket=_env_bool("SCHEDULER_NEWS_PREMARKET", True),
@@ -283,26 +315,40 @@ def get_settings() -> Settings:
         scheduler_catalyst_seconds=_env_int("SCHEDULER_CATALYST_SECONDS", 300),
         scheduler_trade_monitor_seconds=_env_int("SCHEDULER_TRADE_MONITOR_SECONDS", 15),
         scheduler_review_seconds=_env_int("SCHEDULER_REVIEW_SECONDS", 3600),
-        provider_health_max_age_seconds=_env_int("PROVIDER_HEALTH_MAX_AGE_SECONDS", 180),
+        provider_health_max_age_seconds=_env_int(
+            "PROVIDER_HEALTH_MAX_AGE_SECONDS", 180
+        ),
         worker_sleep_seconds=_env_int("WORKER_SLEEP_SECONDS", 5),
         scheduler_lock_ttl_seconds=_env_int("SCHEDULER_LOCK_TTL_SECONDS", 300),
-        scheduler_use_master_universe_refresh=_env_bool("SCHEDULER_USE_MASTER_UNIVERSE_REFRESH", True),
+        scheduler_use_master_universe_refresh=_env_bool(
+            "SCHEDULER_USE_MASTER_UNIVERSE_REFRESH", True
+        ),
         news_only_mode=_env_bool("NEWS_ONLY_MODE", True),
-        scheduler_news_screener_seconds=_env_int("SCHEDULER_NEWS_SCREENER_SECONDS", 300),
+        scheduler_news_screener_seconds=_env_int(
+            "SCHEDULER_NEWS_SCREENER_SECONDS", 300
+        ),
         enable_ranking_signal_path=_env_bool("ENABLE_RANKING_SIGNAL_PATH", False),
         ranking_weight_scanner=_env_float("RANKING_WEIGHT_SCANNER", 25.0),
         ranking_weight_freshness=_env_float("RANKING_WEIGHT_FRESHNESS", 10.0),
         ranking_weight_provider=_env_float("RANKING_WEIGHT_PROVIDER", 5.0),
         ranking_weight_regime=_env_float("RANKING_WEIGHT_REGIME", 15.0),
         ranking_weight_catalyst=_env_float("RANKING_WEIGHT_CATALYST", 15.0),
-        ranking_weight_relative_strength=_env_float("RANKING_WEIGHT_RELATIVE_STRENGTH", 15.0),
+        ranking_weight_relative_strength=_env_float(
+            "RANKING_WEIGHT_RELATIVE_STRENGTH", 15.0
+        ),
         ranking_weight_liquidity=_env_float("RANKING_WEIGHT_LIQUIDITY", 10.0),
         ranking_weight_spread=_env_float("RANKING_WEIGHT_SPREAD", 5.0),
         ranking_grade_a_plus_min=_env_float("RANKING_GRADE_A_PLUS_MIN", 88.0),
         ranking_grade_a_min=_env_float("RANKING_GRADE_A_MIN", 78.0),
         ranking_grade_b_min=_env_float("RANKING_GRADE_B_MIN", 65.0),
         ranking_grade_watch_min=_env_float("RANKING_GRADE_WATCH_MIN", 50.0),
-        ranking_relative_strength_multiplier=_env_float("RANKING_RELATIVE_STRENGTH_MULTIPLIER", 20.0),
-        ranking_neutral_component_score=_env_float("RANKING_NEUTRAL_COMPONENT_SCORE", 50.0),
-        ranking_unknown_provider_reliability=_env_float("RANKING_UNKNOWN_PROVIDER_RELIABILITY", 75.0),
+        ranking_relative_strength_multiplier=_env_float(
+            "RANKING_RELATIVE_STRENGTH_MULTIPLIER", 20.0
+        ),
+        ranking_neutral_component_score=_env_float(
+            "RANKING_NEUTRAL_COMPONENT_SCORE", 50.0
+        ),
+        ranking_unknown_provider_reliability=_env_float(
+            "RANKING_UNKNOWN_PROVIDER_RELIABILITY", 75.0
+        ),
     )
