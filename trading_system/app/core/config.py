@@ -104,7 +104,7 @@ class Settings:
     alpha_vantage_api_key: str = ""
     alpha_vantage_news_limit: int = 1000
     sec_user_agent: str = "AutonomousTradingIntelligence contact@example.com"
-    sec_requests_per_second: float = 5.0
+    sec_requests_per_second: float = 2.0
     scheduler_market_data_seconds: int = 60
     scheduler_fill_reconciliation_seconds: int = 30
     scheduler_sec_seconds: int = 3600
@@ -307,7 +307,7 @@ def get_settings() -> Settings:
         sec_user_agent=os.getenv(
             "SEC_USER_AGENT", "AutonomousTradingIntelligence contact@example.com"
         ),
-        sec_requests_per_second=_env_float("SEC_REQUESTS_PER_SECOND", 5.0),
+        sec_requests_per_second=_env_float("SEC_REQUESTS_PER_SECOND", 2.0),
         scheduler_market_data_seconds=_env_int("SCHEDULER_MARKET_DATA_SECONDS", 60),
         scheduler_fill_reconciliation_seconds=_env_int(
             "SCHEDULER_FILL_RECONCILIATION_SECONDS", 30
