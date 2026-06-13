@@ -15,6 +15,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from trading_system.app.core.enums import (
@@ -637,24 +638,6 @@ class SignalRejection(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     payload: Mapped[dict | None] = mapped_column(JSON)
 
 
-class TradeThesis(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
-    __tablename__ = "trade_theses"
-
-    signal_id: Mapped[str | None] = mapped_column(ForeignKey("signals.id"), index=True)
-    symbol: Mapped[str] = mapped_column(String(16), index=True)
-    strategy_id: Mapped[str] = mapped_column(String(80), index=True)
-    prompt_version: Mapped[str] = mapped_column(String(32), default="ai_thesis_prompt_v1")
-    trade_type: Mapped[str] = mapped_column(String(40))
-    setup_quality: Mapped[float] = mapped_column(Float)
-    catalyst_quality: Mapped[float] = mapped_column(Float)
-    confidence: Mapped[float] = mapped_column(Float)
-    reason_for_trade: Mapped[str] = mapped_column(Text)
-    invalidation_reason: Mapped[str] = mapped_column(Text)
-    risks: Mapped[list[str]] = mapped_column(JSON, default=list)
-    suggested_holding_period: Mapped[str] = mapped_column(String(80))
-    reason: Mapped[str | None] = mapped_column(Text)
-
-
 class RiskCheck(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     __tablename__ = "risk_checks"
 
@@ -773,7 +756,6 @@ class Position(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
 
 class SystemLog(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     __tablename__ = "system_logs"
-    __mapper_args__ = {"polymorphic_on": "log_type", "polymorphic_identity": "system_log"}
     __table_args__ = (
         Index("ix_system_logs_type_time", "log_type", "source_timestamp"),
         Index("ix_system_logs_entity", "entity_type", "entity_id"),
@@ -787,51 +769,8 @@ class SystemLog(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     severity: Mapped[str | None] = mapped_column(String(20), index=True)
     success: Mapped[bool | None] = mapped_column(Boolean, index=True)
     reason: Mapped[str | None] = mapped_column(Text)
-    payload: Mapped[dict | None] = mapped_column(JSON)
+    payload: Mapped[dict | None] = mapped_column(JSON().with_variant(JSONB, "postgresql"))
 
-
-class BrokerSyncLog(SystemLog):
-    __mapper_args__ = {"polymorphic_identity": "broker_sync"}
-
-    environment_mode: Mapped[str | None] = mapped_column(
-        String(32), default=EnvironmentMode.PAPER.value
-    )
-    broker: Mapped[str | None] = mapped_column(String(80), default="alpaca_paper")
-    mismatch_detected: Mapped[bool | None] = mapped_column(Boolean, default=False)
-
-
-class ExecutionError(SystemLog):
-    __mapper_args__ = {"polymorphic_identity": "execution_error"}
-
-    order_id: Mapped[str | None] = mapped_column(ForeignKey("orders.id"), index=True)
-    environment_mode: Mapped[str | None] = mapped_column(
-        String(32), default=EnvironmentMode.PAPER.value, use_existing_column=True
-    )
-    error_type: Mapped[str | None] = mapped_column(String(80), index=True)
-
-
-class LiveReadinessCheck(SystemLog):
-    __mapper_args__ = {"polymorphic_identity": "live_readiness_check"}
-
-    check_name: Mapped[str | None] = mapped_column(String(120), index=True)
-    passed: Mapped[bool | None] = mapped_column(Boolean, default=False, index=True)
-
-
-class LiveReadinessReport(SystemLog):
-    __mapper_args__ = {"polymorphic_identity": "live_readiness_report"}
-
-    overall_status: Mapped[str | None] = mapped_column(String(40), index=True)
-    live_allowed: Mapped[bool | None] = mapped_column(Boolean, default=False, index=True)
-    checks: Mapped[list[dict] | None] = mapped_column(JSON, default=list)
-
-
-class LiveTradingApproval(SystemLog):
-    __mapper_args__ = {"polymorphic_identity": "live_trading_approval"}
-
-    approved_by: Mapped[str | None] = mapped_column(String(80))
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    revoke_reason: Mapped[str | None] = mapped_column(Text)
 
 class TradeJournal(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     __tablename__ = "trade_journal"
@@ -882,30 +821,6 @@ class DecisionLog(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     rule_version: Mapped[str | None] = mapped_column(String(32), index=True)
     reason: Mapped[str] = mapped_column(Text)
     payload: Mapped[dict | None] = mapped_column(JSON)
-
-
-class AIPromptTemplate(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
-    __tablename__ = "ai_prompt_templates"
-    __table_args__ = (
-        UniqueConstraint("template_name", "version", name="uq_prompt_template_version"),
-    )
-
-    template_name: Mapped[str] = mapped_column(String(80), index=True)
-    version: Mapped[str] = mapped_column(String(32), index=True)
-    prompt_text: Mapped[str] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(32), default="ACTIVE")
-    change_reason: Mapped[str | None] = mapped_column(Text)
-
-
-class AIReview(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
-    __tablename__ = "ai_reviews"
-
-    trade_journal_id: Mapped[str | None] = mapped_column(ForeignKey("trade_journal.id"), index=True)
-    prompt_template_id: Mapped[str | None] = mapped_column(ForeignKey("ai_prompt_templates.id"))
-    prompt_version: Mapped[str] = mapped_column(String(32), default="v1")
-    review_text: Mapped[str] = mapped_column(Text)
-    confidence_score: Mapped[float | None] = mapped_column(Float)
-    reason: Mapped[str | None] = mapped_column(Text)
 
 
 class WeeklyReview(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
@@ -1050,36 +965,6 @@ class AlphaRejectionReason(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     payload: Mapped[dict | None] = mapped_column(JSON)
 
 
-class PointInTimeUniverseMembership(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
-    __tablename__ = "point_in_time_universe_memberships"
-    __table_args__ = (
-        UniqueConstraint(
-            "universe_name", "as_of_date", "symbol", name="uq_pit_universe_symbol_date"
-        ),
-        Index("ix_pit_universe_asof_symbol", "as_of_date", "symbol"),
-    )
-
-    universe_name: Mapped[str] = mapped_column(
-        String(80), default="tradable_us_equities", index=True
-    )
-    as_of_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    symbol: Mapped[str] = mapped_column(String(16), index=True)
-    name: Mapped[str | None] = mapped_column(String(255))
-    asset_class: Mapped[str] = mapped_column(String(32), default="US_EQUITY")
-    exchange: Mapped[str | None] = mapped_column(String(32), index=True)
-    sector: Mapped[str | None] = mapped_column(String(128), index=True)
-    industry: Mapped[str | None] = mapped_column(String(128))
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-    is_tradable: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-    is_liquid: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
-    effective_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
-    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
-    delisted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
-    membership_reason: Mapped[str] = mapped_column(Text)
-    provider: Mapped[str | None] = mapped_column(String(80), index=True)
-    payload: Mapped[dict] = mapped_column(JSON, default=dict)
-
-
 class ShortInterestSnapshot(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     __tablename__ = "short_interest_snapshots"
 
@@ -1112,26 +997,6 @@ class OptionsIntelligenceSnapshot(IdMixin, TimestampMixin, SourceTimestampMixin,
     data_confidence: Mapped[float] = mapped_column(Float, default=0.0)
     provider: Mapped[str | None] = mapped_column(String(80), index=True)
     reason: Mapped[str] = mapped_column(Text)
-    payload: Mapped[dict] = mapped_column(JSON, default=dict)
-
-
-class MultiBaggerCandidateScore(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
-    __tablename__ = "multi_bagger_candidate_scores"
-
-    symbol: Mapped[str] = mapped_column(String(16), index=True)
-    horizon: Mapped[str] = mapped_column(String(32), default="long_shot", index=True)
-    score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
-    grade: Mapped[str] = mapped_column(String(16), index=True)
-    target_multiple: Mapped[str] = mapped_column(String(16), index=True)
-    component_scores: Mapped[dict] = mapped_column(JSON, default=dict)
-    narrative: Mapped[str] = mapped_column(Text)
-    growth_score: Mapped[float | None] = mapped_column(Float)
-    capital_flows_score: Mapped[float | None] = mapped_column(Float)
-    institutional_accumulation_score: Mapped[float | None] = mapped_column(Float)
-    short_squeeze_score: Mapped[float | None] = mapped_column(Float)
-    options_leverage_score: Mapped[float | None] = mapped_column(Float)
-    risk_flags: Mapped[list[dict]] = mapped_column(JSON, default=list)
-    confidence_level: Mapped[float] = mapped_column(Float, default=0.0)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
