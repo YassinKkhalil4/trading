@@ -40,7 +40,7 @@ from trading_system.app.signals.signal_engine import TradeSignal
 
 
 def model_to_dict(row: Any) -> dict[str, Any]:
-    return {column.name: getattr(row, column.name) for column in row.__table__.columns}
+    return {column.name: getattr(row, column.name, None) for column in row.__table__.columns}
 
 
 def _now() -> datetime:
@@ -511,7 +511,7 @@ class TradingRepository:
         row = models.RawTradeTick(
             provider=provider,
             symbol=symbol.upper(),
-            trade_id=trade_id,
+            trade_id=trade_id or "",
             price=price,
             size=size,
             exchange=exchange,

@@ -26,7 +26,6 @@ from trading_system.app.core.enums import (
     Direction,
     EnvironmentMode,
     ExecutionEnvironment,
-    LiveApprovalStatus,
     MarketRegime,
     OrderStatus,
     ProviderReliabilityLevel,
@@ -150,35 +149,41 @@ class SymbolUniverse(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     change_reason: Mapped[str | None] = mapped_column(Text)
 
 
-class RawMarketData(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
+class RawMarketData(TimestampMixin, Base):
     __tablename__ = "raw_market_data"
     __table_args__ = (
-        UniqueConstraint(
-            "provider", "symbol", "timeframe", "source_timestamp", name="uq_raw_candle"
-        ),
         Index("ix_raw_market_data_symbol_time", "symbol", "source_timestamp"),
     )
 
-    provider: Mapped[str] = mapped_column(String(80), index=True)
-    symbol: Mapped[str] = mapped_column(String(16), index=True)
-    timeframe: Mapped[str] = mapped_column(String(16), index=True)
+    provider: Mapped[str] = mapped_column(String(80), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(16), primary_key=True)
+    timeframe: Mapped[str] = mapped_column(String(16), primary_key=True)
+    source_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
     raw_payload: Mapped[dict] = mapped_column(JSON)
+
+    @property
+    def id(self) -> str:
+        return f"{self.provider}:{self.symbol}:{self.timeframe}:{self.source_timestamp.isoformat()}"
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, index=True
     )
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
-class RawTradeTick(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
+class RawTradeTick(TimestampMixin, Base):
     __tablename__ = "raw_trade_ticks"
     __table_args__ = (
-        UniqueConstraint("provider", "symbol", "trade_id", name="uq_raw_trade_tick_provider_trade"),
         Index("ix_raw_trade_ticks_symbol_time", "symbol", "source_timestamp"),
     )
 
-    provider: Mapped[str] = mapped_column(String(80), index=True)
-    symbol: Mapped[str] = mapped_column(String(16), index=True)
-    trade_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    provider: Mapped[str] = mapped_column(String(80), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(16), primary_key=True)
+    source_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    trade_id: Mapped[str] = mapped_column(String(128), primary_key=True, default="")
+
+    @property
+    def id(self) -> str:
+        return f"{self.provider}:{self.symbol}:{self.source_timestamp.isoformat()}:{self.trade_id}"
     price: Mapped[float | None] = mapped_column(Float)
     size: Mapped[float | None] = mapped_column(Float)
     exchange: Mapped[str | None] = mapped_column(String(64))
@@ -202,26 +207,28 @@ class RawIngestionEvent(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     symbol: Mapped[str | None] = mapped_column(String(16), index=True)
     status: Mapped[str] = mapped_column(String(32), default="PROCESSED", index=True)
     raw_table: Mapped[str] = mapped_column(String(80))
-    raw_row_id: Mapped[str] = mapped_column(String(36), index=True)
+    raw_row_id: Mapped[str] = mapped_column(String(256), index=True)
     payload_hash: Mapped[str] = mapped_column(String(64), index=True)
     raw_payload: Mapped[dict] = mapped_column(JSON)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
-class CleanMarketData(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
+class CleanMarketData(TimestampMixin, Base):
     __tablename__ = "clean_market_data"
     __table_args__ = (
-        UniqueConstraint(
-            "provider", "symbol", "timeframe", "source_timestamp", name="uq_clean_candle"
-        ),
         Index("ix_clean_market_data_symbol_time", "symbol", "source_timestamp"),
     )
 
-    raw_market_data_id: Mapped[str | None] = mapped_column(ForeignKey("raw_market_data.id"))
-    provider: Mapped[str] = mapped_column(String(80), index=True)
-    symbol: Mapped[str] = mapped_column(String(16), index=True)
-    timeframe: Mapped[str] = mapped_column(String(16), index=True)
+    provider: Mapped[str] = mapped_column(String(80), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(16), primary_key=True)
+    timeframe: Mapped[str] = mapped_column(String(16), primary_key=True)
+    source_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    raw_market_data_id: Mapped[str | None] = mapped_column(String(256))
+
+    @property
+    def id(self) -> str:
+        return f"{self.provider}:{self.symbol}:{self.timeframe}:{self.source_timestamp.isoformat()}"
     open: Mapped[float] = mapped_column(Float)
     high: Mapped[float] = mapped_column(Float)
     low: Mapped[float] = mapped_column(Float)
@@ -353,12 +360,18 @@ class MissingCandleGap(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     reason: Mapped[str] = mapped_column(Text)
 
 
-class FeatureIntraday(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
+class FeatureIntraday(TimestampMixin, Base):
     __tablename__ = "features_intraday"
+    __table_args__ = (Index("ix_features_intraday_symbol_time", "symbol", "source_timestamp"),)
 
-    symbol: Mapped[str] = mapped_column(String(16), index=True)
-    timeframe: Mapped[str] = mapped_column(String(16), default="1Min")
-    feature_version: Mapped[str] = mapped_column(String(32), index=True)
+    symbol: Mapped[str] = mapped_column(String(16), primary_key=True)
+    source_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    timeframe: Mapped[str] = mapped_column(String(16), primary_key=True, default="1Min")
+    feature_version: Mapped[str] = mapped_column(String(32), primary_key=True)
+
+    @property
+    def id(self) -> str:
+        return f"{self.symbol}:{self.source_timestamp.isoformat()}:{self.timeframe}:{self.feature_version}"
     price: Mapped[float] = mapped_column(Float)
     vwap: Mapped[float | None] = mapped_column(Float)
     atr: Mapped[float | None] = mapped_column(Float)
@@ -369,11 +382,17 @@ class FeatureIntraday(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     spread_score: Mapped[float | None] = mapped_column(Float)
 
 
-class FeatureDaily(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
+class FeatureDaily(TimestampMixin, Base):
     __tablename__ = "features_daily"
+    __table_args__ = (Index("ix_features_daily_symbol_time", "symbol", "source_timestamp"),)
 
-    symbol: Mapped[str] = mapped_column(String(16), index=True)
-    feature_version: Mapped[str] = mapped_column(String(32), index=True)
+    symbol: Mapped[str] = mapped_column(String(16), primary_key=True)
+    source_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    feature_version: Mapped[str] = mapped_column(String(32), primary_key=True)
+
+    @property
+    def id(self) -> str:
+        return f"{self.symbol}:{self.source_timestamp.isoformat()}:{self.feature_version}"
     atr: Mapped[float | None] = mapped_column(Float)
     atr_pct: Mapped[float | None] = mapped_column(Float)
     gap_pct: Mapped[float | None] = mapped_column(Float)
@@ -752,58 +771,67 @@ class Position(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     reason: Mapped[str | None] = mapped_column(Text)
 
 
-class BrokerSyncLog(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
-    __tablename__ = "broker_sync_logs"
+class SystemLog(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
+    __tablename__ = "system_logs"
+    __mapper_args__ = {"polymorphic_on": "log_type", "polymorphic_identity": "system_log"}
+    __table_args__ = (
+        Index("ix_system_logs_type_time", "log_type", "source_timestamp"),
+        Index("ix_system_logs_entity", "entity_type", "entity_id"),
+    )
 
-    environment_mode: Mapped[str] = mapped_column(String(32), default=EnvironmentMode.PAPER.value)
-    broker: Mapped[str] = mapped_column(String(80), default="alpaca_paper")
-    success: Mapped[bool] = mapped_column(Boolean, default=False)
-    mismatch_detected: Mapped[bool] = mapped_column(Boolean, default=False)
+    log_type: Mapped[str] = mapped_column(String(80), index=True)
+    entity_type: Mapped[str | None] = mapped_column(String(80), index=True)
+    entity_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    actor: Mapped[str | None] = mapped_column(String(80), index=True)
+    status: Mapped[str | None] = mapped_column(String(40), index=True)
+    severity: Mapped[str | None] = mapped_column(String(20), index=True)
+    success: Mapped[bool | None] = mapped_column(Boolean, index=True)
     reason: Mapped[str | None] = mapped_column(Text)
     payload: Mapped[dict | None] = mapped_column(JSON)
 
 
-class ExecutionError(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
-    __tablename__ = "execution_errors"
+class BrokerSyncLog(SystemLog):
+    __mapper_args__ = {"polymorphic_identity": "broker_sync"}
+
+    environment_mode: Mapped[str | None] = mapped_column(
+        String(32), default=EnvironmentMode.PAPER.value
+    )
+    broker: Mapped[str | None] = mapped_column(String(80), default="alpaca_paper")
+    mismatch_detected: Mapped[bool | None] = mapped_column(Boolean, default=False)
+
+
+class ExecutionError(SystemLog):
+    __mapper_args__ = {"polymorphic_identity": "execution_error"}
 
     order_id: Mapped[str | None] = mapped_column(ForeignKey("orders.id"), index=True)
-    environment_mode: Mapped[str] = mapped_column(String(32), default=EnvironmentMode.PAPER.value)
-    error_type: Mapped[str] = mapped_column(String(80), index=True)
-    reason: Mapped[str] = mapped_column(Text)
-    payload: Mapped[dict | None] = mapped_column(JSON)
-
-
-class LiveReadinessCheck(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
-    __tablename__ = "live_readiness_checks"
-
-    check_name: Mapped[str] = mapped_column(String(120), index=True)
-    passed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
-    severity: Mapped[str] = mapped_column(String(20), default="BLOCKER", index=True)
-    reason: Mapped[str] = mapped_column(Text)
-    payload: Mapped[dict | None] = mapped_column(JSON)
-
-
-class LiveReadinessReport(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
-    __tablename__ = "live_readiness_reports"
-
-    overall_status: Mapped[str] = mapped_column(String(40), index=True)
-    live_allowed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
-    reason: Mapped[str] = mapped_column(Text)
-    checks: Mapped[list[dict]] = mapped_column(JSON, default=list)
-
-
-class LiveTradingApproval(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
-    __tablename__ = "live_trading_approvals"
-
-    status: Mapped[str] = mapped_column(
-        String(32), default=LiveApprovalStatus.ACTIVE.value, index=True
+    environment_mode: Mapped[str | None] = mapped_column(
+        String(32), default=EnvironmentMode.PAPER.value, use_existing_column=True
     )
-    approved_by: Mapped[str] = mapped_column(String(80))
-    reason: Mapped[str] = mapped_column(Text)
+    error_type: Mapped[str | None] = mapped_column(String(80), index=True)
+
+
+class LiveReadinessCheck(SystemLog):
+    __mapper_args__ = {"polymorphic_identity": "live_readiness_check"}
+
+    check_name: Mapped[str | None] = mapped_column(String(120), index=True)
+    passed: Mapped[bool | None] = mapped_column(Boolean, default=False, index=True)
+
+
+class LiveReadinessReport(SystemLog):
+    __mapper_args__ = {"polymorphic_identity": "live_readiness_report"}
+
+    overall_status: Mapped[str | None] = mapped_column(String(40), index=True)
+    live_allowed: Mapped[bool | None] = mapped_column(Boolean, default=False, index=True)
+    checks: Mapped[list[dict] | None] = mapped_column(JSON, default=list)
+
+
+class LiveTradingApproval(SystemLog):
+    __mapper_args__ = {"polymorphic_identity": "live_trading_approval"}
+
+    approved_by: Mapped[str | None] = mapped_column(String(80))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoke_reason: Mapped[str | None] = mapped_column(Text)
-
 
 class TradeJournal(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     __tablename__ = "trade_journal"
