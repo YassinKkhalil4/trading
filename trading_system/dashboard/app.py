@@ -1852,31 +1852,28 @@ with sub_risk:
         selected_label = st.selectbox(
             "Signal to risk-check / paper-submit", list(signal_options.keys())
         )
+        latest_account = (snapshot.get("broker_account_snapshots") or [{}])[0]
+        latest_positions = [
+            row
+            for row in snapshot.get("positions", [])
+            if float(row.get("quantity") or 0.0) != 0.0
+        ]
         risk_cols = st.columns(4)
-        account_equity = risk_cols[0].number_input(
-            "Account equity", value=100_000.0, min_value=1.0
-        )
-        open_positions = risk_cols[1].number_input(
-            "Open positions", value=0, min_value=0
-        )
-        trades_today = risk_cols[2].number_input("Trades today", value=0, min_value=0)
-        strategy_trades_today = risk_cols[3].number_input(
-            "Strategy trades today", value=0, min_value=0
-        )
+        risk_cols[0].metric("Account equity", latest_account.get("equity") or "No snapshot")
+        risk_cols[1].metric("Open positions", len(latest_positions))
+        risk_cols[2].metric("Daily loss %", "Server-derived")
+        risk_cols[3].metric("Trades today", "Server-derived")
         risk_cols_2 = st.columns(4)
-        daily_loss_pct = risk_cols_2[0].number_input(
-            "Daily loss %", value=0.0, min_value=0.0
+        weekly_loss_pct = risk_cols_2[0].number_input(
+            "Weekly loss override %", value=0.0, min_value=0.0
         )
-        weekly_loss_pct = risk_cols_2[1].number_input(
-            "Weekly loss %", value=0.0, min_value=0.0
-        )
-        sector_exposure_pct = risk_cols_2[2].number_input(
+        sector_exposure_pct = risk_cols_2[1].number_input(
             "Sector exposure %", value=0.0, min_value=0.0
         )
-        internal_quantity = risk_cols_2[3].number_input(
+        internal_quantity = risk_cols_2[2].number_input(
             "Internal position qty", value=0.0
         )
-        broker_quantity = st.number_input("Broker position qty", value=0.0)
+        broker_quantity = risk_cols_2[3].number_input("Broker position qty", value=0.0)
 
         if st.button(
             "Run Risk Check + Paper Submit", width="stretch", disabled=not can_trade
@@ -1885,13 +1882,8 @@ with sub_risk:
                 "/execution/paper/submit-signal",
                 {
                     "signal_id": signal_options[selected_label],
-                    "account_equity": account_equity,
-                    "open_positions": int(open_positions),
-                    "daily_loss_pct": daily_loss_pct,
                     "weekly_loss_pct": weekly_loss_pct,
                     "sector_exposure_pct": sector_exposure_pct,
-                    "trades_today": int(trades_today),
-                    "strategy_trades_today": int(strategy_trades_today),
                     "internal_quantity": internal_quantity,
                     "broker_quantity": broker_quantity,
                 },

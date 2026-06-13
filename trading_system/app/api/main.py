@@ -3,7 +3,7 @@ from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from trading_system.app.core.config import get_settings
 from trading_system.app.alpha.expectancy import AlphaExpectancyRefreshService
@@ -83,9 +83,6 @@ class VwapReclaimScanRequest(BaseModel):
 
 
 class RiskCheckRequest(BaseModel):
-    account_equity: float = Field(gt=0)
-    open_positions: int = 0
-    daily_loss_pct: float = 0.0
     weekly_loss_pct: float = 0.0
     sector_exposure_pct: float = 0.0
     symbol_exposure_pct: float = 0.0
@@ -95,11 +92,23 @@ class RiskCheckRequest(BaseModel):
     event_risk_active: bool = False
     spread_bps: float = 0.0
     expected_slippage_bps: float = 0.0
-    trades_today: int = 0
     trades_by_strategy_today: dict[str, int] = Field(default_factory=dict)
     kill_switch_active: bool = False
     broker_sync_ok: bool = True
     broker_sync_reason: str = "Broker/internal reconciliation is clean."
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_client_authoritative_state(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            forbidden = {"account_equity", "open_positions", "daily_loss_pct", "trades_today"}
+            supplied = sorted(forbidden.intersection(data))
+            if supplied:
+                raise ValueError(
+                    "Authoritative risk fields are server-derived and must not be supplied: "
+                    + ", ".join(supplied)
+                )
+        return data
 
 
 class PaperOrderRequest(BaseModel):
@@ -155,9 +164,6 @@ class SchedulerRunRequest(BaseModel):
 
 class DbPaperSubmitRequest(BaseModel):
     signal_id: str
-    account_equity: float = Field(gt=0)
-    open_positions: int = 0
-    daily_loss_pct: float = 0.0
     weekly_loss_pct: float = 0.0
     sector_exposure_pct: float = 0.0
     symbol_exposure_pct: float = 0.0
@@ -167,10 +173,21 @@ class DbPaperSubmitRequest(BaseModel):
     event_risk_active: bool = False
     spread_bps: float = 0.0
     expected_slippage_bps: float = 0.0
-    trades_today: int = 0
-    strategy_trades_today: int = 0
     internal_quantity: float = 0.0
     broker_quantity: float = 0.0
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_client_authoritative_state(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            forbidden = {"account_equity", "open_positions", "daily_loss_pct", "trades_today"}
+            supplied = sorted(forbidden.intersection(data))
+            if supplied:
+                raise ValueError(
+                    "Authoritative risk fields are server-derived and must not be supplied: "
+                    + ", ".join(supplied)
+                )
+        return data
 
 
 class AuthLoginRequest(BaseModel):
@@ -1922,9 +1939,6 @@ def _submit_db_signal_to_paper(request: DbPaperSubmitRequest) -> dict:
         service.bootstrap()
         return service.submit_signal_to_paper(
             signal_id=request.signal_id,
-            account_equity=request.account_equity,
-            open_positions=request.open_positions,
-            daily_loss_pct=request.daily_loss_pct,
             weekly_loss_pct=request.weekly_loss_pct,
             sector_exposure_pct=request.sector_exposure_pct,
             symbol_exposure_pct=request.symbol_exposure_pct,
@@ -1934,8 +1948,6 @@ def _submit_db_signal_to_paper(request: DbPaperSubmitRequest) -> dict:
             event_risk_active=request.event_risk_active,
             spread_bps=request.spread_bps,
             expected_slippage_bps=request.expected_slippage_bps,
-            trades_today=request.trades_today,
-            strategy_trades_today=request.strategy_trades_today,
             internal_quantity=request.internal_quantity,
             broker_quantity=request.broker_quantity,
         )
@@ -1968,9 +1980,6 @@ def submit_live_signal(
     try:
         result = service.submit_signal_to_live(
             signal_id=request.signal_id,
-            account_equity=request.account_equity,
-            open_positions=request.open_positions,
-            daily_loss_pct=request.daily_loss_pct,
             weekly_loss_pct=request.weekly_loss_pct,
             sector_exposure_pct=request.sector_exposure_pct,
             symbol_exposure_pct=request.symbol_exposure_pct,
@@ -1980,8 +1989,6 @@ def submit_live_signal(
             event_risk_active=request.event_risk_active,
             spread_bps=request.spread_bps,
             expected_slippage_bps=request.expected_slippage_bps,
-            trades_today=request.trades_today,
-            strategy_trades_today=request.strategy_trades_today,
             internal_quantity=request.internal_quantity,
             broker_quantity=request.broker_quantity,
         )
@@ -2688,9 +2695,9 @@ def risk_check_vwap_reclaim(
     risk_decision = RiskEngine().evaluate(
         signal,
         PortfolioState(
-            account_equity=request.risk.account_equity,
-            open_positions=request.risk.open_positions,
-            daily_loss_pct=request.risk.daily_loss_pct,
+            account_equity=0.0,
+            open_positions=0,
+            daily_loss_pct=0.0,
             weekly_loss_pct=request.risk.weekly_loss_pct,
             sector_exposure_pct=request.risk.sector_exposure_pct,
             symbol_exposure_pct=request.risk.symbol_exposure_pct,
@@ -2700,7 +2707,7 @@ def risk_check_vwap_reclaim(
             event_risk_active=request.risk.event_risk_active,
             spread_bps=request.risk.spread_bps,
             expected_slippage_bps=request.risk.expected_slippage_bps,
-            trades_today=request.risk.trades_today,
+            trades_today=0,
             trades_by_strategy_today=request.risk.trades_by_strategy_today,
             kill_switch_active=request.risk.kill_switch_active,
             broker_sync_ok=request.risk.broker_sync_ok,
@@ -2738,9 +2745,9 @@ def submit_paper_order(
     risk_decision = RiskEngine().evaluate(
         signal,
         PortfolioState(
-            account_equity=request.risk.account_equity,
-            open_positions=request.risk.open_positions,
-            daily_loss_pct=request.risk.daily_loss_pct,
+            account_equity=0.0,
+            open_positions=0,
+            daily_loss_pct=0.0,
             weekly_loss_pct=request.risk.weekly_loss_pct,
             sector_exposure_pct=request.risk.sector_exposure_pct,
             symbol_exposure_pct=request.risk.symbol_exposure_pct,
@@ -2750,7 +2757,7 @@ def submit_paper_order(
             event_risk_active=request.risk.event_risk_active,
             spread_bps=request.risk.spread_bps,
             expected_slippage_bps=request.risk.expected_slippage_bps,
-            trades_today=request.risk.trades_today,
+            trades_today=0,
             trades_by_strategy_today=request.risk.trades_by_strategy_today,
             kill_switch_active=request.risk.kill_switch_active,
             broker_sync_ok=request.risk.broker_sync_ok,
