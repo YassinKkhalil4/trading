@@ -22,12 +22,11 @@ from trading_system.app.core.enums import (
 from trading_system.app.data.collectors.alpaca_bars import AlpacaBarsCollector, AlpacaBarsResult
 from trading_system.app.data.collectors.alpaca_stream import (
     AlpacaMarketDataStream,
+    AlpacaNewsStreamCollector,
     AlpacaStreamRunResult,
+    NewsCollectionResult,
 )
-from trading_system.app.data.collectors.alpha_vantage_news import AlphaVantageNewsCollector
-from trading_system.app.data.collectors.news_rss import NewsCollectionResult
 from trading_system.app.data.collectors.sec_edgar import SecCollectionResult, SecEdgarCollector
-from trading_system.app.data.collectors.yahoo_chart import YahooChartCollector, YahooChartResult
 from trading_system.app.data.quality_repair import (
     MissingCandleRepairResult,
     MissingCandleRepairService,
@@ -108,7 +107,7 @@ from trading_system.app.strategies.registry import StrategyRegistryService
 @dataclass(frozen=True)
 class ScanCycleResult:
     symbol: str
-    collected: YahooChartResult | None
+    collected: AlpacaBarsResult | None
     scanner_result_id: str | None
     signal_id: str | None
     thesis_id: str | None
@@ -134,18 +133,14 @@ class TradingRuntimeService:
         AuthService(self.repository, self.settings).bootstrap_configured_admin()
         return self.repository.counts()
 
-    def collect_symbol(self, symbol: str) -> YahooChartResult:
-        collector = YahooChartCollector(self.repository)
+    def collect_symbol(self, symbol: str) -> AlpacaBarsResult:
+        collector = AlpacaBarsCollector(self.repository, self.settings)
         return collector.collect(symbol)
 
-    def collect_symbol_primary(self, symbol: str) -> AlpacaBarsResult | YahooChartResult:
-        collector = AlpacaBarsCollector(self.repository, self.settings)
-        result = collector.collect(symbol)
-        if result.success or self.settings.environment_mode != EnvironmentMode.RESEARCH:
-            return result
+    def collect_symbol_primary(self, symbol: str) -> AlpacaBarsResult:
         return self.collect_symbol(symbol)
 
-    def collect_active_symbols(self) -> list[YahooChartResult]:
+    def collect_active_symbols(self) -> list[AlpacaBarsResult]:
         self.bootstrap()
         return [self.collect_symbol(symbol) for symbol in self.repository.active_symbols()]
 
@@ -161,7 +156,7 @@ class TradingRuntimeService:
         self,
         symbol: str,
         *,
-        collected: YahooChartResult | None = None,
+        collected: AlpacaBarsResult | None = None,
     ) -> ScanCycleResult:
         normalized = symbol.strip().upper()
         frame = self.repository.clean_candles_df(normalized, limit=500)
@@ -234,7 +229,7 @@ class TradingRuntimeService:
             payload={
                 "snapshot": _snapshot_to_payload(snapshot),
                 "features": feature_payload,
-                "spread_note": "Yahoo chart has no bid/ask; spread_bps uses current candle range proxy.",
+                "spread_note": "Alpaca bar data has no bid/ask; spread_bps uses current candle range proxy.",
                 "preflight": preflight,
                 "latest_close": snapshot.price,
                 "latest_vwap": snapshot.vwap,
@@ -304,7 +299,7 @@ class TradingRuntimeService:
         scanner_row: models.ScannerResult,
         snapshot: VwapReclaimSnapshot,
         decision: Any,
-        collected: YahooChartResult | None,
+        collected: AlpacaBarsResult | None,
     ) -> ScanCycleResult:
         """Route an accepted scanner result through the opportunity-ranking gate.
 
@@ -1278,7 +1273,7 @@ class TradingRuntimeService:
 
     def collect_news(self, symbols: list[str] | None = None) -> NewsCollectionResult:
         self.bootstrap()
-        return AlphaVantageNewsCollector(self.repository, self.settings).collect(symbols)
+        return AlpacaNewsStreamCollector(self.repository, self.settings).collect(symbols)
 
     def collect_sec_filings(
         self,
@@ -1433,11 +1428,11 @@ class TradingRuntimeService:
         if frame.empty:
             frame = self.repository.clean_candles_df(
                 symbol,
-                provider="yahoo_chart",
+                provider="alpaca_market_data",
                 limit=2_000,
                 valid_only=True,
             )
-            provider = "yahoo_chart"
+            provider = "alpaca_market_data"
         assumptions = BacktestAssumptions()
         if len(frame) < 30:
             metrics = {
@@ -1585,7 +1580,7 @@ class TradingRuntimeService:
             "spread_bps": spread_bps,
             "dollar_volume": dollar_volume,
             "session_volume_so_far": session_volume,
-            "spread_note": "Proxy from current candle high/low because Yahoo chart has no bid/ask quote.",
+            "spread_note": "Proxy from current candle high/low because Alpaca bar data has no bid/ask quote.",
         }
         return snapshot, feature_payload
 

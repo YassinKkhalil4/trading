@@ -39,10 +39,11 @@ class Settings:
     alpaca_paper_base_url: str = "https://paper-api.alpaca.markets"
     alpaca_paper_data_url: str = "https://data.alpaca.markets"
     alpaca_market_data_stream_url: str = "wss://stream.data.alpaca.markets/v2/iex"
+    alpaca_news_stream_url: str = "wss://stream.data.alpaca.markets/v1beta1/news"
     alpaca_market_data_feed: str = "iex"
     alpaca_primary_data_feed: str = "iex"
     alpaca_stream_symbols: str = "SPY,QQQ,AMD,NVDA,TSLA"
-    alpaca_stream_channels: str = "bars,quotes,trades,statuses"
+    alpaca_stream_channels: str = "bars,quotes,trades,statuses,news"
     alpaca_stream_max_reconnects: int = 10
     alpaca_stream_max_messages: int = 0
     alpaca_bars_timeframe: str = "1Min"
@@ -212,10 +213,13 @@ def get_settings() -> Settings:
         alpaca_market_data_stream_url=os.getenv(
             "ALPACA_MARKET_DATA_STREAM_URL", "wss://stream.data.alpaca.markets/v2/iex"
         ),
+        alpaca_news_stream_url=os.getenv(
+            "ALPACA_NEWS_STREAM_URL", "wss://stream.data.alpaca.markets/v1beta1/news"
+        ),
         alpaca_market_data_feed=os.getenv("ALPACA_MARKET_DATA_FEED", "iex"),
         alpaca_primary_data_feed=os.getenv("ALPACA_PRIMARY_DATA_FEED", "iex"),
         alpaca_stream_symbols=os.getenv("ALPACA_STREAM_SYMBOLS", "SPY,QQQ,AMD,NVDA,TSLA"),
-        alpaca_stream_channels=os.getenv("ALPACA_STREAM_CHANNELS", "bars,quotes,trades,statuses"),
+        alpaca_stream_channels=os.getenv("ALPACA_STREAM_CHANNELS", "bars,quotes,trades,statuses,news"),
         alpaca_stream_max_reconnects=_env_int("ALPACA_STREAM_MAX_RECONNECTS", 10),
         alpaca_stream_max_messages=_env_int("ALPACA_STREAM_MAX_MESSAGES", 0),
         alpaca_bars_timeframe=os.getenv("ALPACA_BARS_TIMEFRAME", "1Min"),
