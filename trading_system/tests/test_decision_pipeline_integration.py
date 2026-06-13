@@ -46,6 +46,16 @@ from trading_system.app.services.runtime import TradingRuntimeService
 from trading_system.app.services.signals.scanner_signal_bridge import ScannerSignalBridgeService
 
 
+def _seed_authoritative_paper_state(repo: TradingRepository, *, equity: float = 100_000.0) -> None:
+    repo.store_broker_account_snapshot(
+        environment_mode=EnvironmentMode.PAPER.value,
+        broker="alpaca_paper",
+        account={"id": "paper-account", "equity": str(equity), "cash": str(equity), "buying_power": str(equity * 4)},
+        reason="Seed authoritative paper account state for execution tests.",
+        source_timestamp=datetime.now(UTC),
+    )
+
+
 def _repo() -> TradingRepository:
     engine = build_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -326,16 +336,10 @@ def test_full_decision_pipeline_vwap_reclaim_with_mocked_alpaca_paper(monkeypatc
         LiveAdapterMustNotBeCalled,
     )
 
+    _seed_authoritative_paper_state(repo)
     runtime = TradingRuntimeService(repo, settings=settings)
     submit_result = runtime.submit_signal_to_paper(
         signal_id=bridge_result.signal_id,
-        account_equity=100_000,
-        open_positions=0,
-        daily_loss_pct=0.0,
-        weekly_loss_pct=0.0,
-        sector_exposure_pct=0.0,
-        trades_today=0,
-        strategy_trades_today=0,
         internal_quantity=0,
         broker_quantity=0,
     )
@@ -457,16 +461,10 @@ def test_journal_lifecycle_records_buy_sell_for_long_entry_exit(monkeypatch):
         "trading_system.app.services.runtime.AlpacaPaperAdapter",
         FakePaperSubmitAdapter,
     )
+    _seed_authoritative_paper_state(repo)
     runtime = TradingRuntimeService(repo, settings=settings)
     runtime.submit_signal_to_paper(
         signal_id=bridge_result.signal_id,
-        account_equity=100_000,
-        open_positions=0,
-        daily_loss_pct=0.0,
-        weekly_loss_pct=0.0,
-        sector_exposure_pct=0.0,
-        trades_today=0,
-        strategy_trades_today=0,
     )
     entry_order = repo.latest_orders(1)[0]
     assert entry_order["side"] == "buy"

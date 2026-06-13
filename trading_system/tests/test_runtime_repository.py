@@ -28,6 +28,16 @@ from trading_system.app.services.runtime import TradingRuntimeService
 from trading_system.app.strategies.registry import StrategyRegistryService
 
 
+def _seed_authoritative_paper_state(repo: TradingRepository, *, equity: float = 100_000.0) -> None:
+    repo.store_broker_account_snapshot(
+        environment_mode=EnvironmentMode.PAPER.value,
+        broker="alpaca_paper",
+        account={"id": "paper-account", "equity": str(equity), "cash": str(equity), "buying_power": str(equity * 4)},
+        reason="Seed authoritative paper account state for execution tests.",
+        source_timestamp=datetime.now(UTC),
+    )
+
+
 def _repo():
     engine = build_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -320,21 +330,29 @@ def test_submit_signal_to_paper_records_exposure_and_daily_loss_kill_switch():
         max_daily_loss_pct=1.0,
     )
     signal_id = _store_runtime_signal(repo, settings)
+    now = datetime.now(UTC)
+    repo.store_broker_account_snapshot(
+        environment_mode=EnvironmentMode.PAPER.value,
+        broker="alpaca_paper",
+        account={"id": "paper-account", "equity": "100000", "buying_power": "400000"},
+        reason="baseline",
+        source_timestamp=now - timedelta(hours=2),
+    )
+    repo.store_broker_account_snapshot(
+        environment_mode=EnvironmentMode.PAPER.value,
+        broker="alpaca_paper",
+        account={"id": "paper-account", "equity": "99000", "buying_power": "396000"},
+        reason="latest",
+        source_timestamp=now,
+    )
     service = TradingRuntimeService(repo, settings=settings)
 
     result = service.submit_signal_to_paper(
         signal_id=signal_id,
-        account_equity=100_000,
-        open_positions=0,
-        daily_loss_pct=1.0,
-        weekly_loss_pct=0.0,
-        sector_exposure_pct=0.0,
         symbol_exposure_pct=12.0,
         strategy_exposure_pct=18.0,
         correlated_exposure_pct=22.0,
         overnight_exposure_pct=5.0,
-        trades_today=0,
-        strategy_trades_today=0,
         internal_quantity=0,
         broker_quantity=0,
     )
@@ -593,13 +611,6 @@ def test_submit_signal_to_paper_uses_broker_equity_loss_for_kill_switch():
 
     result = service.submit_signal_to_paper(
         signal_id=signal_id,
-        account_equity=100_000,
-        open_positions=0,
-        daily_loss_pct=0.0,
-        weekly_loss_pct=0.0,
-        sector_exposure_pct=0.0,
-        trades_today=0,
-        strategy_trades_today=0,
         internal_quantity=0,
         broker_quantity=0,
     )
@@ -618,17 +629,11 @@ def test_submit_signal_to_paper_triggers_reconciliation_kill_switch():
     repo = _repo()
     settings = Settings(environment_mode=EnvironmentMode.PAPER, max_spread_bps=500.0)
     signal_id = _store_runtime_signal(repo, settings)
+    _seed_authoritative_paper_state(repo)
     service = TradingRuntimeService(repo, settings=settings)
 
     result = service.submit_signal_to_paper(
         signal_id=signal_id,
-        account_equity=100_000,
-        open_positions=0,
-        daily_loss_pct=0.0,
-        weekly_loss_pct=0.0,
-        sector_exposure_pct=0.0,
-        trades_today=0,
-        strategy_trades_today=0,
         internal_quantity=0,
         broker_quantity=5,
     )
@@ -648,6 +653,7 @@ def test_submit_signal_to_paper_triggers_volatility_kill_switch():
         max_volatility_score=50.0,
     )
     signal_id = _store_runtime_signal(repo, settings)
+    _seed_authoritative_paper_state(repo)
     service = TradingRuntimeService(repo, settings=settings)
     repo.store_daily_features(
         symbol="AMD",
@@ -663,13 +669,6 @@ def test_submit_signal_to_paper_triggers_volatility_kill_switch():
 
     result = service.submit_signal_to_paper(
         signal_id=signal_id,
-        account_equity=100_000,
-        open_positions=0,
-        daily_loss_pct=0.0,
-        weekly_loss_pct=0.0,
-        sector_exposure_pct=0.0,
-        trades_today=0,
-        strategy_trades_today=0,
         internal_quantity=0,
         broker_quantity=0,
     )
@@ -694,6 +693,7 @@ def test_duplicate_paper_submit_is_rejected_before_second_broker_call(monkeypatc
     repo = _repo()
     settings = Settings(environment_mode=EnvironmentMode.PAPER, max_spread_bps=500.0)
     signal_id = _store_runtime_signal(repo, settings)
+    _seed_authoritative_paper_state(repo)
     service = TradingRuntimeService(repo, settings=settings)
     FakePaperSubmitAdapter.calls = []
     monkeypatch.setattr(
@@ -703,25 +703,11 @@ def test_duplicate_paper_submit_is_rejected_before_second_broker_call(monkeypatc
 
     first = service.submit_signal_to_paper(
         signal_id=signal_id,
-        account_equity=100_000,
-        open_positions=0,
-        daily_loss_pct=0.0,
-        weekly_loss_pct=0.0,
-        sector_exposure_pct=0.0,
-        trades_today=0,
-        strategy_trades_today=0,
         internal_quantity=0,
         broker_quantity=0,
     )
     second = service.submit_signal_to_paper(
         signal_id=signal_id,
-        account_equity=100_000,
-        open_positions=0,
-        daily_loss_pct=0.0,
-        weekly_loss_pct=0.0,
-        sector_exposure_pct=0.0,
-        trades_today=0,
-        strategy_trades_today=0,
         internal_quantity=0,
         broker_quantity=0,
     )
