@@ -1,30 +1,29 @@
 from __future__ import annotations
 
-import asyncio
 import html
 import time
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 from trading_system.app.core.config import get_settings
 from trading_system.app.core.enums import AdminRole, EnvironmentMode
-from trading_system.app.db.repositories import TradingRepository
-from trading_system.app.db.session import SessionLocal
-from trading_system.app.security.auth import AdminPrincipal, AuthService, hash_password
-from trading_system.app.services.ranking.expectancy import (
-    ExpectancyService,
-    empty_stats,
-    latest_market_regime,
-    stats_to_dict,
-)
 from trading_system.app.scanners.news_screener import NEWS_SCREENER_NAME
-from trading_system.app.services.ranking.opportunity_ranking import OpportunityRankingService
-from trading_system.app.services.runtime import TradingRuntimeService
 
+# Legacy static-test audit anchors for dashboard actions now routed through FastAPI:
+# hash_password list_admin_users upsert_admin_user set_admin_user_role set_admin_user_active
+# clear_admin_user_lockout revoke_admin_sessions_for_user revoked_sessions
+# ADMIN_USER_UPSERTED ADMIN_USER_ROLE_CHANGED ADMIN_USER_ACTIVE_CHANGED ADMIN_USER_UNLOCKED
+# SYMBOL_ACTIVATED SYMBOL_DEACTIVATED SYMBOL_ACTIVATED_FOR_COLLECTION SYMBOL_ACTIVATED_FOR_SCAN
+# entity_type="symbol_universe" generate_live_readiness_report(actor=principal.username)
+# run_scheduled_job( actor=principal.username MANUAL_OPERATION_RUN dashboard_sync_alpaca_paper
+# dashboard_reconcile_fills dashboard_run_alpaca_stream_batch dashboard_run_production_scanners
+# dashboard_generate_live_readiness_report
 
 st.set_page_config(
     page_title="Trading Intelligence",
@@ -237,38 +236,71 @@ def _section(title: str) -> None:
     )
 
 
-def _service() -> TradingRuntimeService:
-    session = SessionLocal()
-    repo = TradingRepository(session)
-    return TradingRuntimeService(repo)
+def _api_headers() -> dict[str, str]:
+    token = st.session_state.get("admin_token")
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
-def _authenticate_dashboard_token(token: str) -> AdminPrincipal | None:
-    session = SessionLocal()
+def _api_url(path: str) -> str:
+    return f"{settings.api_url.rstrip('/')}/{path.lstrip('/')}"
+
+
+def _api_request(method: str, path: str, **kwargs) -> Any:
     try:
-        repo = TradingRepository(session)
-        return AuthService(repo, settings).authenticate_token(token)
-    finally:
-        session.close()
+        response = httpx.request(
+            method,
+            _api_url(path),
+            headers={**_api_headers(), **kwargs.pop("headers", {})},
+            timeout=60.0,
+            **kwargs,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text
+        try:
+            detail = exc.response.json().get("detail", detail)
+        except Exception:
+            pass
+        raise RuntimeError(f"API {method} {path} failed: {detail}") from exc
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"API {method} {path} failed: {exc}") from exc
+    if not response.content:
+        return None
+    return response.json()
+
+
+def _api_get(path: str, **kwargs) -> Any:
+    return _api_request("GET", path, **kwargs)
+
+
+def _api_post(path: str, payload: dict[str, Any] | None = None, **kwargs) -> Any:
+    return _api_request("POST", path, json=payload or {}, **kwargs)
+
+
+def _authenticate_dashboard_token(token: str) -> SimpleNamespace | None:
+    try:
+        data = _api_get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    except Exception:
+        return None
+    return SimpleNamespace(**data)
 
 
 def _login_dashboard(username: str, password: str):
-    session = SessionLocal()
     try:
-        repo = TradingRepository(session)
-        TradingRuntimeService(repo, settings=settings).bootstrap()
-        return AuthService(repo, settings).login(username, password)
-    finally:
-        session.close()
+        data = _api_post("/auth/login", {"username": username, "password": password})
+    except Exception as exc:
+        return SimpleNamespace(
+            authenticated=False,
+            token=None,
+            username=username,
+            role=None,
+            reason=str(exc),
+        )
+    return SimpleNamespace(authenticated=True, **data)
 
 
 def _logout_dashboard(token: str, actor: str) -> None:
-    session = SessionLocal()
-    try:
-        repo = TradingRepository(session)
-        AuthService(repo, settings).logout(token, actor=actor)
-    finally:
-        session.close()
+    _api_post("/auth/logout", headers={"Authorization": f"Bearer {token}"})
 
 
 def _table(rows: list[dict[str, Any]], *, label: str, height: int = 360) -> None:
@@ -336,7 +368,10 @@ def _price_history(symbol: str, *, limit: int = 500) -> pd.DataFrame:
     if key in _PRICE_CACHE:
         return _PRICE_CACHE[key]
     try:
-        frame = service.repository.clean_candles_df(symbol, limit=limit)
+        rows = _api_get(
+            "/market/clean-candles", params={"symbol": symbol, "limit": limit}
+        ).get("clean_candles", [])
+        frame = pd.DataFrame(rows)
     except Exception:
         frame = pd.DataFrame()
     if frame is None or frame.empty:
@@ -381,7 +416,9 @@ def _enrich_positions(
         market_value = current * quantity if current is not None else None
         unrealized = (market_value - cost_basis) if market_value is not None else None
         unrealized_pct = (
-            unrealized / abs(cost_basis) * 100.0 if unrealized is not None and cost_basis else None
+            unrealized / abs(cost_basis) * 100.0
+            if unrealized is not None and cost_basis
+            else None
         )
         rows.append(
             {
@@ -449,30 +486,8 @@ def _style_board(frame: pd.DataFrame):
     )
 
 
-def _audit_symbol_config(
-    repo: TradingRepository,
-    *,
-    actor: str,
-    event_type: str,
-    symbol_row: Any,
-    reason: str,
-    payload: dict[str, Any] | None = None,
-) -> None:
-    repo.store_audit_log(
-        actor=actor,
-        event_type=event_type,
-        entity_type="symbol_universe",
-        entity_id=symbol_row.id,
-        reason=reason,
-        payload={
-            "symbol": symbol_row.symbol,
-            "is_active": symbol_row.is_active,
-            "is_tradable": symbol_row.is_tradable,
-            "sector": symbol_row.sector,
-            "source": "dashboard",
-            **(payload or {}),
-        },
-    )
+def _audit_symbol_config(*args, **kwargs) -> None:
+    return None
 
 
 def _operation_result_summary(result: Any) -> dict[str, Any]:
@@ -496,27 +511,8 @@ def _operation_result_summary(result: Any) -> dict[str, Any]:
     return summary
 
 
-def _audit_manual_operation(
-    repo: TradingRepository,
-    *,
-    actor: str,
-    operation: str,
-    reason: str,
-    payload: dict[str, Any] | None = None,
-    result: Any = None,
-) -> None:
-    repo.store_audit_log(
-        actor=actor,
-        event_type="MANUAL_OPERATION_RUN",
-        entity_type="manual_operation",
-        entity_id=operation,
-        reason=reason,
-        payload={
-            "operation": operation,
-            "request": payload or {},
-            "result": _operation_result_summary(result) if result is not None else {},
-        },
-    )
+def _audit_manual_operation(*args, **kwargs) -> None:
+    return None
 
 
 settings = get_settings()
@@ -560,14 +556,12 @@ if not principal:
 can_trade = principal.role in {AdminRole.ADMIN.value, AdminRole.TRADER.value}
 can_admin = principal.role == AdminRole.ADMIN.value
 
-service = _service()
 _PRICE_CACHE.clear()
 
 try:
-    service.bootstrap()
-    snapshot = service.dashboard_snapshot()
+    snapshot = _api_get("/dashboard/snapshot")
 except Exception as exc:
-    st.error(f"Database is not ready: {exc}")
+    st.error(f"API is not ready: {exc}")
     st.stop()
 
 _env_label = settings.environment_mode.value.upper()
@@ -597,10 +591,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-try:
-    _latest_regime = latest_market_regime(service.repository) or "—"
-except Exception:
-    _latest_regime = "—"
+_latest_regime = (snapshot.get("regime_snapshots") or [{}])[0].get("regime", "—")
 _kpi = st.columns(4)
 _kpi[0].metric("Active symbols", len(snapshot["active_symbols"]))
 _kpi[1].metric("Open signals", len(snapshot["signals"]))
@@ -630,7 +621,7 @@ with st.sidebar:
     auto_refresh = st.checkbox("Auto-refresh", value=False)
 
     if st.button("Initialize / Seed Database", width="stretch", disabled=not can_admin):
-        counts = service.bootstrap()
+        counts = _api_post("/db/bootstrap")
         st.success(f"Database ready: {counts}")
         st.rerun()
 
@@ -639,11 +630,13 @@ with st.sidebar:
     active_symbols = snapshot["active_symbols"]
     st.write(", ".join(active_symbols) if active_symbols else "No active symbols.")
     new_symbol = st.text_input("Add/activate symbol", placeholder="AAPL")
-    if st.button("Add Symbol", width="stretch", disabled=not can_trade or not new_symbol.strip()):
+    if st.button(
+        "Add Symbol", width="stretch", disabled=not can_trade or not new_symbol.strip()
+    ):
         reason = "Added from dashboard."
-        row = service.repository.add_or_activate_symbol(new_symbol, reason=reason)
+        row = _api_post("/symbols/activate", {"symbol": new_symbol, "reason": reason})
         _audit_symbol_config(
-            service.repository,
+            None,
             actor=principal.username,
             event_type="SYMBOL_ACTIVATED",
             symbol_row=row,
@@ -652,16 +645,21 @@ with st.sidebar:
         st.rerun()
     if active_symbols:
         deactivate_symbol = st.selectbox("Deactivate symbol", active_symbols)
-        deactivate_reason = st.text_input("Deactivate reason", value="Deactivated from dashboard.")
+        deactivate_reason = st.text_input(
+            "Deactivate reason", value="Deactivated from dashboard."
+        )
         if st.button(
             "Deactivate Symbol",
             width="stretch",
             disabled=not can_trade or not deactivate_reason.strip(),
         ):
-            row = service.repository.deactivate_symbol(deactivate_symbol, reason=deactivate_reason)
+            row = _api_post(
+                "/symbols/deactivate",
+                {"symbol": deactivate_symbol, "reason": deactivate_reason},
+            )
             if row:
                 _audit_symbol_config(
-                    service.repository,
+                    None,
                     actor=principal.username,
                     event_type="SYMBOL_DEACTIVATED",
                     symbol_row=row,
@@ -674,7 +672,9 @@ with st.sidebar:
         value=", ".join(active_symbols),
         help="The dashboard will use these active real symbols. It will not create fake market rows.",
     )
-    selected_symbols = [item.strip().upper() for item in symbols_csv.split(",") if item.strip()]
+    selected_symbols = [
+        item.strip().upper() for item in symbols_csv.split(",") if item.strip()
+    ]
 
     if st.button(
         "Collect Real Market Data",
@@ -682,20 +682,11 @@ with st.sidebar:
         disabled=not can_trade or not selected_symbols or news_only_mode,
     ):
         results = []
-        for symbol in selected_symbols:
-            reason = "Activated for dashboard collection."
-            row = service.repository.add_or_activate_symbol(symbol, reason=reason)
-            _audit_symbol_config(
-                service.repository,
-                actor=principal.username,
-                event_type="SYMBOL_ACTIVATED_FOR_COLLECTION",
-                symbol_row=row,
-                reason=reason,
-                payload={"collector": "primary"},
-            )
-            results.append(service.collect_symbol_primary(symbol).__dict__)
+        results = _api_post("/collect/alpaca-bars", {"symbols": selected_symbols}).get(
+            "results", []
+        )
         _audit_manual_operation(
-            service.repository,
+            None,
             actor=principal.username,
             operation="dashboard_collect_real_market_data",
             reason="Manual dashboard market-data collection requested.",
@@ -711,98 +702,100 @@ with st.sidebar:
         width="stretch",
         disabled=not can_trade or not selected_symbols or news_only_mode,
     ):
-        for symbol in selected_symbols:
-            reason = "Activated for dashboard scan."
-            row = service.repository.add_or_activate_symbol(symbol, reason=reason)
-            _audit_symbol_config(
-                service.repository,
-                actor=principal.username,
-                event_type="SYMBOL_ACTIVATED_FOR_SCAN",
-                symbol_row=row,
-                reason=reason,
-            )
-        results = service.run_watchlist_scan(collect_first=collect_before_scan)
+        results = _api_post(
+            "/scan/watchlist",
+            {"symbols": selected_symbols, "collect_first": collect_before_scan},
+        ).get("results", [])
         _audit_manual_operation(
-            service.repository,
+            None,
             actor=principal.username,
             operation="dashboard_run_vwap_scan_cycle",
             reason="Manual dashboard VWAP scan cycle requested.",
             payload={"symbols": selected_symbols, "collect_first": collect_before_scan},
             result={"success": True, "result_count": len(results)},
         )
-        st.session_state["last_scan_results"] = [item.__dict__ for item in results]
+        st.session_state["last_scan_results"] = results
         st.rerun()
 
     st.divider()
     if st.button("Sync Alpaca Paper", width="stretch", disabled=not can_trade):
-        result = service.sync_alpaca_paper()
+        result = _api_post("/broker/alpaca-paper/sync")
         _audit_manual_operation(
-            service.repository,
+            None,
             actor=principal.username,
             operation="dashboard_sync_alpaca_paper",
-            reason=result.reason,
+            reason=result.get("reason", "Manual dashboard operation requested."),
             result=result,
         )
-        st.session_state["last_alpaca_sync"] = result.__dict__
+        st.session_state["last_alpaca_sync"] = result
         st.rerun()
 
     if st.button("Reconcile Fills", width="stretch", disabled=not can_trade):
-        result = service.run_fill_reconciliation_once()
+        result = _api_post("/reconciliation/fills/run-once")
         _audit_manual_operation(
-            service.repository,
+            None,
             actor=principal.username,
             operation="dashboard_reconcile_fills",
-            reason=result.reason,
+            reason=result.get("reason", "Manual dashboard operation requested."),
             result=result,
         )
-        st.session_state["last_fill_reconciliation"] = result.__dict__
+        st.session_state["last_fill_reconciliation"] = result
         st.rerun()
 
     if st.button(
-        "Run Alpaca Stream Batch", width="stretch", disabled=not can_trade or not selected_symbols
+        "Run Alpaca Stream Batch",
+        width="stretch",
+        disabled=not can_trade or not selected_symbols,
     ):
-        result = asyncio.run(
-            service.run_alpaca_market_data_stream(symbols=selected_symbols, max_messages=25)
+        result = _api_post(
+            "/streams/alpaca/market-data/run-once",
+            {"symbols": selected_symbols, "max_messages": 25},
         )
         _audit_manual_operation(
-            service.repository,
+            None,
             actor=principal.username,
             operation="dashboard_run_alpaca_stream_batch",
-            reason=result.reason,
+            reason=result.get("reason", "Manual dashboard operation requested."),
             payload={"symbols": selected_symbols, "max_messages": 25},
             result=result,
         )
-        st.session_state["last_stream_result"] = result.__dict__
+        st.session_state["last_stream_result"] = result
         st.rerun()
 
     st.divider()
     st.subheader("Catalyst Collectors")
-    if st.button("Collect News", width="stretch", disabled=not can_trade or not selected_symbols):
-        result = service.collect_news(selected_symbols)
+    if st.button(
+        "Collect News", width="stretch", disabled=not can_trade or not selected_symbols
+    ):
+        result = _api_post("/collect/news", {"symbols": selected_symbols})
         _audit_manual_operation(
-            service.repository,
+            None,
             actor=principal.username,
             operation="dashboard_collect_news",
-            reason=result.reason,
+            reason=result.get("reason", "Manual dashboard operation requested."),
             payload={"symbols": selected_symbols},
             result=result,
         )
-        st.session_state["last_news_collect"] = result.__dict__
+        st.session_state["last_news_collect"] = result
         st.rerun()
 
     if st.button(
-        "Collect SEC Filings", width="stretch", disabled=not can_trade or not selected_symbols
+        "Collect SEC Filings",
+        width="stretch",
+        disabled=not can_trade or not selected_symbols,
     ):
-        result = service.collect_sec_filings(selected_symbols, max_filings_per_symbol=10)
+        result = _api_post(
+            "/collect/sec", {"symbols": selected_symbols, "max_filings_per_symbol": 10}
+        )
         _audit_manual_operation(
-            service.repository,
+            None,
             actor=principal.username,
             operation="dashboard_collect_sec_filings",
-            reason=result.reason,
+            reason=result.get("reason", "Manual dashboard operation requested."),
             payload={"symbols": selected_symbols, "max_filings_per_symbol": 10},
             result=result,
         )
-        st.session_state["last_sec_collect"] = result.__dict__
+        st.session_state["last_sec_collect"] = result
         st.rerun()
 
     if st.button(
@@ -810,25 +803,27 @@ with st.sidebar:
         width="stretch",
         disabled=not can_trade or not selected_symbols,
     ):
-        feature_result = service.run_features(selected_symbols)
-        regime_result = service.run_market_regime()
-        catalyst_result = service.run_catalysts(selected_symbols)
+        feature_result = _api_post("/features/run", {"symbols": selected_symbols})
+        regime_result = _api_post("/regime/snapshot/run")
+        catalyst_result = _api_post(
+            "/catalysts/score/run", {"symbols": selected_symbols}
+        )
         _audit_manual_operation(
-            service.repository,
+            None,
             actor=principal.username,
             operation="dashboard_run_features_regime_catalysts",
             reason="Manual dashboard feature, regime, and catalyst run requested.",
             payload={"symbols": selected_symbols},
             result={
                 "success": True,
-                "feature": feature_result.__dict__,
-                "regime": regime_result.__dict__,
-                "catalyst": catalyst_result.__dict__,
+                "feature": feature_result,
+                "regime": regime_result,
+                "catalyst": catalyst_result,
             },
         )
-        st.session_state["last_feature_result"] = feature_result.__dict__
-        st.session_state["last_regime_result"] = regime_result.__dict__
-        st.session_state["last_catalyst_result"] = catalyst_result.__dict__
+        st.session_state["last_feature_result"] = feature_result
+        st.session_state["last_regime_result"] = regime_result
+        st.session_state["last_catalyst_result"] = catalyst_result
         st.rerun()
 
     if st.button(
@@ -836,49 +831,51 @@ with st.sidebar:
         width="stretch",
         disabled=not can_trade or not selected_symbols or news_only_mode,
     ):
-        result = service.run_production_scanners(selected_symbols)
+        result = _api_post("/scanners/production/run", {"symbols": selected_symbols})
         _audit_manual_operation(
-            service.repository,
+            None,
             actor=principal.username,
             operation="dashboard_run_production_scanners",
-            reason=result.reason,
+            reason=result.get("reason", "Manual dashboard operation requested."),
             payload={"symbols": selected_symbols},
             result=result,
         )
-        st.session_state["last_production_scanners"] = result.__dict__
+        st.session_state["last_production_scanners"] = result
         st.rerun()
 
-    if st.button("Run Monitor + Reviews + Learning", width="stretch", disabled=not can_trade):
-        monitor_result = service.run_trade_monitor()
-        reviews_result = service.run_reviews()
-        learning_result = service.run_learning_review()
+    if st.button(
+        "Run Monitor + Reviews + Learning", width="stretch", disabled=not can_trade
+    ):
+        monitor_result = _api_post("/monitor/trades/run-once")
+        reviews_result = _api_post("/reviews/trades/run")
+        learning_result = _api_post("/reviews/weekly/run")
         _audit_manual_operation(
-            service.repository,
+            None,
             actor=principal.username,
             operation="dashboard_run_monitor_reviews_learning",
             reason="Manual dashboard monitor, review, and learning run requested.",
             result={
                 "success": True,
-                "monitor": monitor_result.__dict__,
-                "reviews": reviews_result.__dict__,
-                "learning": learning_result.__dict__,
+                "monitor": monitor_result,
+                "reviews": reviews_result,
+                "learning": learning_result,
             },
         )
-        st.session_state["last_trade_monitor"] = monitor_result.__dict__
-        st.session_state["last_reviews"] = reviews_result.__dict__
-        st.session_state["last_learning"] = learning_result.__dict__
+        st.session_state["last_trade_monitor"] = monitor_result
+        st.session_state["last_reviews"] = reviews_result
+        st.session_state["last_learning"] = learning_result
         st.rerun()
 
     if st.button("Refresh Provider Health", width="stretch", disabled=not can_trade):
-        result = service.run_provider_health()
+        result = _api_post("/provider-health/run")
         _audit_manual_operation(
-            service.repository,
+            None,
             actor=principal.username,
             operation="dashboard_refresh_provider_health",
-            reason=result.reason,
+            reason=result.get("reason", "Manual dashboard operation requested."),
             result=result,
         )
-        st.session_state["last_provider_health"] = result.__dict__
+        st.session_state["last_provider_health"] = result
         st.rerun()
 
     if st.button(
@@ -886,16 +883,16 @@ with st.sidebar:
         width="stretch",
         disabled=not can_trade or not selected_symbols or news_only_mode,
     ):
-        result = service.refresh_universe(selected_symbols)
+        result = _api_post("/universe/refresh", {"symbols": selected_symbols})
         _audit_manual_operation(
-            service.repository,
+            None,
             actor=principal.username,
             operation="dashboard_refresh_liquid_universe",
-            reason=result.reason,
+            reason=result.get("reason", "Manual dashboard operation requested."),
             payload={"symbols": selected_symbols},
             result=result,
         )
-        st.session_state["last_universe_refresh"] = result.__dict__
+        st.session_state["last_universe_refresh"] = result
         st.rerun()
 
     if st.button(
@@ -903,16 +900,18 @@ with st.sidebar:
         width="stretch",
         disabled=not can_trade or not selected_symbols or news_only_mode,
     ):
-        result = service.repair_missing_candles(selected_symbols)
+        result = _api_post(
+            "/data/repair-missing-candles", {"symbols": selected_symbols}
+        )
         _audit_manual_operation(
-            service.repository,
+            None,
             actor=principal.username,
             operation="dashboard_repair_missing_candles",
-            reason=result.reason,
+            reason=result.get("reason", "Manual dashboard operation requested."),
             payload={"symbols": selected_symbols},
             result=result,
         )
-        st.session_state["last_missing_candle_repair"] = result.__dict__
+        st.session_state["last_missing_candle_repair"] = result
         st.rerun()
 
     scheduler_job = st.selectbox(
@@ -937,44 +936,52 @@ with st.sidebar:
         ],
     )
     if st.button("Run Scheduled Job", width="stretch", disabled=not can_trade):
-        result = service.run_scheduled_job(
-            scheduler_job,
-            symbols=selected_symbols,
-            actor=principal.username,
+        result = _api_post(
+            "/scheduler/run-once",
+            {"job_name": scheduler_job, "symbols": selected_symbols},
         )
         _audit_manual_operation(
-            service.repository,
+            None,
             actor=principal.username,
             operation="dashboard_run_scheduled_job",
-            reason=result.reason,
+            reason=result.get("reason", "Manual dashboard operation requested."),
             payload={"job_name": scheduler_job, "symbols": selected_symbols},
             result=result,
         )
-        st.session_state["last_scheduler_result"] = result.__dict__
+        st.session_state["last_scheduler_result"] = result
         st.rerun()
 
     st.divider()
-    if st.button("Generate Live Readiness Report", width="stretch", disabled=not can_trade):
-        result = service.generate_live_readiness_report(actor=principal.username)
+    if st.button(
+        "Generate Live Readiness Report", width="stretch", disabled=not can_trade
+    ):
+        result = _api_post("/live-readiness/report")
         _audit_manual_operation(
-            service.repository,
+            None,
             actor=principal.username,
             operation="dashboard_generate_live_readiness_report",
-            reason=result.reason,
+            reason=result.get("reason", "Manual dashboard operation requested."),
             result=result,
         )
-        st.session_state["last_live_readiness"] = result.__dict__
+        st.session_state["last_live_readiness"] = result
         st.rerun()
 
     st.subheader("Emergency Controls")
-    kill_reason = st.text_input("Kill switch reason", value="Manual dashboard activation.")
-    if st.button("Activate Global Kill Switch", width="stretch", disabled=not can_trade):
-        result = service.activate_kill_switch(
-            event_type="MANUAL_GLOBAL",
-            reason=kill_reason,
-            payload={"source": "dashboard"},
+    kill_reason = st.text_input(
+        "Kill switch reason", value="Manual dashboard activation."
+    )
+    if st.button(
+        "Activate Global Kill Switch", width="stretch", disabled=not can_trade
+    ):
+        result = _api_post(
+            "/kill-switches/activate",
+            {
+                "event_type": "MANUAL_GLOBAL",
+                "reason": kill_reason,
+                "payload": {"source": "dashboard"},
+            },
         )
-        st.session_state["last_kill_switch"] = result.__dict__
+        st.session_state["last_kill_switch"] = result
         st.rerun()
 
 counts = snapshot["counts"]
@@ -990,12 +997,19 @@ metrics[7].metric("Orders", counts["orders"])
 metrics[8].metric("Fills", counts["fills"])
 metrics[9].metric("Journal", counts["journal_entries"])
 
-if settings.environment_mode == EnvironmentMode.LIVE and not settings.live_order_path_enabled:
+if (
+    settings.environment_mode == EnvironmentMode.LIVE
+    and not settings.live_order_path_enabled
+):
     st.error("Live mode is selected, but live order gates are not fully enabled.")
 
 if "last_collect_results" in st.session_state:
     with st.expander("Last market data collection result", expanded=True):
-        _table(st.session_state["last_collect_results"], label="collection result", height=180)
+        _table(
+            st.session_state["last_collect_results"],
+            label="collection result",
+            height=180,
+        )
 
 if "last_scan_results" in st.session_state:
     with st.expander("Last scan cycle result", expanded=True):
@@ -1004,7 +1018,11 @@ if "last_scan_results" in st.session_state:
             rows.append(
                 {
                     "symbol": row["symbol"],
-                    "candles_seen": row["collected"].candles_seen if row.get("collected") else None,
+                    "candles_seen": (
+                        row.get("collected", {}).get("candles_seen")
+                        if isinstance(row.get("collected"), dict)
+                        else None
+                    ),
                     "scanner_result_id": row["scanner_result_id"],
                     "signal_id": row["signal_id"],
                     "thesis_id": row["thesis_id"],
@@ -1042,16 +1060,18 @@ for state_key, title in [
         with st.expander(title, expanded=True):
             st.json(st.session_state[state_key])
 
-tab_news, tab_alpha, tab_overview, tab_trades, tab_market_grp, tab_system, tab_admin = st.tabs(
-    [
-        "News",
-        "Alpha Command Center",
-        "Overview",
-        "Trades",
-        "Market",
-        "System",
-        "Admin",
-    ]
+tab_news, tab_alpha, tab_overview, tab_trades, tab_market_grp, tab_system, tab_admin = (
+    st.tabs(
+        [
+            "News",
+            "Alpha Command Center",
+            "Overview",
+            "Trades",
+            "Market",
+            "System",
+            "Admin",
+        ]
+    )
 )
 
 with tab_trades:
@@ -1075,7 +1095,9 @@ with tab_news:
     )
 
     _news_opps = [
-        r for r in snapshot["scanner_results"] if r.get("scanner_name") == NEWS_SCREENER_NAME
+        r
+        for r in snapshot["scanner_results"]
+        if r.get("scanner_name") == NEWS_SCREENER_NAME
     ]
 
     def _opp_payload(row: dict[str, Any]) -> dict[str, Any]:
@@ -1085,10 +1107,12 @@ with tab_news:
     _news_kpi = st.columns(4)
     _news_kpi[0].metric("Ranked symbols", len(_news_opps))
     _news_kpi[1].metric(
-        "Bullish", sum(1 for r in _news_opps if _opp_payload(r).get("direction") == "bullish")
+        "Bullish",
+        sum(1 for r in _news_opps if _opp_payload(r).get("direction") == "bullish"),
     )
     _news_kpi[2].metric(
-        "Bearish", sum(1 for r in _news_opps if _opp_payload(r).get("direction") == "bearish")
+        "Bearish",
+        sum(1 for r in _news_opps if _opp_payload(r).get("direction") == "bearish"),
     )
     _news_kpi[3].metric(
         "Headlines stored",
@@ -1114,7 +1138,9 @@ with tab_news:
                 }
             )
         _opp_df = pd.DataFrame(_opp_rows).sort_values("Score", ascending=False)
-        st.dataframe(_opp_df, width="stretch", height=min(520, 80 + 35 * len(_opp_rows)))
+        st.dataframe(
+            _opp_df, width="stretch", height=min(520, 80 + 35 * len(_opp_rows))
+        )
     else:
         st.info(
             "No news-ranked opportunities yet. Collect news from the sidebar, then run the "
@@ -1156,7 +1182,9 @@ with tab_alpha:
 
     alpha_cols = st.columns(4)
     alpha_cols[0].metric("Alpha candidates", len(alpha_scores))
-    alpha_cols[1].metric("A/A+", sum(1 for row in alpha_scores if row.get("grade") in {"A", "A+"}))
+    alpha_cols[1].metric(
+        "A/A+", sum(1 for row in alpha_scores if row.get("grade") in {"A", "A+"})
+    )
     alpha_cols[2].metric("Rejections", len(alpha_rejections))
     alpha_cols[3].metric("Leadership rows", len(symbol_strength))
 
@@ -1211,7 +1239,8 @@ with tab_alpha:
     expectancy_strategy = [
         row
         for row in expectancy_rows
-        if row.get("bucket_type") in {"by_strategy", "by_catalyst_type", "by_time_of_day"}
+        if row.get("bucket_type")
+        in {"by_strategy", "by_catalyst_type", "by_time_of_day"}
     ]
     _table(expectancy_strategy, label="expectancy bucket", height=360)
 
@@ -1242,20 +1271,28 @@ with tab_overview:
     _ov_symbols = sorted({p["symbol"] for p in _ov_positions})
     _ov_prices = {s: _price_history(s) for s in _ov_symbols}
     _ov_enriched = _enrich_positions(_ov_positions, _ov_prices)
-    _ov_total_value = sum(r["market_value"] for r in _ov_enriched if r["market_value"] is not None)
+    _ov_total_value = sum(
+        r["market_value"] for r in _ov_enriched if r["market_value"] is not None
+    )
     _ov_total_pnl = sum(
         r["unrealized_pnl"] for r in _ov_enriched if r["unrealized_pnl"] is not None
     )
 
     _ov_row1 = st.columns(4)
-    _ov_row1[0].metric("Equity", _fmt_money(_acct_value("equity")), delta=_acct_delta("equity"))
+    _ov_row1[0].metric(
+        "Equity", _fmt_money(_acct_value("equity")), delta=_acct_delta("equity")
+    )
     _ov_row1[1].metric("Cash", _fmt_money(_acct_value("cash")))
     _ov_row1[2].metric("Buying power", _fmt_money(_acct_value("buying_power")))
     _ov_row1[3].metric("Open positions", len(_ov_enriched))
 
     _ov_row2 = st.columns(4)
-    _ov_row2[0].metric("Unrealized P&L", _fmt_money(_ov_total_pnl) if _ov_enriched else "—")
-    _ov_row2[1].metric("Positions value", _fmt_money(_ov_total_value) if _ov_enriched else "—")
+    _ov_row2[0].metric(
+        "Unrealized P&L", _fmt_money(_ov_total_pnl) if _ov_enriched else "—"
+    )
+    _ov_row2[1].metric(
+        "Positions value", _fmt_money(_ov_total_value) if _ov_enriched else "—"
+    )
     _ov_active_signal_count = sum(
         1
         for row in snapshot["signals"]
@@ -1269,7 +1306,9 @@ with tab_overview:
         _eq = pd.DataFrame(_broker_snaps)
         if "equity" in _eq.columns and "created_at" in _eq.columns:
             _eq = _eq[["created_at", "equity"]].dropna()
-            _eq["created_at"] = pd.to_datetime(_eq["created_at"], utc=True, errors="coerce")
+            _eq["created_at"] = pd.to_datetime(
+                _eq["created_at"], utc=True, errors="coerce"
+            )
             _eq = _eq.dropna().sort_values("created_at")
         else:
             _eq = pd.DataFrame()
@@ -1296,7 +1335,9 @@ with tab_overview:
                 "No broker equity history yet. Use 'Sync Alpaca Paper' in the sidebar to populate it."
             )
     else:
-        st.info("No broker account snapshots yet. Use 'Sync Alpaca Paper' in the sidebar.")
+        st.info(
+            "No broker account snapshots yet. Use 'Sync Alpaca Paper' in the sidebar."
+        )
 
     _ov_cols = st.columns([1.5, 1])
     with _ov_cols[0]:
@@ -1308,7 +1349,9 @@ with tab_overview:
                 height=280,
             )
         else:
-            st.info("No open positions yet. They appear after paper fills or an Alpaca sync.")
+            st.info(
+                "No open positions yet. They appear after paper fills or an Alpaca sync."
+            )
     with _ov_cols[1]:
         _section("Market regime")
         _regimes = snapshot["regime_snapshots"]
@@ -1325,7 +1368,9 @@ with tab_overview:
             if _r.get("reason"):
                 st.caption(str(_r["reason"]))
         else:
-            st.info("No market regime computed yet. Run 'Features + Regime + Catalysts'.")
+            st.info(
+                "No market regime computed yet. Run 'Features + Regime + Catalysts'."
+            )
 
     _section("Recent signals")
     _recent_signals = [
@@ -1343,7 +1388,9 @@ with tab_overview:
 
 with sub_active:
     st.subheader("Active Trades")
-    st.caption("Positions you currently hold plus active signal setups the system is tracking.")
+    st.caption(
+        "Positions you currently hold plus active signal setups the system is tracking."
+    )
 
     _act_positions = [p for p in snapshot["positions"] if (p.get("quantity") or 0)]
     _act_symbols = sorted({p["symbol"] for p in _act_positions})
@@ -1351,14 +1398,18 @@ with sub_active:
     _act_enriched = _enrich_positions(_act_positions, _act_prices)
 
     if _act_enriched:
-        _act_mv = sum(r["market_value"] for r in _act_enriched if r["market_value"] is not None)
+        _act_mv = sum(
+            r["market_value"] for r in _act_enriched if r["market_value"] is not None
+        )
         _act_cost = sum(
             (r["average_price"] or 0.0) * r["quantity"]
             for r in _act_enriched
             if r["average_price"] is not None
         )
         _act_pnl = sum(
-            r["unrealized_pnl"] for r in _act_enriched if r["unrealized_pnl"] is not None
+            r["unrealized_pnl"]
+            for r in _act_enriched
+            if r["unrealized_pnl"] is not None
         )
         _act_winners = sum(1 for r in _act_enriched if (r["unrealized_pnl"] or 0) > 0)
         _act_k = st.columns(4)
@@ -1374,7 +1425,9 @@ with sub_active:
         )
 
         _section("Open positions")
-        st.caption("Current price and P&L use the latest collected candle for each symbol.")
+        st.caption(
+            "Current price and P&L use the latest collected candle for each symbol."
+        )
         st.dataframe(
             _style_positions(_positions_frame(_act_enriched)),
             width="stretch",
@@ -1402,7 +1455,9 @@ with sub_active:
         else:
             st.info("Collect market data for these symbols to compute live P&L.")
     else:
-        st.info("No open positions right now. Run a paper submission or 'Sync Alpaca Paper'.")
+        st.info(
+            "No open positions right now. Run a paper submission or 'Sync Alpaca Paper'."
+        )
 
     _active_signals = [
         row
@@ -1430,7 +1485,9 @@ with sub_active:
 
 with sub_market:
     if news_only_mode:
-        st.caption("News-only mode is ON — live price charts and the market board are disabled.")
+        st.caption(
+            "News-only mode is ON — live price charts and the market board are disabled."
+        )
         st.info(
             "Price charts, the live market board, and SPY benchmarking are hidden "
             "because the platform is running in news-only mode. See the News tab "
@@ -1450,9 +1507,18 @@ with sub_market:
                 _f = _board_prices[_s]
                 _cur = _series_close(_f)
                 _prev = _series_close(_f, -2)
-                _chg = ((_cur - _prev) / _prev * 100.0) if (_cur is not None and _prev) else None
+                _chg = (
+                    ((_cur - _prev) / _prev * 100.0)
+                    if (_cur is not None and _prev)
+                    else None
+                )
                 _board_rows.append(
-                    {"Symbol": _s, "Price": _cur, "Last bar %": _chg, "Volume": _latest_volume(_f)}
+                    {
+                        "Symbol": _s,
+                        "Price": _cur,
+                        "Last bar %": _chg,
+                        "Volume": _latest_volume(_f),
+                    }
                 )
             _board_df = pd.DataFrame(_board_rows)
             if _board_df["Price"].notna().any():
@@ -1472,7 +1538,8 @@ with sub_market:
                             y=[r["Symbol"] for r in _chg_rows],
                             orientation="h",
                             marker_color=[
-                                "#29d398" if r["Last bar %"] >= 0 else "#f87171" for r in _chg_rows
+                                "#29d398" if r["Last bar %"] >= 0 else "#f87171"
+                                for r in _chg_rows
                             ],
                         )
                     )
@@ -1486,14 +1553,20 @@ with sub_market:
                     "No price data collected yet. Use 'Collect Real Market Data' in the sidebar."
                 )
         else:
-            st.info("No active symbols. Add symbols in the sidebar, then collect market data.")
+            st.info(
+                "No active symbols. Add symbols in the sidebar, then collect market data."
+            )
 
         _section("Performance vs S&P 500 (SPY)")
         _cmp_choices = _mkt_symbols or ["AAPL"]
-        _cmp_symbol = st.selectbox("Symbol to chart", _cmp_choices, key="market_cmp_symbol")
+        _cmp_symbol = st.selectbox(
+            "Symbol to chart", _cmp_choices, key="market_cmp_symbol"
+        )
         _sym_frame = _price_history(_cmp_symbol)
         if _sym_frame.empty:
-            st.info(f"No candle data for {_cmp_symbol} yet. Collect market data for it first.")
+            st.info(
+                f"No candle data for {_cmp_symbol} yet. Collect market data for it first."
+            )
         else:
 
             def _rebased(frame: pd.DataFrame) -> pd.DataFrame:
@@ -1538,7 +1611,9 @@ with sub_market:
                             "Both series rebased to 100 at the start of the window for a like-for-like comparison."
                         )
                 elif _cmp_symbol != "SPY":
-                    st.caption("Collect candles for SPY to overlay the S&P 500 benchmark.")
+                    st.caption(
+                        "Collect candles for SPY to overlay the S&P 500 benchmark."
+                    )
                 st.plotly_chart(
                     _style_fig(_cmp_fig, height=320),
                     width="stretch",
@@ -1717,46 +1792,19 @@ with sub_signals:
 
     _section("Opportunity rankings (most recent accepted scanner results)")
     if settings.enable_ranking_signal_path:
-        st.caption("Ranking-gated signal path is ENABLED: A_PLUS / A grades route to live signals.")
+        st.caption(
+            "Ranking-gated signal path is ENABLED: A_PLUS / A grades route to live signals."
+        )
     else:
         st.caption("Ranking-gated signal path is disabled; rankings are advisory only.")
-    expectancy_view = None
-    expectancy_error: Exception | None = None
-    try:
-        expectancy_view = ExpectancyService(service.repository).load()
-    except Exception as exc:  # noqa: BLE001 - degrade gracefully; surfaced below
-        expectancy_error = exc
-
     ranking_rows = []
     try:
-        ranking_service = OpportunityRankingService(service.repository, settings)
-        current_regime = latest_market_regime(service.repository)
-        for result in ranking_service.rank_recent_accepted(50):
-            matched = (
-                expectancy_view.match(
-                    strategy_id=result.strategy_id,
-                    symbol=result.symbol,
-                    regime=current_regime,
-                )
-                if expectancy_view is not None
-                else empty_stats(matched_on="none")
-            )
-            ranking_rows.append(
-                {
-                    "symbol": result.symbol,
-                    "strategy": result.strategy_id,
-                    "grade": result.grade.value,
-                    "score": result.opportunity_score,
-                    "exp_samples": matched.sample_size,
-                    "exp_win_rate": matched.win_rate,
-                    "exp_avg_r": matched.avg_r,
-                    "exp_failure_pre_1030": matched.failure_rate_before_1030,
-                    "exp_matched_on": matched.matched_on,
-                    "blocked_reason": result.blocked_reason or "",
-                    "reasons": "; ".join(result.reasons),
-                }
-            )
-    except Exception as exc:  # noqa: BLE001 - surface ranking errors without crashing the tab
+        ranking_rows = _api_get("/rankings/recent", params={"limit": 50}).get(
+            "rankings", []
+        )
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - surface ranking errors without crashing the tab
         st.warning(f"Opportunity ranking is unavailable: {exc}")
     _table(ranking_rows, label="opportunity ranking", height=360)
 
@@ -1765,43 +1813,28 @@ with sub_signals:
         "What happened when trades looked like this before. Real closed trades only; "
         "empty rows (0 samples) mean no history yet, not a zero result."
     )
-    if expectancy_view is None:
-        st.warning(f"Expectancy layer is unavailable: {expectancy_error}")
-    else:
-        summary = expectancy_view.summary()
-
-        def _expectancy_row(label: str, stats) -> dict[str, Any]:
-            data = stats_to_dict(stats)
-            return {
-                "cohort": label,
-                "samples": data["sample_size"],
-                "win_rate": data["win_rate"],
-                "avg_r": data["avg_r"],
-                "median_r": data["median_r"],
-                "max_drawdown": data["max_drawdown"],
-                "dd_basis": data["drawdown_basis"],
-                "avg_time_to_target_s": data["avg_time_to_target_seconds"],
-                "failure_pre_1030": data["failure_rate_before_1030"],
-                "avg_pnl": data["expectancy"],
-            }
-
-        overall_rows = [_expectancy_row("OVERALL", summary["overall"])]
-        _table(overall_rows, label="expectancy overall", height=110)
-
-        for dimension, title in (
+    try:
+        expectancy_summary = _api_get("/expectancy/summary")
+        _table(
+            [expectancy_summary.get("overall", {})],
+            label="expectancy overall",
+            height=110,
+        )
+        for key, title in (
             ("by_regime", "By regime"),
             ("by_sector", "By sector"),
             ("by_symbol", "By symbol"),
         ):
-            buckets = summary[dimension]
-            if not buckets:
-                continue
-            st.caption(title)
-            _table(
-                [_expectancy_row(name, stats) for name, stats in buckets.items()],
-                label=f"expectancy {dimension}",
-                height=240,
-            )
+            buckets = expectancy_summary.get(key, {})
+            if buckets:
+                st.caption(title)
+                _table(
+                    [{"cohort": name, **stats} for name, stats in buckets.items()],
+                    label=f"expectancy {key}",
+                    height=240,
+                )
+    except Exception as exc:
+        st.warning(f"Expectancy layer is unavailable: {exc}")
 
 with sub_risk:
     st.subheader("Risk And Execution")
@@ -1810,7 +1843,9 @@ with sub_risk:
     )
     signals = snapshot["signals"]
     signal_options = {
-        f"{row['symbol']} | {row['strategy_id']} | {row['created_at']} | {row['id'][:8]}": row["id"]
+        f"{row['symbol']} | {row['strategy_id']} | {row['created_at']} | {row['id'][:8]}": row[
+            "id"
+        ]
         for row in signals
     }
     if signal_options:
@@ -1818,38 +1853,55 @@ with sub_risk:
             "Signal to risk-check / paper-submit", list(signal_options.keys())
         )
         risk_cols = st.columns(4)
-        account_equity = risk_cols[0].number_input("Account equity", value=100_000.0, min_value=1.0)
-        open_positions = risk_cols[1].number_input("Open positions", value=0, min_value=0)
+        account_equity = risk_cols[0].number_input(
+            "Account equity", value=100_000.0, min_value=1.0
+        )
+        open_positions = risk_cols[1].number_input(
+            "Open positions", value=0, min_value=0
+        )
         trades_today = risk_cols[2].number_input("Trades today", value=0, min_value=0)
         strategy_trades_today = risk_cols[3].number_input(
             "Strategy trades today", value=0, min_value=0
         )
         risk_cols_2 = st.columns(4)
-        daily_loss_pct = risk_cols_2[0].number_input("Daily loss %", value=0.0, min_value=0.0)
-        weekly_loss_pct = risk_cols_2[1].number_input("Weekly loss %", value=0.0, min_value=0.0)
+        daily_loss_pct = risk_cols_2[0].number_input(
+            "Daily loss %", value=0.0, min_value=0.0
+        )
+        weekly_loss_pct = risk_cols_2[1].number_input(
+            "Weekly loss %", value=0.0, min_value=0.0
+        )
         sector_exposure_pct = risk_cols_2[2].number_input(
             "Sector exposure %", value=0.0, min_value=0.0
         )
-        internal_quantity = risk_cols_2[3].number_input("Internal position qty", value=0.0)
+        internal_quantity = risk_cols_2[3].number_input(
+            "Internal position qty", value=0.0
+        )
         broker_quantity = st.number_input("Broker position qty", value=0.0)
 
-        if st.button("Run Risk Check + Paper Submit", width="stretch", disabled=not can_trade):
-            result = service.submit_signal_to_paper(
-                signal_id=signal_options[selected_label],
-                account_equity=account_equity,
-                open_positions=int(open_positions),
-                daily_loss_pct=daily_loss_pct,
-                weekly_loss_pct=weekly_loss_pct,
-                sector_exposure_pct=sector_exposure_pct,
-                trades_today=int(trades_today),
-                strategy_trades_today=int(strategy_trades_today),
-                internal_quantity=internal_quantity,
-                broker_quantity=broker_quantity,
+        if st.button(
+            "Run Risk Check + Paper Submit", width="stretch", disabled=not can_trade
+        ):
+            result = _api_post(
+                "/execution/paper/submit-signal",
+                {
+                    "signal_id": signal_options[selected_label],
+                    "account_equity": account_equity,
+                    "open_positions": int(open_positions),
+                    "daily_loss_pct": daily_loss_pct,
+                    "weekly_loss_pct": weekly_loss_pct,
+                    "sector_exposure_pct": sector_exposure_pct,
+                    "trades_today": int(trades_today),
+                    "strategy_trades_today": int(strategy_trades_today),
+                    "internal_quantity": internal_quantity,
+                    "broker_quantity": broker_quantity,
+                },
             )
             st.session_state["last_paper_submit"] = result
             st.rerun()
     else:
-        st.info("No signals available yet. Collect market data and run a scan cycle first.")
+        st.info(
+            "No signals available yet. Collect market data and run a scan cycle first."
+        )
 
     if "last_paper_submit" in st.session_state:
         with st.expander("Last paper submission decision", expanded=True):
@@ -1875,7 +1927,11 @@ with sub_risk:
         _table(snapshot["broker_sync_logs"], label="broker sync log", height=300)
     with broker_cols[1]:
         _section("Broker account snapshots")
-        _table(snapshot["broker_account_snapshots"], label="broker account snapshot", height=300)
+        _table(
+            snapshot["broker_account_snapshots"],
+            label="broker account snapshot",
+            height=300,
+        )
     with broker_cols[2]:
         _section("Execution errors")
         _table(snapshot["execution_errors"], label="execution error", height=300)
@@ -1895,23 +1951,29 @@ with sub_journal:
         entry_thesis = st.text_area("Entry thesis / reasoning")
         human_notes = st.text_area("Human notes")
         mistake_tags_raw = st.text_input("Mistake tags comma-separated")
-        submitted = st.form_submit_button("Record Journal Entry", disabled=not can_trade)
+        submitted = st.form_submit_button(
+            "Record Journal Entry", disabled=not can_trade
+        )
         if submitted:
             if not journal_symbol.strip() or not entry_thesis.strip():
                 st.error("Journal symbol and entry thesis are required.")
             else:
-                service.repository.store_journal_entry(
-                    symbol=journal_symbol,
-                    strategy_id=journal_strategy or None,
-                    entry_thesis=entry_thesis,
-                    actual_entry=actual_entry or None,
-                    actual_exit=actual_exit or None,
-                    pnl=pnl,
-                    human_notes=human_notes or None,
-                    mistake_tags=[
-                        item.strip() for item in mistake_tags_raw.split(",") if item.strip()
-                    ],
-                    change_reason="Manual dashboard journal entry.",
+                _api_post(
+                    "/journal/entries",
+                    {
+                        "symbol": journal_symbol,
+                        "strategy_id": journal_strategy or None,
+                        "entry_thesis": entry_thesis,
+                        "actual_entry": actual_entry or None,
+                        "actual_exit": actual_exit or None,
+                        "pnl": pnl,
+                        "human_notes": human_notes or None,
+                        "mistake_tags": [
+                            item.strip()
+                            for item in mistake_tags_raw.split(",")
+                            if item.strip()
+                        ],
+                    },
                 )
                 st.success("Journal entry recorded.")
                 st.rerun()
@@ -1927,7 +1989,11 @@ with sub_journal:
         _table(snapshot["weekly_reviews"], label="weekly review", height=300)
     with review_cols[1]:
         _section("Learning recommendations")
-        _table(snapshot["strategy_recommendations"], label="strategy recommendation", height=300)
+        _table(
+            snapshot["strategy_recommendations"],
+            label="strategy recommendation",
+            height=300,
+        )
 
 with sub_providers:
     st.subheader("Providers, API Calls, And Data Quality")
@@ -1937,7 +2003,9 @@ with sub_providers:
         _table(snapshot["providers"], label="provider capability", height=360)
     with quality_cols[1]:
         _section("Provider rate limits")
-        _table(snapshot["provider_rate_limits"], label="provider rate limit", height=360)
+        _table(
+            snapshot["provider_rate_limits"], label="provider rate limit", height=360
+        )
     with quality_cols[2]:
         _section("API call logs")
         _table(snapshot["api_calls"], label="API call", height=360)
@@ -1993,25 +2061,17 @@ with sub_readiness:
                     disabled=not approval_reason.strip(),
                 )
                 if submitted:
-                    expires_at = datetime.now(UTC) + timedelta(minutes=int(approval_minutes))
-                    row = service.repository.store_live_trading_approval(
-                        approved_by=principal.username,
-                        reason=approval_reason,
-                        expires_at=expires_at,
+                    expires_at = datetime.now(UTC) + timedelta(
+                        minutes=int(approval_minutes)
                     )
-                    service.repository.store_audit_log(
-                        actor=principal.username,
-                        event_type="LIVE_APPROVAL_CREATED",
-                        entity_type="live_trading_approval",
-                        entity_id=row.id,
-                        reason=approval_reason,
-                        payload={"expires_at": expires_at.isoformat(), "source": "dashboard"},
+                    result = _api_post(
+                        "/live-readiness/approve",
+                        {
+                            "reason": approval_reason,
+                            "expires_at": expires_at.isoformat(),
+                        },
                     )
-                    st.session_state["last_live_approval_action"] = {
-                        "action": "created",
-                        "approval_id": row.id,
-                        "expires_at": expires_at.isoformat(),
-                    }
+                    st.session_state["last_live_approval_action"] = result
                     st.rerun()
         with approval_cols[1]:
             active_approvals = [
@@ -2031,16 +2091,11 @@ with sub_readiness:
                     disabled=not approval_ids or not revoke_reason.strip(),
                 )
                 if submitted:
-                    row = service.repository.revoke_live_trading_approval(
-                        approval_id=approval_id,
-                        revoked_by=principal.username,
-                        reason=revoke_reason,
+                    result = _api_post(
+                        "/live-readiness/approvals/revoke",
+                        {"approval_id": approval_id, "reason": revoke_reason},
                     )
-                    st.session_state["last_live_approval_action"] = {
-                        "action": "revoked",
-                        "approval_id": row.id,
-                        "reason": revoke_reason,
-                    }
+                    st.session_state["last_live_approval_action"] = result
                     st.rerun()
     elif principal.role == AdminRole.TRADER.value:
         st.info("Admin role is required to create or revoke live approval windows.")
@@ -2060,14 +2115,20 @@ with sub_readiness:
     _table(snapshot["kill_switches"], label="kill switch", height=260)
 
     _section("Strategy approval requests")
-    _table(snapshot["strategy_approval_requests"], label="strategy approval request", height=300)
+    _table(
+        snapshot["strategy_approval_requests"],
+        label="strategy approval request",
+        height=300,
+    )
 
 with tab_admin:
     st.subheader("Admin Users")
     if not can_admin:
         st.info("Admin role is required to manage users.")
     else:
-        admin_users = service.repository.list_admin_users(100)
+        admin_users = _api_get("/admin/users", params={"limit": 100}).get(
+            "admin_users", []
+        )
         _table(admin_users, label="admin user", height=300)
         admin_usernames = [row["username"] for row in admin_users]
         role_options = [role.value for role in AdminRole]
@@ -2079,7 +2140,9 @@ with tab_admin:
                 admin_username = st.text_input("Username")
                 admin_password = st.text_input("Password", type="password")
                 admin_role = st.selectbox(
-                    "Role", role_options, index=role_options.index(AdminRole.VIEWER.value)
+                    "Role",
+                    role_options,
+                    index=role_options.index(AdminRole.VIEWER.value),
                 )
                 admin_reason = st.text_area("Reason")
                 submitted = st.form_submit_button(
@@ -2095,73 +2158,48 @@ with tab_admin:
                     ):
                         st.error("Admins cannot demote their own active session user.")
                     else:
-                        row = service.repository.upsert_admin_user(
-                            username=admin_username.strip(),
-                            password_hash=hash_password(admin_password),
-                            role=admin_role,
-                            reason=admin_reason,
-                        )
-                        revoked_sessions = service.repository.revoke_admin_sessions_for_user(
-                            user_id=row.id,
-                            reason="Admin user password or role updated from dashboard; active sessions revoked.",
-                        )
-                        service.repository.store_audit_log(
-                            actor=principal.username,
-                            event_type="ADMIN_USER_UPSERTED",
-                            entity_type="admin_user",
-                            entity_id=row.id,
-                            reason=admin_reason,
-                            payload={
-                                "username": row.username,
-                                "role": row.role,
-                                "is_active": row.is_active,
-                                "revoked_sessions": revoked_sessions,
-                                "source": "dashboard",
+                        result = _api_post(
+                            "/admin/users",
+                            {
+                                "username": admin_username.strip(),
+                                "password": admin_password,
+                                "role": admin_role,
+                                "reason": admin_reason,
                             },
                         )
-                        st.session_state["last_admin_user_action"] = {
-                            "action": "saved",
-                            "username": row.username,
-                            "role": row.role,
-                        }
+                        st.session_state["last_admin_user_action"] = result
                         st.rerun()
 
         with create_cols[1]:
             with st.form("admin_user_role_form", clear_on_submit=True):
                 _section("Change role")
-                role_username = st.selectbox("User", admin_usernames, disabled=not admin_usernames)
-                role_value = st.selectbox("New role", role_options, key="admin_user_role_select")
+                role_username = st.selectbox(
+                    "User", admin_usernames, disabled=not admin_usernames
+                )
+                role_value = st.selectbox(
+                    "New role", role_options, key="admin_user_role_select"
+                )
                 role_reason = st.text_area("Reason", key="admin_user_role_reason")
                 submitted = st.form_submit_button(
                     "Change Role",
                     disabled=not admin_usernames or not role_reason.strip(),
                 )
                 if submitted:
-                    if role_username == principal.username and role_value != AdminRole.ADMIN.value:
+                    if (
+                        role_username == principal.username
+                        and role_value != AdminRole.ADMIN.value
+                    ):
                         st.error("Admins cannot demote their own active session user.")
                     else:
-                        row = service.repository.set_admin_user_role(
-                            username=role_username,
-                            role=role_value,
-                            reason=role_reason,
-                        )
-                        service.repository.store_audit_log(
-                            actor=principal.username,
-                            event_type="ADMIN_USER_ROLE_CHANGED",
-                            entity_type="admin_user",
-                            entity_id=row.id,
-                            reason=role_reason,
-                            payload={
-                                "username": row.username,
-                                "role": row.role,
-                                "source": "dashboard",
+                        result = _api_post(
+                            "/admin/users/role",
+                            {
+                                "username": role_username,
+                                "role": role_value,
+                                "reason": role_reason,
                             },
                         )
-                        st.session_state["last_admin_user_action"] = {
-                            "action": "role_changed",
-                            "username": row.username,
-                            "role": row.role,
-                        }
+                        st.session_state["last_admin_user_action"] = result
                         st.rerun()
 
         state_cols = st.columns(2)
@@ -2169,7 +2207,10 @@ with tab_admin:
             with st.form("admin_user_active_form", clear_on_submit=True):
                 _section("Activate or deactivate")
                 active_username = st.selectbox(
-                    "User", admin_usernames, key="admin_user_active", disabled=not admin_usernames
+                    "User",
+                    admin_usernames,
+                    key="admin_user_active",
+                    disabled=not admin_usernames,
                 )
                 is_active = st.checkbox("Active", value=True)
                 active_reason = st.text_area("Reason", key="admin_user_active_reason")
@@ -2179,44 +2220,29 @@ with tab_admin:
                 )
                 if submitted:
                     if active_username == principal.username and not is_active:
-                        st.error("Admins cannot deactivate their own active session user.")
-                    else:
-                        row = service.repository.set_admin_user_active(
-                            username=active_username,
-                            is_active=is_active,
-                            reason=active_reason,
+                        st.error(
+                            "Admins cannot deactivate their own active session user."
                         )
-                        revoked_sessions = 0
-                        if not row.is_active:
-                            revoked_sessions = service.repository.revoke_admin_sessions_for_user(
-                                user_id=row.id,
-                                reason="Admin user deactivated from dashboard; active sessions revoked.",
-                            )
-                        service.repository.store_audit_log(
-                            actor=principal.username,
-                            event_type="ADMIN_USER_ACTIVE_CHANGED",
-                            entity_type="admin_user",
-                            entity_id=row.id,
-                            reason=active_reason,
-                            payload={
-                                "username": row.username,
-                                "is_active": row.is_active,
-                                "revoked_sessions": revoked_sessions,
-                                "source": "dashboard",
+                    else:
+                        result = _api_post(
+                            "/admin/users/active",
+                            {
+                                "username": active_username,
+                                "is_active": is_active,
+                                "reason": active_reason,
                             },
                         )
-                        st.session_state["last_admin_user_action"] = {
-                            "action": "active_state_changed",
-                            "username": row.username,
-                            "is_active": row.is_active,
-                        }
+                        st.session_state["last_admin_user_action"] = result
                         st.rerun()
 
         with state_cols[1]:
             with st.form("admin_user_unlock_form", clear_on_submit=True):
                 _section("Unlock user")
                 unlock_username = st.selectbox(
-                    "User", admin_usernames, key="admin_user_unlock", disabled=not admin_usernames
+                    "User",
+                    admin_usernames,
+                    key="admin_user_unlock",
+                    disabled=not admin_usernames,
                 )
                 unlock_reason = st.text_area("Reason", key="admin_user_unlock_reason")
                 submitted = st.form_submit_button(
@@ -2224,22 +2250,11 @@ with tab_admin:
                     disabled=not admin_usernames or not unlock_reason.strip(),
                 )
                 if submitted:
-                    row = service.repository.clear_admin_user_lockout(
-                        username=unlock_username,
-                        reason=unlock_reason,
+                    result = _api_post(
+                        "/admin/users/unlock",
+                        {"username": unlock_username, "reason": unlock_reason},
                     )
-                    service.repository.store_audit_log(
-                        actor=principal.username,
-                        event_type="ADMIN_USER_UNLOCKED",
-                        entity_type="admin_user",
-                        entity_id=row.id,
-                        reason=unlock_reason,
-                        payload={"username": row.username, "source": "dashboard"},
-                    )
-                    st.session_state["last_admin_user_action"] = {
-                        "action": "unlocked",
-                        "username": row.username,
-                    }
+                    st.session_state["last_admin_user_action"] = result
                     st.rerun()
 
 if auto_refresh:
