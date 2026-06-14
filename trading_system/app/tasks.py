@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from celery import Celery
+from celery.schedules import crontab
+from sqlalchemy import text
 
 from trading_system.app.core.config import get_settings
 from trading_system.app.db.repositories import TradingRepository
@@ -39,6 +41,7 @@ celery.conf.update(
         "trading_system.app.tasks.run_production_scanners": {"queue": "execution"},
         "trading_system.app.tasks.run_alpha_strategy_scanner": {"queue": "execution"},
         "trading_system.app.tasks.request_bracket_order": {"queue": "execution"},
+        "trading_system.app.tasks.create_db_partitions": {"queue": "analytics"},
     },
     task_acks_late=True,
     task_reject_on_worker_lost=True,
@@ -80,6 +83,10 @@ celery.conf.update(
             "schedule": _job_cadences(settings)["learning"],
             "args": ("learning",),
         },
+        "create-db-partitions": {
+            "task": "trading_system.app.tasks.create_db_partitions",
+            "schedule": crontab(hour=0, minute=15),
+        },
     },
 )
 
@@ -89,6 +96,47 @@ _TASK_OPTIONS = {
     "retry_jitter": True,
     "max_retries": 3,
 }
+
+
+_PARTITIONED_RAW_TABLES = ("raw_market_data", "raw_trade_ticks")
+
+
+def _partition_name(table_name: str, partition_date: date) -> str:
+    return f"{table_name}_y{partition_date:%Y}m{partition_date:%m}d{partition_date:%d}"
+
+
+@celery.task(name="trading_system.app.tasks.create_db_partitions", **_TASK_OPTIONS)
+def create_db_partitions(days_ahead: int = 7) -> dict[str, list[str]]:
+    """Create daily PostgreSQL partitions for high-volume raw tick tables."""
+    first_partition_date = datetime.now(UTC).date() + timedelta(days=1)
+    created: dict[str, list[str]] = {table_name: [] for table_name in _PARTITIONED_RAW_TABLES}
+
+    session = SessionLocal()
+    try:
+        for offset in range(days_ahead):
+            partition_start = first_partition_date + timedelta(days=offset)
+            partition_end = partition_start + timedelta(days=1)
+            for table_name in _PARTITIONED_RAW_TABLES:
+                partition_name = _partition_name(table_name, partition_start)
+                session.execute(
+                    text(
+                        f'CREATE TABLE IF NOT EXISTS "{partition_name}" '
+                        f'PARTITION OF "{table_name}" '
+                        'FOR VALUES FROM (:partition_start) TO (:partition_end)'
+                    ),
+                    {
+                        "partition_start": partition_start.isoformat(),
+                        "partition_end": partition_end.isoformat(),
+                    },
+                )
+                created[table_name].append(partition_name)
+        session.commit()
+        return created
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 def _with_runtime(task_name: str, operation: Callable[[TradingRuntimeService], Any]) -> Any:
