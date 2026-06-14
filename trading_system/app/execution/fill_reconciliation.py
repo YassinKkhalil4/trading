@@ -32,11 +32,11 @@ class FillReconciliationLoop:
         self.settings = settings or get_settings()
         self.adapter = adapter
 
-    def run_once(self) -> FillReconciliationResult:
+    async def run_once(self) -> FillReconciliationResult:
         live_mode = self.settings.environment_mode == EnvironmentMode.LIVE
         adapter = self.adapter or (AlpacaLiveAdapter(self.settings) if live_mode else AlpacaPaperAdapter(self.settings))
         broker = "alpaca_live" if live_mode else "alpaca_paper"
-        sync = adapter.sync()
+        sync = await adapter.sync()
         if not sync.configured:
             self.repository.store_broker_sync(
                 environment_mode=self.settings.environment_mode.value,

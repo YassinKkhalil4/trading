@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-import requests
+import asyncio
+
+import httpx
 
 from trading_system.app.core.config import Settings
 from trading_system.app.core.enums import EnvironmentMode
@@ -16,8 +18,11 @@ class FakeResponse:
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
-            error = requests.HTTPError(f"HTTP {self.status_code}")
-            error.response = self
+            error = httpx.HTTPStatusError(
+                f"HTTP {self.status_code}",
+                request=httpx.Request("GET", "https://example.test"),
+                response=httpx.Response(self.status_code),
+            )
             raise error
 
     def json(self):
@@ -30,14 +35,14 @@ class SequencedHttp:
         self.posts: list[dict] = []
         self.deletes: list[dict] = []
 
-    def post(self, _url: str, **kwargs):
+    async def post(self, _url: str, **kwargs):
         self.posts.append(kwargs)
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
         return response
 
-    def delete(self, _url: str, **kwargs):
+    async def delete(self, _url: str, **kwargs):
         self.deletes.append(kwargs)
         response = self.responses.pop(0)
         if isinstance(response, Exception):
@@ -48,7 +53,7 @@ class SequencedHttp:
 def test_paper_order_submit_retries_transient_failure_with_same_client_order_id():
     http = SequencedHttp(
         [
-            requests.ConnectionError("temporary network failure"),
+            httpx.ConnectError("temporary network failure"),
             FakeResponse(payload={"id": "paper-broker-1"}),
         ]
     )
@@ -59,14 +64,16 @@ def test_paper_order_submit_retries_transient_failure_with_same_client_order_id(
         alpaca_order_max_attempts=2,
     )
 
-    result = AlpacaPaperAdapter(settings, http=http).submit_limit_bracket_order(
+    result = asyncio.run(
+        AlpacaPaperAdapter(settings, http=http).submit_limit_bracket_order(
         symbol="AMD",
         side="buy",
         quantity=10,
         limit_price=100.0,
         stop_price=97.0,
         take_profit_price=110.0,
-        client_order_id="paper-client-1",
+            client_order_id="paper-client-1",
+        )
     )
 
     assert result.submitted is True
@@ -88,14 +95,16 @@ def test_live_order_submit_does_not_retry_non_retryable_http_error():
         alpaca_order_max_attempts=3,
     )
 
-    result = AlpacaLiveAdapter(settings, http=http).submit_limit_bracket_order(
+    result = asyncio.run(
+        AlpacaLiveAdapter(settings, http=http).submit_limit_bracket_order(
         symbol="AMD",
         side="buy",
         quantity=10,
         limit_price=100.0,
         stop_price=97.0,
         take_profit_price=110.0,
-        client_order_id="live-client-1",
+            client_order_id="live-client-1",
+        )
     )
 
     assert result.submitted is False
@@ -120,7 +129,7 @@ def test_live_cancel_all_retries_retryable_http_error():
         alpaca_order_max_attempts=2,
     )
 
-    result = AlpacaLiveAdapter(settings, http=http).cancel_all_orders()
+    result = asyncio.run(AlpacaLiveAdapter(settings, http=http).cancel_all_orders())
 
     assert result.success is True
     assert result.payload == {"accepted": True}
@@ -142,7 +151,9 @@ def test_paper_single_order_cancel_retries_retryable_http_error():
         alpaca_order_max_attempts=2,
     )
 
-    result = AlpacaPaperAdapter(settings, http=http).cancel_order("paper-broker-order-1")
+    result = asyncio.run(
+        AlpacaPaperAdapter(settings, http=http).cancel_order("paper-broker-order-1")
+    )
 
     assert result.success is True
     assert result.payload == {"cancelled": True}

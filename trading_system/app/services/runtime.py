@@ -411,7 +411,7 @@ class TradingRuntimeService:
             reason="Ranked signal and thesis generated.",
         )
 
-    def submit_signal_to_paper(
+    async def submit_signal_to_paper(
         self,
         *,
         signal_id: str,
@@ -441,7 +441,7 @@ class TradingRuntimeService:
         daily_loss_pct = authoritative_state.daily_loss_pct
         trades_today = authoritative_state.trades_today
         strategy_trades_today = authoritative_state.trades_by_strategy_today.get(signal.strategy_id, 0)
-        live_sync = self.sync_alpaca_live()
+        live_sync = await self.sync_alpaca_live()
         if live_sync.get("configured") and "reconciliation" in live_sync:
             sync_reconciliation = live_sync["reconciliation"]
             reconciliation = ReconciliationResult(
@@ -592,7 +592,7 @@ class TradingRuntimeService:
         broker_submit = None
         if order.quantity > 0 and self.settings.environment_mode.value == "paper":
             adapter = AlpacaPaperAdapter(self.settings)
-            broker_submit = adapter.submit_limit_bracket_order(
+            broker_submit = await adapter.submit_limit_bracket_order(
                 symbol=order.symbol,
                 side=order.side,
                 quantity=order.quantity,
@@ -637,9 +637,9 @@ class TradingRuntimeService:
             "broker_submit": broker_submit.__dict__ if broker_submit else None,
         }
 
-    def sync_alpaca_paper(self) -> AlpacaPaperSyncResult:
+    async def sync_alpaca_paper(self) -> AlpacaPaperSyncResult:
         adapter = AlpacaPaperAdapter(self.settings)
-        result = adapter.sync()
+        result = await adapter.sync()
         self.repository.store_broker_sync(
             environment_mode=self.settings.environment_mode.value,
             broker="alpaca_paper",
@@ -678,7 +678,7 @@ class TradingRuntimeService:
                 )
         return result
 
-    def sync_alpaca_live(self) -> dict[str, Any]:
+    async def sync_alpaca_live(self) -> dict[str, Any]:
         if self.settings.environment_mode != EnvironmentMode.LIVE or not (
             self.settings.alpaca_live_api_key and self.settings.alpaca_live_secret_key
         ):
@@ -728,7 +728,7 @@ class TradingRuntimeService:
                 "reconciliation": reconciliation.__dict__,
             }
         adapter = AlpacaLiveAdapter(self.settings)
-        result = adapter.sync()
+        result = await adapter.sync()
         snapshots = []
         if result.success:
             self.repository.store_broker_account_snapshot(
@@ -789,7 +789,7 @@ class TradingRuntimeService:
                 )
         return result.__dict__ | {"reconciliation": reconciliation.__dict__}
 
-    def submit_signal_to_live(
+    async def submit_signal_to_live(
         self,
         *,
         signal_id: str,
@@ -810,7 +810,7 @@ class TradingRuntimeService:
         if not signal_row:
             raise ValueError(f"Unknown signal id: {signal_id}")
         signal = _db_signal_to_trade_signal(signal_row)
-        live_sync = self.sync_alpaca_live()
+        live_sync = await self.sync_alpaca_live()
         if not live_sync.get("success"):
             raise RuntimeError(f"Unable to fetch authoritative live broker state: {live_sync.get('reason')}")
         authoritative_state = self._authoritative_portfolio_state(
@@ -919,7 +919,7 @@ class TradingRuntimeService:
                 "reconciliation": reconciliation.__dict__,
             },
         )
-        return LiveExecutionService(
+        return await LiveExecutionService(
             self.repository,
             adapter=AlpacaLiveAdapter(self.settings),
         ).submit_limit_order(
@@ -929,7 +929,7 @@ class TradingRuntimeService:
             reconciliation=reconciliation,
         )
 
-    def submit_internal_order_to_broker(
+    async def submit_internal_order_to_broker(
         self,
         *,
         order_id: str,
@@ -1002,7 +1002,7 @@ class TradingRuntimeService:
                     "order": model_to_dict(order),
                     "broker_submit": None,
                 }
-            broker_submit = AlpacaLiveAdapter(self.settings).submit_market_order(
+            broker_submit = await AlpacaLiveAdapter(self.settings).submit_market_order(
                 symbol=order.symbol,
                 side=order.side,
                 quantity=order.quantity,
@@ -1014,7 +1014,7 @@ class TradingRuntimeService:
             environment == EnvironmentMode.PAPER.value
             and self.settings.environment_mode == EnvironmentMode.PAPER
         ):
-            broker_submit = AlpacaPaperAdapter(self.settings).submit_market_order(
+            broker_submit = await AlpacaPaperAdapter(self.settings).submit_market_order(
                 symbol=order.symbol,
                 side=order.side,
                 quantity=order.quantity,
@@ -1284,7 +1284,7 @@ class TradingRuntimeService:
             "broker_weekly_loss_pct": broker_weekly,
         }
 
-    def cancel_all_live_orders(self, *, actor: str, reason: str) -> dict[str, Any]:
+    async def cancel_all_live_orders(self, *, actor: str, reason: str) -> dict[str, Any]:
         gate = LiveGateService(self.repository, self.settings).evaluate_operational_action(
             action="live_cancel_all_orders"
         )
@@ -1302,7 +1302,7 @@ class TradingRuntimeService:
                 payload=gate.__dict__,
             )
         else:
-            result = AlpacaLiveAdapter(self.settings).cancel_all_orders().__dict__
+            result = (await AlpacaLiveAdapter(self.settings).cancel_all_orders()).__dict__
             if not result.get("success"):
                 self.repository.store_execution_error(
                     order_id=None,
@@ -1321,7 +1321,7 @@ class TradingRuntimeService:
         )
         return result
 
-    def flatten_all_live_positions(self, *, actor: str, reason: str) -> dict[str, Any]:
+    async def flatten_all_live_positions(self, *, actor: str, reason: str) -> dict[str, Any]:
         gate = LiveGateService(self.repository, self.settings).evaluate_operational_action(
             action="live_flatten_all_positions"
         )
@@ -1339,7 +1339,7 @@ class TradingRuntimeService:
                 payload=gate.__dict__,
             )
         else:
-            result = AlpacaLiveAdapter(self.settings).flatten_all_positions().__dict__
+            result = (await AlpacaLiveAdapter(self.settings).flatten_all_positions()).__dict__
             if not result.get("success"):
                 self.repository.store_execution_error(
                     order_id=None,

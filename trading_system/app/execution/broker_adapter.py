@@ -17,7 +17,7 @@ class AbstractBrokerAdapter(ABC):
         """Return whether the broker adapter has enough credentials to submit orders."""
 
     @abstractmethod
-    def submit_limit_bracket_order(
+    async def submit_limit_bracket_order(
         self,
         *,
         symbol: str,
@@ -31,5 +31,5 @@ class AbstractBrokerAdapter(ABC):
         """Submit a limit entry with attached take-profit and stop-loss orders."""
 
     @abstractmethod
-    def cancel_all_orders(self) -> Any:
+    async def cancel_all_orders(self) -> Any:
         """Cancel all open broker orders."""
