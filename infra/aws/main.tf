@@ -34,7 +34,6 @@ locals {
   ]
   service_commands = {
     api            = ["uvicorn", "trading_system.app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
-    dashboard      = ["streamlit", "run", "trading_system/dashboard/app.py", "--server.address", "0.0.0.0", "--server.port", "8501"]
     scheduler      = ["python", "-m", "trading_system.app.services.worker", "scheduler"]
     market_stream  = ["python", "-m", "trading_system.app.services.worker", "market-stream"]
     reconciliation = ["python", "-m", "trading_system.app.services.worker", "reconciliation"]

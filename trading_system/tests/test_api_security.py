@@ -5,8 +5,11 @@ from fastapi.testclient import TestClient
 from fastapi.routing import APIRoute
 from types import SimpleNamespace
 
-import trading_system.app.api.main as api_main
 from trading_system.app.api.main import app
+from trading_system.app.api.routers import admin as admin_router
+from trading_system.app.api.routers import common as common_router
+from trading_system.app.api.routers import execution as execution_router
+from trading_system.app.api.routers import market as market_router
 from trading_system.app.services.ranking.expectancy import ExpectancyStats, empty_stats
 from trading_system.app.services.ranking.opportunity_ranking import (
     OpportunityGrade,
@@ -236,7 +239,7 @@ def test_live_approval_revoke_endpoint_is_admin_only_and_uses_repository(monkeyp
     def fake_runtime():
         return FakeSession(), FakeService(repository)
 
-    monkeypatch.setattr(api_main, "_runtime", fake_runtime)
+    monkeypatch.setattr(admin_router, "_runtime", fake_runtime)
     app.dependency_overrides[require_admin_token] = lambda: AdminPrincipal(username="risk-admin", role="ADMIN")
     try:
         response = client.post(
@@ -309,7 +312,7 @@ def test_symbol_config_mutations_are_audited(monkeypatch):
     def fake_runtime():
         return FakeSession(), FakeService(repository)
 
-    monkeypatch.setattr(api_main, "_runtime", fake_runtime)
+    monkeypatch.setattr(market_router, "_runtime", fake_runtime)
     app.dependency_overrides[require_trader_or_admin] = lambda: AdminPrincipal(
         username="trader",
         role="TRADER",
@@ -393,7 +396,7 @@ def test_live_readiness_api_passes_authenticated_actor(monkeypatch):
     def fake_runtime():
         return FakeSession(), service
 
-    monkeypatch.setattr(api_main, "_runtime", fake_runtime)
+    monkeypatch.setattr(common_router, "_runtime", fake_runtime)
     app.dependency_overrides[require_trader_or_admin] = lambda: AdminPrincipal(
         username="readiness-operator",
         role="TRADER",
@@ -439,7 +442,7 @@ def test_manual_operation_endpoint_records_operator_audit(monkeypatch):
     def fake_runtime():
         return FakeSession(), FakeService(repository)
 
-    monkeypatch.setattr(api_main, "_runtime", fake_runtime)
+    monkeypatch.setattr(admin_router, "_runtime", fake_runtime)
     app.dependency_overrides[require_trader_or_admin] = lambda: AdminPrincipal(
         username="ops-trader",
         role="TRADER",
@@ -504,7 +507,7 @@ def test_strategies_endpoint_returns_database_approval_state(monkeypatch):
     def fake_runtime():
         return FakeSession(), FakeService()
 
-    monkeypatch.setattr(api_main, "_runtime", fake_runtime)
+    monkeypatch.setattr(admin_router, "_runtime", fake_runtime)
     app.dependency_overrides[require_principal] = lambda: AdminPrincipal(username="viewer", role="VIEWER")
     try:
         response = client.get("/strategies")
@@ -599,7 +602,7 @@ def test_admin_user_management_hashes_redacts_and_audits(monkeypatch):
     def fake_runtime():
         return FakeSession(), FakeService(repository)
 
-    monkeypatch.setattr(api_main, "_runtime", fake_runtime)
+    monkeypatch.setattr(admin_router, "_runtime", fake_runtime)
     app.dependency_overrides[require_admin_token] = lambda: AdminPrincipal(username="admin", role="ADMIN")
     try:
         created = client.post(
@@ -676,7 +679,8 @@ def test_direct_vwap_scanner_and_risk_endpoints_persist_decisions(monkeypatch):
         username="trader",
         role="TRADER",
     )
-    monkeypatch.setattr(api_main, "_runtime", fake_runtime)
+    monkeypatch.setattr(market_router, "_runtime", fake_runtime)
+    monkeypatch.setattr(execution_router, "_runtime", fake_runtime)
     scan = {
         "symbol": "AMD",
         "timestamp": datetime(2026, 6, 3, 14, 31, tzinfo=UTC).isoformat(),
@@ -692,12 +696,8 @@ def test_direct_vwap_scanner_and_risk_endpoints_persist_decisions(monkeypatch):
         "strong_relative_strength": True,
     }
     risk = {
-        "account_equity": 100_000,
-        "open_positions": 0,
-        "daily_loss_pct": 0.0,
         "weekly_loss_pct": 0.0,
         "sector_exposure_pct": 0.0,
-        "trades_today": 0,
         "trades_by_strategy_today": {},
     }
 
@@ -728,7 +728,7 @@ def test_direct_vwap_scanner_and_risk_endpoints_persist_decisions(monkeypatch):
     assert order_response.json()["order_id"] == "order-1"
     assert repository.scanner_payloads[0]["scanner_name"] == "VWAP_RECLAIM_DIRECT_API"
     assert repository.scanner_payloads[0]["accepted"] is True
-    assert repository.risk_payloads[0]["risk"].approved is True
+    assert repository.risk_payloads[0]["risk"].approved is False
     assert repository.risk_payloads[0]["payload"]["source"] == "api:/risk/check-vwap-reclaim"
     assert repository.risk_payloads[1]["payload"]["source"] == "api:/execution/paper/submit-vwap-reclaim"
     assert repository.orders[0]["signal_id"] == "signal-3"
@@ -823,10 +823,10 @@ def test_recent_rankings_endpoint_returns_ranked_rows(monkeypatch):
     def fake_runtime():
         return FakeSession(), FakeService()
 
-    monkeypatch.setattr(api_main, "_runtime", fake_runtime)
-    monkeypatch.setattr(api_main, "OpportunityRankingService", FakeRankingService)
-    monkeypatch.setattr(api_main, "ExpectancyService", FakeExpectancyService)
-    monkeypatch.setattr(api_main, "latest_market_regime", lambda repository: "TRENDING")
+    monkeypatch.setattr(market_router, "_runtime", fake_runtime)
+    monkeypatch.setattr(market_router, "OpportunityRankingService", FakeRankingService)
+    monkeypatch.setattr(market_router, "ExpectancyService", FakeExpectancyService)
+    monkeypatch.setattr(market_router, "latest_market_regime", lambda repository: "TRENDING")
     app.dependency_overrides[require_principal] = lambda: AdminPrincipal(username="viewer", role="VIEWER")
     try:
         response = client.get("/rankings/recent", params={"limit": 25})
@@ -900,8 +900,8 @@ def test_expectancy_summary_endpoint_returns_real_stats(monkeypatch):
     def fake_runtime():
         return FakeSession(), FakeService()
 
-    monkeypatch.setattr(api_main, "_runtime", fake_runtime)
-    monkeypatch.setattr(api_main, "ExpectancyService", FakeExpectancyService)
+    monkeypatch.setattr(market_router, "_runtime", fake_runtime)
+    monkeypatch.setattr(market_router, "ExpectancyService", FakeExpectancyService)
     app.dependency_overrides[require_principal] = lambda: AdminPrincipal(username="viewer", role="VIEWER")
     try:
         response = client.get("/expectancy/summary")

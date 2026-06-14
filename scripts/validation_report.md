@@ -24,7 +24,6 @@
 - **Docker service api running** — PASS
   - {"Command":"\"uvicorn trading_sys…\"","CreatedAt":"2026-06-07 19:20:36 +0300 EEST","ExitCode":0,"Health":"","ID":"7fb73ceab948","Image":"trading-api","Labels":"com.docker.compose.image.builder=classic,com.docker.compose.project.config_files=/Users/yassinkhalil/Documents/Trading/docker-compose.yml,co
 - **Docker service dashboard running** — PASS
-  - {"Command":"\"streamlit run tradi…\"","CreatedAt":"2026-06-07 19:20:36 +0300 EEST","ExitCode":0,"Health":"","ID":"3f5d052894ca","Image":"trading-dashboard","Labels":"com.docker.compose.project.working_dir=/Users/yassinkhalil/Documents/Trading,com.docker.compose.service=dashboard,com.docker.compose.v
 - **Docker service scheduler-worker running** — PASS
   - {"Command":"\"python -m trading_s…\"","CreatedAt":"2026-06-07 19:20:36 +0300 EEST","ExitCode":0,"Health":"","ID":"aa820f3d57ff","Image":"trading-scheduler-worker","Labels":"com.docker.compose.image=sha256:368e6e3af1b529b3b76af11b5d1335f5de532e98dd501d10130341f6e1beb555,com.docker.compose.oneoff=Fals
 - **Docker service market-stream-worker running** — PASS
@@ -44,7 +43,6 @@
   - {"status":"ok","message":"Production-gated platform. Live trading path is disabled unless every live gate passes."}
   - Command: `curl -fsS http://localhost:8000/health`
 - **Dashboard container HTTP responds through Docker** — PASS
-  - Streamlit HTTP endpoint responded
   - Command: `curl -fsS http://localhost:8501/`
 - **Dashboard container starts without fake trading data** — PASS
   - counts orders=0 fills=0 positions=0

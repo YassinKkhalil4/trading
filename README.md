@@ -51,7 +51,7 @@ uvicorn trading_system.app.api.main:app --reload
 Run dashboard:
 
 ```bash
-streamlit run trading_system/dashboard/app.py
+cd frontend && npm run dev
 ```
 
 The dashboard is database-backed. It shows only real provider calls and persisted decisions:

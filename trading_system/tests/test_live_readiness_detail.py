@@ -7,8 +7,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-import trading_system.app.api.main as api_main
 from trading_system.app.api.main import app
+from trading_system.app.api.routers import admin as admin_router
 from trading_system.app.core.config import Settings
 from trading_system.app.core.enums import EnvironmentMode, ProviderHealthStatus, StrategyStatus
 from trading_system.app.db import models
@@ -186,7 +186,9 @@ def test_detail_gate_failure_blocks_overall_status(gate_name: str):
         strategy.status = StrategyStatus.PAUSED.value
         repo.session.commit()
     elif gate_name == "human_live_approval_active":
-        repo.session.query(models.LiveTradingApproval).delete()
+        repo.session.query(models.SystemLog).filter(
+            models.SystemLog.log_type == "LIVE_TRADING_APPROVAL"
+        ).delete(synchronize_session=False)
         repo.session.commit()
     elif gate_name == "data_quality_valid":
         candle = repo.session.scalar(
@@ -233,7 +235,7 @@ def test_live_readiness_detail_api_returns_gate_report(monkeypatch):
         return FakeSession(), FakeService()
 
     monkeypatch.setattr(LiveReadinessService, "get_detail_report", pinned_get_detail_report)
-    monkeypatch.setattr(api_main, "_runtime", fake_runtime)
+    monkeypatch.setattr(admin_router, "_runtime", fake_runtime)
     app.dependency_overrides[require_principal] = lambda: AdminPrincipal(username="viewer", role="VIEWER")
     try:
         response = client.get("/live-readiness/detail")

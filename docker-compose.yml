@@ -29,20 +29,6 @@ services:
       - "8000:8000"
     command: uvicorn trading_system.app.api.main:app --host 0.0.0.0 --port 8000
 
-  dashboard:
-    build: .
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql+psycopg://trading:trading@postgres:5432/trading_system
-      REDIS_URL: redis://redis:6379/0
-      DEPLOYMENT_TARGET: docker
-    depends_on:
-      - postgres
-      - redis
-    ports:
-      - "8501:8501"
-    command: streamlit run trading_system/dashboard/app.py --server.address 0.0.0.0 --server.port 8501
-
   celery-worker:
     build: .
     env_file: .env

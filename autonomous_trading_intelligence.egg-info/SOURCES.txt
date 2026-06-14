@@ -106,7 +106,6 @@ trading_system/app/strategies/approval.py
 trading_system/app/strategies/cooldowns.py
 trading_system/app/strategies/registry.py
 trading_system/app/strategies/research_evidence.py
-trading_system/dashboard/app.py
 trading_system/migrations/env.py
 trading_system/migrations/versions/0001_initial_schema.py
 trading_system/migrations/versions/0002_trade_journal_duration.py
