@@ -54,6 +54,10 @@ Run dashboard:
 cd frontend && npm run dev
 ```
 
+### Streamlit dashboard sunset
+
+The legacy Streamlit dashboard sunset date is **2026-06-28**. Streamlit is no longer a supported UI surface: all admin user management, manual trading operations, live-readiness, audit, and trading views must be served from `frontend/` against the production-gated API. Do not add new Streamlit entrypoints or restore `trading_system/dashboard/`.
+
 The dashboard is database-backed. It shows only real provider calls and persisted decisions:
 
 - market candles, features, scanner decisions, signals, and theses
@@ -123,7 +127,7 @@ Persisted alpha intelligence tables include:
 
 ## Production Topology
 
-AWS Terraform deploys independent ECS Fargate services for API, dashboard, scheduler, market stream, reconciliation, trade monitor, reviews, and learning. PostgreSQL is the source of truth, Redis is used for cache/coordination, and raw provider payloads can be archived to S3 when `RAW_ARCHIVE_BUCKET` is configured.
+AWS Terraform deploys independent ECS Fargate services for API, Next.js dashboard, scheduler, market stream, reconciliation, trade monitor, reviews, and learning. PostgreSQL is the source of truth, Redis is used for cache/coordination, and raw provider payloads can be archived to S3 when `RAW_ARCHIVE_BUCKET` is configured.
 
 ## Backtest Warning
 
