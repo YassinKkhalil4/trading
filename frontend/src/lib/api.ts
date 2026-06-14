@@ -36,3 +36,35 @@ export function getCandles(symbol: string, limit = 500, cursor?: string) {
     `/api/v1/market/candles?${params}`,
   );
 }
+
+export type LiveReadinessGate = {
+  gate_name: string;
+  passed: boolean;
+  status?: string;
+  severity?: "warning" | "blocker" | "info" | string;
+  reason?: string;
+  message?: string;
+  [key: string]: unknown;
+};
+
+export type LiveReadinessDetail = {
+  overall_status: string;
+  checked_at?: string;
+  gates: LiveReadinessGate[];
+  [key: string]: unknown;
+};
+
+export type ExecutionOrder = Record<string, unknown>;
+export type ExecutionPosition = Record<string, unknown>;
+
+export function getLiveReadinessDetail() {
+  return fetchJson<LiveReadinessDetail>("/api/v1/live-readiness/detail");
+}
+
+export function getExecutionOrders(limit = 100) {
+  return fetchJson<{ orders: ExecutionOrder[] }>(`/api/v1/execution/orders?limit=${limit}`);
+}
+
+export function getExecutionPositions(limit = 100) {
+  return fetchJson<{ positions: ExecutionPosition[] }>(`/api/v1/execution/positions?limit=${limit}`);
+}
