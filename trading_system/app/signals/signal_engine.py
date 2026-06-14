@@ -51,6 +51,8 @@ class SignalEngine:
         price: float,
         stop_loss: float,
         strategy_version: str = "v1",
+        target_1_rr: float = 2.0,
+        target_2_rr: float = 3.0,
     ) -> TradeSignal:
         if not scanner_decision.accepted:
             self.decision_logger.record_simple(
@@ -65,9 +67,14 @@ class SignalEngine:
         if stop_loss >= price:
             raise ValueError("Long signal stop loss must be below entry price.")
 
+        if target_1_rr <= 0 or target_2_rr <= 0:
+            raise ValueError("Risk/reward targets must be positive.")
+        if target_2_rr < target_1_rr:
+            raise ValueError("Second risk/reward target must be greater than or equal to the first target.")
+
         risk_per_share = price - stop_loss
-        target_1 = price + (risk_per_share * 2)
-        target_2 = price + (risk_per_share * 3)
+        target_1 = price + (risk_per_share * target_1_rr)
+        target_2 = price + (risk_per_share * target_2_rr)
         key = build_idempotency_key(
             namespace="signal",
             symbol=scanner_decision.symbol,
@@ -86,7 +93,7 @@ class SignalEngine:
             stop_loss=stop_loss,
             target_1=target_1,
             target_2=target_2,
-            risk_reward=2.0,
+            risk_reward=target_1_rr,
             confidence_score=scanner_decision.score,
             time_horizon="intraday",
             invalidation="Loss of VWAP with rising sell volume.",

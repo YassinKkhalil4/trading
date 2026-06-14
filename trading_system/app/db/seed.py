@@ -106,6 +106,8 @@ DEFAULT_STRATEGIES = [
         "allowed_regimes": ["BULL_TREND", "RISK_ON", "CHOPPY"],
         "requires_human_approval": True,
         "logic_version": "v1",
+        "target_1_rr": 2.0,
+        "target_2_rr": 3.0,
         "changed_reason": "Initial research seed; paper/live status requires approval evidence.",
     },
     {

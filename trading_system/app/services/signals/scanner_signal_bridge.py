@@ -294,9 +294,11 @@ class ScannerSignalBridgeService:
             repository=self.repository,
             symbol=scanner_result.symbol,
         )
+        target_1_rr = _target_rr_from_strategy(strategy, "target_1_rr", 2.0)
+        target_2_rr = _target_rr_from_strategy(strategy, "target_2_rr", 3.0)
         risk_per_share = price - stop_loss
-        target_1 = price + (risk_per_share * 2)
-        target_2 = price + (risk_per_share * 3)
+        target_1 = price + (risk_per_share * target_1_rr)
+        target_2 = price + (risk_per_share * target_2_rr)
 
         catalyst_reference = str(payload["catalyst_id"]) if payload.get("catalyst_id") else None
         regime_reference = (
@@ -318,7 +320,7 @@ class ScannerSignalBridgeService:
             stop_loss=stop_loss,
             target_1=target_1,
             target_2=target_2,
-            risk_reward=2.0,
+            risk_reward=target_1_rr,
             confidence_score=ranking.opportunity_score,
             regime_reference=regime_reference,
             catalyst_reference=catalyst_reference,
@@ -380,6 +382,17 @@ def build_scanner_bridge_idempotency_key(
     raw = f"scanner_signal_bridge:{scanner_result_id}:{symbol.upper()}:{strategy_id}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
 
+
+
+def _target_rr_from_strategy(strategy: models.StrategyRegistry, key: str, default: float) -> float:
+    payload = getattr(strategy, "payload", None)
+    if isinstance(payload, dict):
+        configured = payload.get(key)
+        if configured is not None:
+            value = float(configured)
+            if value > 0:
+                return value
+    return default
 
 def _derive_trade_levels(
     *,

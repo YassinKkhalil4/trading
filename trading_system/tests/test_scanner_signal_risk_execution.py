@@ -57,6 +57,27 @@ def test_vwap_reclaim_scanner_accepts_valid_setup():
     assert decision.accepted is True
 
 
+def test_signal_engine_uses_configured_vwap_reclaim_rr_targets():
+    scanner = VwapReclaimScanner(
+        liquidity_gates=LiquidityGates(),
+        strategy_registry=StrategyRegistryService(),
+    )
+    decision = scanner.scan(_snapshot())
+
+    signal = SignalEngine().create_vwap_reclaim_signal(
+        scanner_decision=decision,
+        source_timestamp=_snapshot().timestamp,
+        price=101,
+        stop_loss=100,
+        target_1_rr=1.5,
+        target_2_rr=2.25,
+    )
+
+    assert signal.target_1 == 102.5
+    assert signal.target_2 == 103.25
+    assert signal.risk_reward == 1.5
+
+
 def test_signal_idempotency_rejects_duplicate():
     scanner = VwapReclaimScanner(
         liquidity_gates=LiquidityGates(),
