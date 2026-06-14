@@ -48,6 +48,7 @@ function eventMessage(event: TradingEvent) {
 export function TradingEventBridge() {
   const queryClient = useQueryClient();
   const pushActionFeedEvent = useDashboardStore((state) => state.pushActionFeedEvent);
+  const pushStrategyMarker = useDashboardStore((state) => state.pushStrategyMarker);
 
   useEffect(() => {
     const socket = new WebSocket(websocketUrl());
@@ -61,6 +62,19 @@ export function TradingEventBridge() {
 
       if (event.type === "MARKET_DATA_CANDLE" && event.payload?.symbol) {
         queryClient.invalidateQueries({ queryKey: ["candles", event.payload.symbol] });
+      }
+
+      const side = String(event.payload?.side ?? event.payload?.direction ?? event.payload?.action ?? "").toLowerCase();
+      const price = Number(event.payload?.price ?? event.payload?.entry_price ?? event.payload?.limit_price);
+      if (event.payload?.symbol && ["SIGNAL", "SIGNAL_UPDATE", "SIGNAL_CREATED"].includes(event.type) && ["buy", "long", "sell", "short"].includes(side) && Number.isFinite(price)) {
+        pushStrategyMarker({
+          id: String(event.payload.id ?? `${event.type}-${event.payload.symbol}-${event.timestamp ?? Date.now()}`),
+          symbol: event.payload.symbol.toUpperCase(),
+          side: side === "sell" || side === "short" ? "sell" : "buy",
+          price,
+          timestamp: String(event.payload.timestamp ?? event.payload.source_timestamp ?? event.timestamp ?? new Date().toISOString()),
+          strategyId: typeof event.payload.strategy_id === "string" ? event.payload.strategy_id : undefined,
+        });
       }
 
       if (FEED_EVENT_TYPES.has(event.type)) {
@@ -84,7 +98,7 @@ export function TradingEventBridge() {
       }
     };
     return () => socket.close();
-  }, [pushActionFeedEvent, queryClient]);
+  }, [pushActionFeedEvent, pushStrategyMarker, queryClient]);
 
   return null;
 }

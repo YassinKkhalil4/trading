@@ -112,7 +112,6 @@ class ShortInterestService:
                     or payload.get("provider")
                     or "universe_payload"
                 ),
-                payload=short_payload,
             )
             if snapshot.data_confidence > 0:
                 created += 1
@@ -138,7 +137,6 @@ class ShortInterestService:
             data_confidence=confidence,
             provider=kwargs.get("provider"),
             reason=reason,
-            payload=kwargs.get("payload") or {},
             source_timestamp=kwargs.get("source_timestamp") or datetime.now(UTC),
         )
 
@@ -182,7 +180,6 @@ class OptionsIntelligenceService:
                 provider=str(
                     payload.get("options_provider") or payload.get("provider") or "universe_payload"
                 ),
-                payload=options_payload,
             )
             if snapshot.data_confidence > 0:
                 created += 1
@@ -211,7 +208,6 @@ class OptionsIntelligenceService:
             data_confidence=confidence,
             provider=kwargs.get("provider"),
             reason=f"Options score {score:.1f} with {confidence:.0%} field coverage.",
-            payload=kwargs.get("payload") or {},
             source_timestamp=kwargs.get("source_timestamp") or datetime.now(UTC),
         )
 

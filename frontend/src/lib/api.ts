@@ -1,3 +1,5 @@
+export type CandleTimeFrame = "1Min" | "5Min" | "15Min" | "1Hour";
+
 export type Candle = {
   timestamp: string;
   open: number;
@@ -29,8 +31,8 @@ async function fetchJson<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function getCandles(symbol: string, limit = 500, cursor?: string) {
-  const params = new URLSearchParams({ symbol, limit: String(limit) });
+export function getCandles(symbol: string, limit = 500, cursor?: string, timeframe: CandleTimeFrame = "1Min") {
+  const params = new URLSearchParams({ symbol, limit: String(limit), timeframe });
   if (cursor) params.set("cursor", cursor);
   return fetchJson<{ candles: Candle[]; next_cursor: string | null }>(
     `/api/v1/market/candles?${params}`,
@@ -67,4 +69,19 @@ export function getExecutionOrders(limit = 100) {
 
 export function getExecutionPositions(limit = 100) {
   return fetchJson<{ positions: ExecutionPosition[] }>(`/api/v1/execution/positions?limit=${limit}`);
+}
+
+
+export type Strategy = {
+  strategy_id: string;
+  name: string;
+  version: string;
+  status: string;
+  minimum_backtest_trades: number;
+  max_drawdown_limit?: number | null;
+  [key: string]: unknown;
+};
+
+export function getStrategies() {
+  return fetchJson<{ strategies: Strategy[] }>("/strategies");
 }

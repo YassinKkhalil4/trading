@@ -3,6 +3,15 @@ import { persist } from "zustand/middleware";
 
 export type ActionFeedSeverity = "SUCCESS" | "INFO" | "WARNING" | "ERROR";
 
+export type StrategyMarker = {
+  id: string;
+  symbol: string;
+  side: "buy" | "sell";
+  price: number;
+  timestamp: string;
+  strategyId?: string;
+};
+
 export type ActionFeedEvent = {
   id: string;
   type: string;
@@ -17,9 +26,11 @@ type DashboardState = {
   activeSymbol: string;
   symbols: string[];
   actionFeed: ActionFeedEvent[];
+  strategyMarkers: StrategyMarker[];
   setActiveSymbol: (symbol: string) => void;
   setSymbols: (symbols: string[]) => void;
   pushActionFeedEvent: (event: Omit<ActionFeedEvent, "id" | "timestamp"> & { id?: string; timestamp?: string }) => void;
+  pushStrategyMarker: (marker: Omit<StrategyMarker, "id"> & { id?: string }) => void;
 };
 
 export const useDashboardStore = create<DashboardState>()(
@@ -28,6 +39,7 @@ export const useDashboardStore = create<DashboardState>()(
       activeSymbol: "AAPL",
       symbols: ["AAPL", "MSFT", "NVDA", "SPY"],
       actionFeed: [],
+      strategyMarkers: [],
       setActiveSymbol: (symbol) => set({ activeSymbol: symbol.toUpperCase() }),
       setSymbols: (symbols) =>
         set({
@@ -45,6 +57,16 @@ export const useDashboardStore = create<DashboardState>()(
               timestamp: event.timestamp ?? new Date().toISOString(),
             },
           ].slice(-50),
+        })),
+      pushStrategyMarker: (marker) =>
+        set((state) => ({
+          strategyMarkers: [
+            ...state.strategyMarkers.filter((existing) => existing.id !== marker.id),
+            {
+              ...marker,
+              id: marker.id ?? `${marker.symbol}-${marker.side}-${marker.timestamp}-${Date.now()}`,
+            },
+          ].slice(-200),
         })),
     }),
     {
