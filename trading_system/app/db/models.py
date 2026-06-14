@@ -159,6 +159,7 @@ class RawMarketData(TimestampMixin, Base):
     __table_args__ = (
         Index("ix_raw_market_data_symbol_time", "symbol", "source_timestamp"),
         Index("ix_raw_market_data_raw_payload_gin", "raw_payload", postgresql_using="gin"),
+        {"postgresql_partition_by": "RANGE (source_timestamp)"},
     )
 
     provider: Mapped[str] = mapped_column(String(80), primary_key=True)
@@ -181,6 +182,7 @@ class RawTradeTick(TimestampMixin, Base):
     __table_args__ = (
         Index("ix_raw_trade_ticks_symbol_time", "symbol", "source_timestamp"),
         Index("ix_raw_trade_ticks_raw_payload_gin", "raw_payload", postgresql_using="gin"),
+        {"postgresql_partition_by": "RANGE (source_timestamp)"},
     )
 
     provider: Mapped[str] = mapped_column(String(80), primary_key=True)
