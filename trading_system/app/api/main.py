@@ -1,9 +1,19 @@
 from datetime import UTC, datetime
 from typing import Any, Callable
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field, model_validator
+from sqlalchemy import desc, select
 
 from trading_system.app.core.config import get_settings
 from trading_system.app.alpha.expectancy import AlphaExpectancyRefreshService
@@ -44,6 +54,7 @@ from trading_system.app.services.ranking.opportunity_ranking import (
     OpportunityRankingService,
 )
 from trading_system.app.services.runtime import TradingRuntimeService
+from trading_system.app.services.streaming_events import redis_event_stream
 from trading_system.app.security.auth import (
     AdminPrincipal,
     AuthService,
@@ -754,6 +765,93 @@ def universe(
         return {"active_symbols": service.repository.active_symbols()}
     finally:
         session.close()
+
+
+
+class MarketCandlePage(BaseModel):
+    candles: list[dict[str, Any]]
+    next_cursor: str | None = None
+    limit: int
+
+
+@app.get("/api/v1/market/candles")
+def market_candles_v1(
+    _principal: AdminPrincipal = Depends(require_principal),
+    symbol: str = Query(min_length=1, max_length=16),
+    limit: int = Query(default=1000, ge=1, le=5000),
+    cursor: datetime | None = Query(default=None),
+    timeframe: str = Query(default="1Min", min_length=1, max_length=16),
+    provider: str = Query(default="alpaca_market_data", min_length=1, max_length=80),
+) -> MarketCandlePage:
+    """Return paginated clean OHLCV candles for the React terminal.
+
+    The page is sorted oldest-to-newest for client charting while the cursor is the
+    oldest timestamp returned. Send that value back as ``cursor`` to retrieve the
+    next older page without polling or loading the full table.
+    """
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        stmt = (
+            select(models.CleanMarketData)
+            .where(
+                models.CleanMarketData.symbol == symbol.upper(),
+                models.CleanMarketData.timeframe == timeframe,
+                models.CleanMarketData.provider == provider,
+                models.CleanMarketData.data_quality_status == "VALID",
+            )
+            .order_by(desc(models.CleanMarketData.source_timestamp))
+            .limit(limit + 1)
+        )
+        if cursor is not None:
+            stmt = stmt.where(models.CleanMarketData.source_timestamp < cursor)
+        rows = session.scalars(stmt).all()
+        has_more = len(rows) > limit
+        page_rows = rows[:limit]
+        candles = [
+            {
+                "timestamp": row.source_timestamp.isoformat(),
+                "open": row.open,
+                "high": row.high,
+                "low": row.low,
+                "close": row.close,
+                "volume": row.volume,
+                "vwap": row.vwap,
+                "trade_count": row.trade_count,
+                "symbol": row.symbol,
+                "timeframe": row.timeframe,
+                "provider": row.provider,
+            }
+            for row in reversed(page_rows)
+        ]
+        next_cursor = (
+            page_rows[-1].source_timestamp.isoformat() if has_more and page_rows else None
+        )
+        return MarketCandlePage(candles=candles, next_cursor=next_cursor, limit=limit)
+    finally:
+        session.close()
+
+
+@app.websocket("/api/v1/stream")
+async def trading_event_stream(websocket: WebSocket) -> None:
+    """Bridge Redis trading events to browser WebSocket clients."""
+    await websocket.accept()
+    await websocket.send_json({"type": "CONNECTED", "channel": "trading-events"})
+    settings = get_settings()
+    try:
+        async for event in redis_event_stream(settings=settings):
+            await websocket.send_json(event)
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        await websocket.send_json(
+            {
+                "type": "STREAM_BRIDGE_ERROR",
+                "payload": {"reason": str(exc)},
+                "source": "fastapi_websocket",
+                "published_at": datetime.now(UTC).isoformat(),
+            }
+        )
 
 
 @app.get("/market/clean-candles")
