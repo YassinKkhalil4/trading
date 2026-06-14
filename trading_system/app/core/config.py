@@ -24,6 +24,13 @@ def _env_float(name: str, default: float) -> float:
     return float(raw) if raw not in (None, "") else default
 
 
+def _env_csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.getenv(name)
+    if raw in (None, ""):
+        return default
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
 class ImproperlyConfigured(RuntimeError):
     """Raised when required production safety configuration is missing."""
 
@@ -38,6 +45,7 @@ class Settings:
     redis_url: str = "redis://localhost:6379/0"
     api_url: str = "http://localhost:8000"
     raw_archive_bucket: str = ""
+    cors_allowed_origins: tuple[str, ...] = ("https://trading.example.com",)
 
     alpaca_paper_api_key: str = ""
     alpaca_paper_secret_key: str = ""
@@ -224,6 +232,9 @@ def get_settings() -> Settings:
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
         api_url=os.getenv("API_URL", "http://localhost:8000"),
         raw_archive_bucket=os.getenv("RAW_ARCHIVE_BUCKET", ""),
+        cors_allowed_origins=_env_csv(
+            "CORS_ALLOWED_ORIGINS", ("https://trading.example.com",)
+        ),
         alpaca_paper_api_key=os.getenv("ALPACA_PAPER_API_KEY", ""),
         alpaca_paper_secret_key=os.getenv("ALPACA_PAPER_SECRET_KEY", ""),
         alpaca_paper_base_url=os.getenv(
