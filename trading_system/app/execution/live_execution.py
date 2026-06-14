@@ -53,7 +53,7 @@ class LiveExecutionService:
         self.repository = repository
         self.adapter = adapter or AlpacaLiveAdapter()
 
-    def submit_limit_order(
+    async def submit_limit_order(
         self,
         *,
         signal: TradeSignal,
@@ -130,7 +130,7 @@ class LiveExecutionService:
             broker="alpaca_live",
             source_timestamp=signal.source_timestamp,
         )
-        broker_submit = self.adapter.submit_limit_bracket_order(
+        broker_submit = await self.adapter.submit_limit_bracket_order(
             symbol=local_order.symbol,
             side=local_order.side,
             quantity=local_order.quantity,
@@ -176,7 +176,7 @@ class LiveExecutionService:
             broker_submit=broker_submit.__dict__,
         )
 
-    def cancel_all_live_orders(self) -> AlpacaLiveEmergencyResult:
+    async def cancel_all_live_orders(self) -> AlpacaLiveEmergencyResult:
         gate = LiveGateService(self.repository, self.adapter.settings).evaluate_operational_action(
             action="live_cancel_all_orders"
         )
@@ -195,7 +195,7 @@ class LiveExecutionService:
                 payload=gate.__dict__,
             )
         else:
-            result = self.adapter.cancel_all_orders()
+            result = await self.adapter.cancel_all_orders()
             if not result.success:
                 self.repository.store_execution_error(
                     order_id=None,
@@ -214,7 +214,7 @@ class LiveExecutionService:
         )
         return result
 
-    def flatten_all_live_positions(self) -> AlpacaLiveEmergencyResult:
+    async def flatten_all_live_positions(self) -> AlpacaLiveEmergencyResult:
         gate = LiveGateService(self.repository, self.adapter.settings).evaluate_operational_action(
             action="live_flatten_all_positions"
         )
@@ -233,7 +233,7 @@ class LiveExecutionService:
                 payload=gate.__dict__,
             )
         else:
-            result = self.adapter.flatten_all_positions()
+            result = await self.adapter.flatten_all_positions()
             if not result.success:
                 self.repository.store_execution_error(
                     order_id=None,

@@ -617,11 +617,11 @@ def _ranking_to_dict(result: OpportunityRankingResult) -> dict:
 
 
 
-def _submit_db_signal_to_paper(request: DbPaperSubmitRequest) -> dict:
+async def _submit_db_signal_to_paper(request: DbPaperSubmitRequest) -> dict:
     session, service = _runtime()
     try:
         service.bootstrap()
-        return service.submit_signal_to_paper(
+        return await service.submit_signal_to_paper(
             signal_id=request.signal_id,
             weekly_loss_pct=request.weekly_loss_pct,
             sector_exposure_pct=request.sector_exposure_pct,

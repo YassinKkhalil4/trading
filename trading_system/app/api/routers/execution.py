@@ -145,29 +145,29 @@ def decisions(
 
 
 @router.post("/execution/paper/submit-signal")
-def submit_db_signal_to_paper(
+async def submit_db_signal_to_paper(
     request: DbPaperSubmitRequest,
     _principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
-    return _submit_db_signal_to_paper(request)
+    return await _submit_db_signal_to_paper(request)
 
 
 @router.post("/execution/paper/submit")
-def submit_paper_signal(
+async def submit_paper_signal(
     request: DbPaperSubmitRequest,
     _principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
-    return _submit_db_signal_to_paper(request)
+    return await _submit_db_signal_to_paper(request)
 
 
 @router.post("/execution/live/submit")
-def submit_live_signal(
+async def submit_live_signal(
     request: DbPaperSubmitRequest,
     _principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
     session, service = _runtime()
     try:
-        result = service.submit_signal_to_live(
+        result = await service.submit_signal_to_live(
             signal_id=request.signal_id,
             weekly_loss_pct=request.weekly_loss_pct,
             sector_exposure_pct=request.sector_exposure_pct,
@@ -187,13 +187,13 @@ def submit_live_signal(
 
 
 @router.post("/execution/live/cancel-all")
-def cancel_all_live_orders(
+async def cancel_all_live_orders(
     request: LiveEmergencyBody,
     principal: AdminPrincipal = Depends(require_admin_token),
 ) -> dict:
     session, service = _runtime()
     try:
-        return service.cancel_all_live_orders(
+        return await service.cancel_all_live_orders(
             actor=principal.username, reason=request.reason
         )
     finally:
@@ -201,13 +201,13 @@ def cancel_all_live_orders(
 
 
 @router.post("/execution/live/flatten-all")
-def flatten_all_live_positions(
+async def flatten_all_live_positions(
     request: LiveEmergencyBody,
     principal: AdminPrincipal = Depends(require_admin_token),
 ) -> dict:
     session, service = _runtime()
     try:
-        return service.flatten_all_live_positions(
+        return await service.flatten_all_live_positions(
             actor=principal.username, reason=request.reason
         )
     finally:
@@ -238,13 +238,13 @@ def replace_order(
 
 
 @router.post("/execution/orders/submit-broker")
-def submit_internal_order_to_broker(
+async def submit_internal_order_to_broker(
     request: OrderBrokerSubmitBody,
     principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
     session, service = _runtime()
     try:
-        return service.submit_internal_order_to_broker(
+        return await service.submit_internal_order_to_broker(
             order_id=request.order_id,
             actor=principal.username,
             reason=request.reason,
@@ -254,13 +254,13 @@ def submit_internal_order_to_broker(
 
 
 @router.post("/broker/alpaca-paper/sync")
-def sync_alpaca_paper(
+async def sync_alpaca_paper(
     principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
     session, service = _runtime()
     try:
         service.bootstrap()
-        result = service.sync_alpaca_paper()
+        result = await service.sync_alpaca_paper()
         _audit_manual_operation(
             service.repository,
             actor=principal.username,
@@ -274,13 +274,13 @@ def sync_alpaca_paper(
 
 
 @router.post("/broker/alpaca-live/sync")
-def sync_alpaca_live(
+async def sync_alpaca_live(
     principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
     session, service = _runtime()
     try:
         service.bootstrap()
-        result = service.sync_alpaca_live()
+        result = await service.sync_alpaca_live()
         _audit_manual_operation(
             service.repository,
             actor=principal.username,

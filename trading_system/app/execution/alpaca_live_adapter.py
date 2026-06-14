@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-import requests
+import httpx
 
 from trading_system.app.core.config import Settings, get_settings
 from trading_system.app.execution.broker_adapter import AbstractBrokerAdapter
@@ -38,15 +38,15 @@ class AlpacaLiveEmergencyResult:
 
 
 class AlpacaLiveAdapter(AbstractBrokerAdapter):
-    def __init__(self, settings: Settings | None = None, http: requests.Session | None = None) -> None:
+    def __init__(self, settings: Settings | None = None, http: httpx.AsyncClient | None = None) -> None:
         self.settings = settings or get_settings()
-        self.http = http or requests.Session()
+        self.http = http or httpx.AsyncClient()
 
     @property
     def configured(self) -> bool:
         return bool(self.settings.alpaca_live_api_key and self.settings.alpaca_live_secret_key)
 
-    def sync(self) -> AlpacaLiveSyncResult:
+    async def sync(self) -> AlpacaLiveSyncResult:
         if not self.configured:
             return AlpacaLiveSyncResult(
                 configured=False,
@@ -57,10 +57,10 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
                 orders=[],
             )
         try:
-            account = self._get("/v2/account")
-            positions = self._get("/v2/positions")
-            orders = self._get("/v2/orders", params={"status": "all", "limit": "100"})
-        except requests.RequestException as exc:
+            account = await self._get("/v2/account")
+            positions = await self._get("/v2/positions")
+            orders = await self._get("/v2/orders", params={"status": "all", "limit": "100"})
+        except httpx.HTTPError as exc:
             return AlpacaLiveSyncResult(
                 configured=True,
                 success=False,
@@ -78,7 +78,7 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
             orders=orders if isinstance(orders, list) else [],
         )
 
-    def submit_limit_bracket_order(
+    async def submit_limit_bracket_order(
         self,
         *,
         symbol: str,
@@ -106,8 +106,8 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
             "stop_loss": {"stop_price": f"{stop_price:.2f}"},
         }
         try:
-            def submit_once():
-                response = self.http.post(
+            async def submit_once():
+                response = await self.http.post(
                     f"{self.settings.alpaca_live_base_url}/v2/orders",
                     headers=self._headers(),
                     json=payload,
@@ -116,14 +116,14 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
                 response.raise_for_status()
                 return response
 
-            retry_result = request_with_retries(
+            retry_result = await request_with_retries(
                 submit_once,
                 max_attempts=self.settings.alpaca_order_max_attempts,
                 backoff_seconds=self.settings.alpaca_order_retry_backoff_seconds,
             )
             response = retry_result.value
             data = response.json()
-        except requests.RequestException as exc:
+        except httpx.HTTPError as exc:
             return AlpacaLiveOrderResult(
                 configured=True,
                 submitted=False,
@@ -139,7 +139,7 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
             payload=data,
         )
 
-    def submit_market_order(
+    async def submit_market_order(
         self,
         *,
         symbol: str,
@@ -160,8 +160,8 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
             "client_order_id": client_order_id,
         }
         try:
-            def submit_once():
-                response = self.http.post(
+            async def submit_once():
+                response = await self.http.post(
                     f"{self.settings.alpaca_live_base_url}/v2/orders",
                     headers=self._headers(),
                     json=payload,
@@ -170,14 +170,14 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
                 response.raise_for_status()
                 return response
 
-            retry_result = request_with_retries(
+            retry_result = await request_with_retries(
                 submit_once,
                 max_attempts=self.settings.alpaca_order_max_attempts,
                 backoff_seconds=self.settings.alpaca_order_retry_backoff_seconds,
             )
             response = retry_result.value
             data = response.json()
-        except requests.RequestException as exc:
+        except httpx.HTTPError as exc:
             return AlpacaLiveOrderResult(
                 configured=True,
                 submitted=False,
@@ -193,12 +193,12 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
             payload=data,
         )
 
-    def cancel_all_orders(self) -> AlpacaLiveEmergencyResult:
+    async def cancel_all_orders(self) -> AlpacaLiveEmergencyResult:
         if not self.configured:
             return AlpacaLiveEmergencyResult(False, False, "Alpaca live keys are not configured.", None)
         try:
-            def cancel_once():
-                response = self.http.delete(
+            async def cancel_once():
+                response = await self.http.delete(
                     f"{self.settings.alpaca_live_base_url}/v2/orders",
                     headers=self._headers(),
                     timeout=15,
@@ -206,14 +206,14 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
                 response.raise_for_status()
                 return response
 
-            retry_result = request_with_retries(
+            retry_result = await request_with_retries(
                 cancel_once,
                 max_attempts=self.settings.alpaca_order_max_attempts,
                 backoff_seconds=self.settings.alpaca_order_retry_backoff_seconds,
             )
             response = retry_result.value
             payload = response.json() if getattr(response, "content", b"") else {}
-        except requests.RequestException as exc:
+        except httpx.HTTPError as exc:
             return AlpacaLiveEmergencyResult(
                 True,
                 False,
@@ -227,14 +227,14 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
             payload,
         )
 
-    def cancel_order(self, broker_order_id: str) -> AlpacaLiveEmergencyResult:
+    async def cancel_order(self, broker_order_id: str) -> AlpacaLiveEmergencyResult:
         if not self.configured:
             return AlpacaLiveEmergencyResult(False, False, "Alpaca live keys are not configured.", None)
         if not broker_order_id:
             return AlpacaLiveEmergencyResult(True, False, "Broker order id is required for live cancellation.", None)
         try:
-            def cancel_once():
-                response = self.http.delete(
+            async def cancel_once():
+                response = await self.http.delete(
                     f"{self.settings.alpaca_live_base_url}/v2/orders/{broker_order_id}",
                     headers=self._headers(),
                     timeout=15,
@@ -242,14 +242,14 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
                 response.raise_for_status()
                 return response
 
-            retry_result = request_with_retries(
+            retry_result = await request_with_retries(
                 cancel_once,
                 max_attempts=self.settings.alpaca_order_max_attempts,
                 backoff_seconds=self.settings.alpaca_order_retry_backoff_seconds,
             )
             response = retry_result.value
             payload = response.json() if getattr(response, "content", b"") else {}
-        except requests.RequestException as exc:
+        except httpx.HTTPError as exc:
             return AlpacaLiveEmergencyResult(
                 True,
                 False,
@@ -263,12 +263,12 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
             payload,
         )
 
-    def flatten_all_positions(self) -> AlpacaLiveEmergencyResult:
+    async def flatten_all_positions(self) -> AlpacaLiveEmergencyResult:
         if not self.configured:
             return AlpacaLiveEmergencyResult(False, False, "Alpaca live keys are not configured.", None)
         try:
-            def flatten_once():
-                response = self.http.delete(
+            async def flatten_once():
+                response = await self.http.delete(
                     f"{self.settings.alpaca_live_base_url}/v2/positions",
                     headers=self._headers(),
                     params={"cancel_orders": "true"},
@@ -277,14 +277,14 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
                 response.raise_for_status()
                 return response
 
-            retry_result = request_with_retries(
+            retry_result = await request_with_retries(
                 flatten_once,
                 max_attempts=self.settings.alpaca_order_max_attempts,
                 backoff_seconds=self.settings.alpaca_order_retry_backoff_seconds,
             )
             response = retry_result.value
             payload = response.json() if getattr(response, "content", b"") else {}
-        except requests.RequestException as exc:
+        except httpx.HTTPError as exc:
             return AlpacaLiveEmergencyResult(
                 True,
                 False,
@@ -298,8 +298,8 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
             payload,
         )
 
-    def _get(self, path: str, params: dict[str, str] | None = None):
-        response = self.http.get(
+    async def _get(self, path: str, params: dict[str, str] | None = None):
+        response = await self.http.get(
             f"{self.settings.alpaca_live_base_url}{path}",
             headers=self._headers(),
             params=params,
