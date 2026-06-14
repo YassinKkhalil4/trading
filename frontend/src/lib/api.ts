@@ -133,6 +133,55 @@ export function getExecutionPositions(limit = 100) {
   return fetchJson<{ positions: ExecutionPosition[] }>(`/api/v1/execution/positions?limit=${limit}`);
 }
 
+export interface AlphaScannerRunRequest {
+  strategy_id: string;
+  symbols?: string[];
+}
+
+export interface AlphaScannerRunResponse {
+  accepted: boolean;
+  task_id: string;
+  reason: string;
+}
+
+export interface ActivateSymbolRequest {
+  symbol: string;
+  name?: string;
+  sector?: string;
+  reason?: string;
+}
+
+export type ActivateSymbolResponse = Record<string, unknown>;
+
+export interface FillReconciliationResponse {
+  success?: boolean;
+  ok?: boolean;
+  reason?: string;
+  mismatch_detected?: boolean;
+  [key: string]: unknown;
+}
+
+export function runAlphaScanner(request: AlphaScannerRunRequest) {
+  return fetchJson<AlphaScannerRunResponse>("/api/v1/alpha/scanners/run", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export function activateSymbol(request: ActivateSymbolRequest) {
+  return fetchJson<ActivateSymbolResponse>("/api/v1/symbols/activate", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export function runFillReconciliation() {
+  return fetchJson<FillReconciliationResponse>("/api/v1/reconciliation/fills/run-once", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 
 export type Strategy = {
   strategy_id: string;
