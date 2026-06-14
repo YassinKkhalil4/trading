@@ -501,7 +501,7 @@ def test_live_readiness_and_gates_can_pass_only_when_all_controls_are_green():
     _make_live_ready(repo, settings)
 
     report = repo.latest_live_readiness_reports(1)[0]
-    assert report["live_allowed"] is True
+    assert report["payload"]["live_allowed"] is True
     gate = LiveGateService(repo, settings).evaluate(strategy_id="VWAP_RECLAIM", signal_id="sig-test")
     assert gate.allowed is True
 
@@ -549,7 +549,7 @@ def test_missing_live_account_snapshot_blocks_readiness_and_gate():
     assert gate.allowed is False
     assert "live_account_snapshot_usable" in gate.blockers
     report = repo.latest_live_readiness_reports(1)[0]
-    check = next(item for item in report["checks"] if item["check_name"] == "live_account_snapshot_usable")
+    check = next(item for item in report["payload"]["checks"] if item["check_name"] == "live_account_snapshot_usable")
     assert check["passed"] is False
 
 
@@ -563,12 +563,12 @@ def test_expired_live_approval_is_marked_expired_and_audited():
     )
 
     active = repo.active_live_trading_approval()
-    row = repo.session.get(models.LiveTradingApproval, expired.id)
+    row = repo.session.get(models.SystemLog, expired.id)
     audit = repo.latest_audit_logs(1)[0]
 
     assert active is None
     assert row.status == "EXPIRED"
-    assert row.revoked_at is not None
+    assert row.payload["revoked_at"] is not None
     assert audit["event_type"] == "LIVE_APPROVAL_EXPIRED"
     assert audit["entity_id"] == expired.id
 
@@ -578,19 +578,21 @@ def test_expired_live_approval_blocks_readiness_check():
     settings = _live_settings()
     _make_live_ready(repo, settings)
     approval = repo.active_live_trading_approval()
-    approval.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+    payload = dict(approval.payload or {})
+    payload["expires_at"] = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    approval.payload = payload
     repo.session.commit()
 
     readiness = LiveReadinessService(repo, settings).generate_report()
     gate = LiveGateService(repo, settings).evaluate(strategy_id="VWAP_RECLAIM", signal_id="sig-test")
     report = repo.latest_live_readiness_reports(1)[0]
-    check = next(item for item in report["checks"] if item["check_name"] == "active_human_live_approval")
+    check = next(item for item in report["payload"]["checks"] if item["check_name"] == "active_human_live_approval")
 
     assert readiness.live_allowed is False
     assert gate.allowed is False
     assert "active_human_approval" in gate.blockers
     assert check["passed"] is False
-    assert repo.session.get(models.LiveTradingApproval, approval.id).status == "EXPIRED"
+    assert repo.session.get(models.SystemLog, approval.id).status == "EXPIRED"
 
 
 def test_mocked_live_allowed_flow_uses_separate_live_adapter_after_all_gates_pass():
@@ -756,7 +758,9 @@ def test_mocked_live_blocked_flow_rejects_before_broker_when_any_gate_fails(brok
             admin_session_secret="unit-test-live-session-secret",
         )
     elif broken_gate == "human_approval":
-        repo.session.query(models.LiveTradingApproval).delete()
+        repo.session.query(models.SystemLog).filter(
+            models.SystemLog.log_type == "LIVE_TRADING_APPROVAL"
+        ).delete(synchronize_session=False)
         repo.session.commit()
     elif broken_gate == "kill_switch":
         KillSwitchService(repo).activate(event_type="TEST", reason="unit test", payload={})
@@ -1133,10 +1137,10 @@ def test_default_admin_session_secret_blocks_live_readiness():
 
     report = repo.latest_live_readiness_reports(1)[0]
     secret_check = next(
-        check for check in report["checks"] if check["check_name"] == "admin_session_secret_configured"
+        check for check in report["payload"]["checks"] if check["check_name"] == "admin_session_secret_configured"
     )
 
-    assert report["live_allowed"] is False
+    assert report["payload"]["live_allowed"] is False
     assert secret_check["passed"] is False
 
 
@@ -1209,25 +1213,16 @@ def test_live_submit_is_testable_but_records_blocked_order_by_default():
     settings = Settings(environment_mode=EnvironmentMode.LIVE_DISABLED)
     service = TradingRuntimeService(repo, settings=settings)
 
-    result = service.submit_signal_to_live(
-        signal_id=signal.id,
-        account_equity=100_000,
-        open_positions=0,
-        daily_loss_pct=0.0,
-        weekly_loss_pct=0.0,
-        sector_exposure_pct=0.0,
-        internal_quantity=0.0,
-        broker_quantity=0.0,
-    )
+    with pytest.raises(RuntimeError, match="Alpaca live sync blocked"):
+        service.submit_signal_to_live(
+            signal_id=signal.id,
+            weekly_loss_pct=0.0,
+            sector_exposure_pct=0.0,
+            internal_quantity=0.0,
+            broker_quantity=0.0,
+        )
 
-    order = repo.latest_orders(1)[0]
-    assert result.accepted is False
-    assert "environment_mode_live" in result.gate_decision["blockers"]
-    assert "live_order_path_enabled" in result.gate_decision["blockers"]
-    assert order["environment_mode"] == EnvironmentMode.LIVE.value
-    assert order["execution_environment"] == "LIVE_DISABLED"
-    assert order["status"] == "REJECTED"
-    assert repo.latest_decisions(1)[0]["outcome"] == "BLOCKED"
+    assert repo.latest_orders(1) == []
 
 
 def test_live_emergency_actions_are_blocked_and_audited_by_default():

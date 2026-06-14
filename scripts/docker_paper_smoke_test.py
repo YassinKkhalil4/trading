@@ -531,8 +531,8 @@ def run_smoke_test(*, submit_paper_test_order: bool, skip_compose_up: bool) -> R
         return report
 
     dash_ok, dash_body = _http_get("http://localhost:8501/")
-    if dash_ok and ("streamlit" in dash_body.lower() or "<html" in dash_body.lower()):
-        report.add("Dashboard HTTP", "PASS", "Streamlit responded")
+    if dash_ok and ("<html" in dash_body.lower()):
+        report.add("Dashboard HTTP", "PASS", "Dashboard responded")
     else:
         report.add("Dashboard HTTP", "FAIL", dash_body)
 

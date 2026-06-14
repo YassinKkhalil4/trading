@@ -59,8 +59,33 @@ export type LiveReadinessDetail = {
 export type ExecutionOrder = Record<string, unknown>;
 export type ExecutionPosition = Record<string, unknown>;
 
+export interface ReadinessStatus {
+  broker_connected: boolean;
+  database_sync: boolean;
+  kill_switch_engaged: boolean;
+  risk_limits_ok: boolean;
+  reasons?: Partial<Record<keyof Omit<ReadinessStatus, "reasons">, string>>;
+  checked_at?: string;
+}
+
+export function getLiveReadinessStatus() {
+  return fetchJson<ReadinessStatus>("/api/v1/risk/live-readiness");
+}
+
 export function getLiveReadinessDetail() {
   return fetchJson<LiveReadinessDetail>("/api/v1/live-readiness/detail");
+}
+
+export type ActionFeedEvent = {
+  id: string;
+  timestamp: string;
+  severity: "INFO" | "WARN" | "CRITICAL";
+  entity_id?: string | null;
+  message: string;
+};
+
+export function getActionFeedEvents(limit = 100) {
+  return fetchJson<{ events: ActionFeedEvent[] }>(`/api/v1/events?limit=${limit}`);
 }
 
 export function getExecutionOrders(limit = 100) {
@@ -79,6 +104,7 @@ export type Strategy = {
   status: string;
   minimum_backtest_trades: number;
   max_drawdown_limit?: number | null;
+  evidence_quality_score?: number | null;
   [key: string]: unknown;
 };
 

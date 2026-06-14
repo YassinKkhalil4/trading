@@ -126,6 +126,62 @@ async def trading_event_stream(websocket: WebSocket) -> None:
         )
 
 
+@router.get("/api/v1/events")
+def action_feed_events_v1(
+    _principal: AdminPrincipal = Depends(require_principal),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    rows = _read_rows("events", lambda repo, row_limit: repo.latest_events(row_limit), limit)["events"]
+    events = []
+    for row in rows:
+        materiality = float(row.get("materiality_score") or 0)
+        severity = "CRITICAL" if materiality >= 0.85 else "WARN" if materiality >= 0.5 else "INFO"
+        events.append({
+            "id": row.get("id"),
+            "timestamp": (row.get("event_time") or row.get("created_at") or datetime.now(UTC)).isoformat() if hasattr(row.get("event_time") or row.get("created_at"), "isoformat") else str(row.get("event_time") or row.get("created_at")),
+            "severity": severity,
+            "entity_id": row.get("symbol") or row.get("event_type"),
+            "message": row.get("summary") or row.get("reason") or row.get("event_type") or "Trading event",
+        })
+    return {"events": events}
+
+
+@router.get("/api/v1/risk/live-readiness")
+def live_readiness_status_v1(
+    _principal: AdminPrincipal = Depends(require_principal),
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        detail = LiveReadinessService(service.repository, get_settings()).get_detail_report()
+        failures = {gate.gate_name.lower(): gate for gate in detail.gates if not gate.passed}
+        def reason(*names: str) -> str | None:
+            for name in names:
+                match = next((gate for key, gate in failures.items() if name in key), None)
+                if match:
+                    return match.blocking_reason
+            return None
+        broker_reason = reason("broker", "reconciliation", "provider")
+        database_reason = reason("data", "database", "freshness")
+        kill_reason = reason("kill")
+        risk_reason = reason("risk", "strategy", "approval")
+        return {
+            "broker_connected": broker_reason is None,
+            "database_sync": database_reason is None,
+            "kill_switch_engaged": kill_reason is None,
+            "risk_limits_ok": risk_reason is None,
+            "reasons": {
+                "broker_connected": broker_reason,
+                "database_sync": database_reason,
+                "kill_switch_engaged": kill_reason,
+                "risk_limits_ok": risk_reason,
+            },
+            "checked_at": detail.checked_at.isoformat(),
+        }
+    finally:
+        session.close()
+
+
 @router.get("/market/clean-candles")
 def market_clean_candles(
     _principal: AdminPrincipal = Depends(require_principal),

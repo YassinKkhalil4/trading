@@ -650,8 +650,8 @@ def check_docker(report: ValidationReport) -> None:
 
         dashboard_cmd = ["curl", "-fsS", "http://localhost:8501/"]
         dash_health = _run(dashboard_cmd)
-        if dash_health.returncode == 0 and ("streamlit" in dash_health.stdout.lower() or "<html" in dash_health.stdout.lower()):
-            _pass(report, "Dashboard container HTTP responds through Docker", "Streamlit HTTP endpoint responded", " ".join(dashboard_cmd))
+        if dash_health.returncode == 0 and ("<html" in dash_health.stdout.lower()):
+            _pass(report, "Dashboard container HTTP responds through Docker", "Dashboard HTTP endpoint responded", " ".join(dashboard_cmd))
         else:
             _fail(report, "Dashboard container HTTP responds through Docker", dash_health.stderr or dash_health.stdout, " ".join(dashboard_cmd))
 

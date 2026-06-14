@@ -1,6 +1,7 @@
 "use client";
 
-import { useDashboardStore, type ActionFeedSeverity } from "@/store/use-dashboard-store";
+import { useActionFeedStore, type ActionFeedSeverity } from "@/store/use-action-feed-store";
+import { useDashboardStore } from "@/store/use-dashboard-store";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
@@ -19,7 +20,7 @@ type TradingEvent = {
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-const FEED_EVENT_TYPES = new Set(["ORDER_SUBMITTED", "FILL_RECEIVED", "EXECUTION_ERROR"]);
+const FEED_EVENT_TYPES = new Set(["ORDER_SUBMITTED", "FILL_RECEIVED", "EXECUTION_ERROR", "ORDER_CANCELLED", "ORDER_STATUS", "FILL", "SIGNAL_UPDATE", "STREAM_BRIDGE_ERROR"]);
 
 function websocketUrl() {
   const url = new URL(API_BASE);
@@ -30,9 +31,8 @@ function websocketUrl() {
 }
 
 function eventSeverity(event: TradingEvent): ActionFeedSeverity {
-  if (event.type === "EXECUTION_ERROR") return "ERROR";
-  if (event.type === "FILL_RECEIVED") return "SUCCESS";
-  if (String(event.payload?.status ?? "").toUpperCase().includes("WARN")) return "WARNING";
+  if (event.type === "EXECUTION_ERROR" || event.type === "STREAM_BRIDGE_ERROR") return "CRITICAL";
+  if (String(event.payload?.status ?? "").toUpperCase().includes("WARN")) return "WARN";
   return "INFO";
 }
 
@@ -47,7 +47,7 @@ function eventMessage(event: TradingEvent) {
 
 export function TradingEventBridge() {
   const queryClient = useQueryClient();
-  const pushActionFeedEvent = useDashboardStore((state) => state.pushActionFeedEvent);
+  const appendActionFeedEvent = useActionFeedStore((state) => state.appendEvent);
   const pushStrategyMarker = useDashboardStore((state) => state.pushStrategyMarker);
 
   useEffect(() => {
@@ -78,12 +78,12 @@ export function TradingEventBridge() {
       }
 
       if (FEED_EVENT_TYPES.has(event.type)) {
-        pushActionFeedEvent({
+        appendActionFeedEvent({
           type: event.type,
           severity: eventSeverity(event),
           message: eventMessage(event),
           timestamp: event.timestamp,
-          symbol: event.payload?.symbol,
+          entity_id: String(event.payload?.order_id ?? event.payload?.id ?? event.payload?.symbol ?? event.type),
           payload: event.payload,
         });
       }
@@ -98,7 +98,7 @@ export function TradingEventBridge() {
       }
     };
     return () => socket.close();
-  }, [pushActionFeedEvent, pushStrategyMarker, queryClient]);
+  }, [appendActionFeedEvent, pushStrategyMarker, queryClient]);
 
   return null;
 }

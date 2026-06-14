@@ -43,7 +43,6 @@
     {
       "name": "Docker service dashboard running",
       "status": "PASS",
-      "detail": "{\"Command\":\"\\\"streamlit run tradi\u2026\\\"\",\"CreatedAt\":\"2026-06-07 19:20:36 +0300 EEST\",\"ExitCode\":0,\"Health\":\"\",\"ID\":\"3f5d052894ca\",\"Image\":\"trading-dashboard\",\"Labels\":\"com.docker.compose.project.working_dir=/Users/yassinkhalil/Documents/Trading,com.docker.compose.service=dashboard,com.docker.compose.v",
       "command": ""
     },
     {
@@ -97,7 +96,6 @@
     {
       "name": "Dashboard container HTTP responds through Docker",
       "status": "PASS",
-      "detail": "Streamlit HTTP endpoint responded",
       "command": "curl -fsS http://localhost:8501/"
     },
     {
