@@ -1,8 +1,9 @@
+import { ActionFeed } from "@/components/ActionFeed";
 import { AlphaRankingsGrid } from "@/components/AlphaRankingsGrid";
 import { CandleChart } from "@/components/CandleChart";
+import { LiveReadinessMonitor } from "@/components/LiveReadinessMonitor";
 import { PositionCard } from "@/components/PositionCard";
 import { RegimeGauge } from "@/components/RegimeGauge";
-import { SignalAlert } from "@/components/SignalAlert";
 import { TradingEventBridge } from "@/components/TradingEventBridge";
 
 export default function DashboardPage() {
@@ -41,15 +42,9 @@ export default function DashboardPage() {
           <CandleChart />
           <AlphaRankingsGrid />
         </section>
-        <aside className="space-y-3 rounded-2xl border bg-slate-900 p-4">
-          <h2 className="font-semibold text-white">Action Feed</h2>
-          <SignalAlert title="Broker sync" detail="Reconciliation clean across paper account." />
-          <SignalAlert
-            title="Kill switch"
-            detail="Inactive; live approvals unchanged."
-            severity="profit"
-          />
-          <SignalAlert title="Execution error" detail="No recent rejected fills." severity="risk" />
+        <aside className="space-y-3">
+          <LiveReadinessMonitor />
+          <ActionFeed />
         </aside>
       </div>
     </main>
