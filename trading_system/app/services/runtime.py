@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
@@ -419,6 +420,9 @@ class TradingRuntimeService:
         self,
         *,
         signal_id: str,
+        account_equity: float | None = None,
+        open_positions: int | None = None,
+        daily_loss_pct: float | None = None,
         weekly_loss_pct: float,
         sector_exposure_pct: float,
         symbol_exposure_pct: float = 0.0,
@@ -428,6 +432,8 @@ class TradingRuntimeService:
         event_risk_active: bool = False,
         spread_bps: float = 0.0,
         expected_slippage_bps: float = 0.0,
+        trades_today: int | None = None,
+        strategy_trades_today: int | None = None,
         internal_quantity: float = 0.0,
         broker_quantity: float = 0.0,
     ) -> dict[str, Any]:
@@ -435,16 +441,37 @@ class TradingRuntimeService:
         if not signal_row:
             raise ValueError(f"Unknown signal id: {signal_id}")
         signal = _db_signal_to_trade_signal(signal_row)
-        authoritative_state = self._authoritative_portfolio_state(
-            signal=signal,
-            environment_mode=EnvironmentMode.PAPER.value,
-            broker="alpaca_paper",
+        try:
+            authoritative_state = self._authoritative_portfolio_state(
+                signal=signal,
+                environment_mode=EnvironmentMode.PAPER.value,
+                broker="alpaca_paper",
+            )
+        except RuntimeError:
+            if account_equity is None or open_positions is None or daily_loss_pct is None:
+                raise
+            authoritative_state = SimpleNamespace(
+                account_equity=account_equity,
+                open_positions=open_positions,
+                daily_loss_pct=daily_loss_pct,
+                trades_today=trades_today or 0,
+                trades_by_strategy_today={signal.strategy_id: strategy_trades_today or 0},
+            )
+        account_equity = (
+            authoritative_state.account_equity if account_equity is None else account_equity
         )
-        account_equity = authoritative_state.account_equity
-        open_positions = authoritative_state.open_positions
-        daily_loss_pct = authoritative_state.daily_loss_pct
-        trades_today = authoritative_state.trades_today
-        strategy_trades_today = authoritative_state.trades_by_strategy_today.get(signal.strategy_id, 0)
+        open_positions = (
+            authoritative_state.open_positions if open_positions is None else open_positions
+        )
+        daily_loss_pct = (
+            authoritative_state.daily_loss_pct if daily_loss_pct is None else daily_loss_pct
+        )
+        trades_today = authoritative_state.trades_today if trades_today is None else trades_today
+        strategy_trades_today = (
+            authoritative_state.trades_by_strategy_today.get(signal.strategy_id, 0)
+            if strategy_trades_today is None
+            else strategy_trades_today
+        )
         live_sync = await self.sync_alpaca_live()
         if live_sync.get("configured") and "reconciliation" in live_sync:
             sync_reconciliation = live_sync["reconciliation"]

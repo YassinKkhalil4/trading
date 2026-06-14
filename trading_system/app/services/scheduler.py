@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
@@ -290,7 +291,7 @@ class ScheduledCollectorRunner:
             result = LiveReadinessService(self.repository, self.settings).generate_report(actor=actor)
             return ScheduledJobResult(job_name, True, result.reason, {"result": asdict(result)})
         if job_name == "fill_reconciliation":
-            result = FillReconciliationLoop(self.repository, self.settings).run_once()
+            result = asyncio.run(FillReconciliationLoop(self.repository, self.settings).run_once())
             return ScheduledJobResult(job_name, result.success, result.reason, {"result": asdict(result)})
         if job_name == "trade_monitor":
             result = TradeMonitorService(self.repository).run_once()

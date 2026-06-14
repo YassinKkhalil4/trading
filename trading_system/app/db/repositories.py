@@ -2884,6 +2884,14 @@ class TradingRepository:
             )
             or 0
         )
+        counts["live_readiness_reports"] = int(
+            self.session.scalar(
+                select(func.count())
+                .select_from(models.SystemLog)
+                .where(models.SystemLog.log_type == "LIVE_READINESS_REPORT")
+            )
+            or 0
+        )
         return counts
 
     def latest_clean_candles(self, limit: int = 100) -> list[dict[str, Any]]:

@@ -537,6 +537,8 @@ class StrategyRegistry(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     paused_reason: Mapped[str | None] = mapped_column(Text)
     changed_reason: Mapped[str | None] = mapped_column(Text)
     logic_version: Mapped[str] = mapped_column(String(32), default="v1")
+    target_1_rr: Mapped[float] = mapped_column(Float, default=2.0)
+    target_2_rr: Mapped[float] = mapped_column(Float, default=3.0)
     minimum_trade_count_required: Mapped[int] = mapped_column(Integer, default=30)
     backtest_trade_count: Mapped[int] = mapped_column(Integer, default=0)
     out_of_sample_tested: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -650,6 +652,24 @@ class SignalRejection(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     strategy_id: Mapped[str | None] = mapped_column(String(80), index=True)
     reason: Mapped[str] = mapped_column(Text)
     payload: Mapped[dict | None] = mapped_column(JSONB)
+
+
+class TradeThesis(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
+    __tablename__ = "trade_theses"
+
+    signal_id: Mapped[str] = mapped_column(ForeignKey("signals.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    strategy_id: Mapped[str] = mapped_column(String(80), index=True)
+    prompt_version: Mapped[str] = mapped_column(String(32), index=True)
+    trade_type: Mapped[str] = mapped_column(String(40), index=True)
+    setup_quality: Mapped[float | None] = mapped_column(Float)
+    catalyst_quality: Mapped[float | None] = mapped_column(Float)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    reason_for_trade: Mapped[str] = mapped_column(Text)
+    invalidation_reason: Mapped[str] = mapped_column(Text)
+    risks: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    suggested_holding_period: Mapped[str | None] = mapped_column(String(80))
+    reason: Mapped[str | None] = mapped_column(Text)
 
 
 class RiskCheck(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
@@ -810,6 +830,17 @@ class TradeJournal(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     change_reason: Mapped[str | None] = mapped_column(Text)
 
 
+class AIReview(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
+    __tablename__ = "ai_reviews"
+
+    trade_journal_id: Mapped[str | None] = mapped_column(ForeignKey("trade_journal.id"), index=True)
+    prompt_template_id: Mapped[str | None] = mapped_column(String(80), index=True)
+    prompt_version: Mapped[str] = mapped_column(String(32), index=True)
+    review_text: Mapped[str] = mapped_column(Text)
+    confidence_score: Mapped[float | None] = mapped_column(Float)
+    reason: Mapped[str] = mapped_column(Text)
+
+
 class AuditLog(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     __tablename__ = "audit_logs"
     __table_args__ = (
@@ -968,6 +999,57 @@ class SymbolRelativeStrengthSnapshot(IdMixin, TimestampMixin, SourceTimestampMix
     stock_vs_sector_score: Mapped[float | None] = mapped_column(Float)
     leadership_rank: Mapped[int | None] = mapped_column(Integer, index=True)
     candidate_reason: Mapped[str] = mapped_column(Text)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+
+class PointInTimeUniverseMembership(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
+    __tablename__ = "point_in_time_universe_memberships"
+    __table_args__ = (
+        UniqueConstraint(
+            "universe_name",
+            "as_of_date",
+            "symbol",
+            name="uq_pit_universe_membership_asof_symbol",
+        ),
+        Index("ix_pit_universe_asof_active", "universe_name", "as_of_date", "is_active"),
+    )
+
+    universe_name: Mapped[str] = mapped_column(String(80), index=True)
+    as_of_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    name: Mapped[str | None] = mapped_column(String(255))
+    asset_class: Mapped[str | None] = mapped_column(String(32))
+    exchange: Mapped[str | None] = mapped_column(String(32))
+    sector: Mapped[str | None] = mapped_column(String(128))
+    industry: Mapped[str | None] = mapped_column(String(128))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    is_tradable: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    is_liquid: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    effective_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    delisted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    membership_reason: Mapped[str | None] = mapped_column(Text)
+    provider: Mapped[str | None] = mapped_column(String(80), index=True)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+
+class MultiBaggerCandidateScore(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
+    __tablename__ = "multi_bagger_candidate_scores"
+
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    horizon: Mapped[str] = mapped_column(String(80), index=True)
+    score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    grade: Mapped[str] = mapped_column(String(8), index=True)
+    target_multiple: Mapped[str] = mapped_column(String(16), index=True)
+    component_scores: Mapped[dict] = mapped_column(JSONB, default=dict)
+    narrative: Mapped[str] = mapped_column(Text)
+    growth_score: Mapped[float | None] = mapped_column(Float)
+    capital_flows_score: Mapped[float | None] = mapped_column(Float)
+    institutional_accumulation_score: Mapped[float | None] = mapped_column(Float)
+    short_squeeze_score: Mapped[float | None] = mapped_column(Float)
+    options_leverage_score: Mapped[float | None] = mapped_column(Float)
+    risk_flags: Mapped[list[dict]] = mapped_column(JSONB, default=list)
+    confidence_level: Mapped[float] = mapped_column(Float, default=0.0)
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)
 
 

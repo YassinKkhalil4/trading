@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -63,7 +65,7 @@ class FakeAlpacaAdapter:
     def __init__(self, sync_result: AlpacaPaperSyncResult) -> None:
         self.sync_result = sync_result
 
-    def sync(self) -> AlpacaPaperSyncResult:
+    async def sync(self) -> AlpacaPaperSyncResult:
         return self.sync_result
 
 
@@ -485,18 +487,20 @@ def test_order_manager_blocks_live_stale_broker_cancel_when_live_gates_fail():
     assert "environment_mode_live" in error["payload"]["gate_decision"]["blockers"]
 
 
-def test_fill_reconciliation_without_keys_logs_broker_sync():
+@pytest.mark.asyncio
+async def test_fill_reconciliation_without_keys_logs_broker_sync():
     repo = _repo()
     repo.create_schema()
     repo.seed_defaults()
 
-    result = FillReconciliationLoop(repo, Settings()).run_once()
+    result = await FillReconciliationLoop(repo, Settings()).run_once()
 
     assert result.configured is False
     assert repo.latest_broker_sync_logs(1)[0]["success"] is False
 
 
-def test_fill_reconciliation_ignores_duplicate_fill_and_triggers_slippage_kill_switch():
+@pytest.mark.asyncio
+async def test_fill_reconciliation_ignores_duplicate_fill_and_triggers_slippage_kill_switch():
     repo = _repo()
     repo.create_schema()
     repo.seed_defaults()
@@ -531,8 +535,8 @@ def test_fill_reconciliation_ignores_duplicate_fill_and_triggers_slippage_kill_s
     )
     loop = FillReconciliationLoop(repo, settings, adapter=FakeAlpacaAdapter(sync))
 
-    first = loop.run_once()
-    second = loop.run_once()
+    first = await loop.run_once()
+    second = await loop.run_once()
 
     fill = repo.latest_fills(1)[0]
     account_snapshot = repo.latest_broker_account_snapshots(1)[0]
@@ -550,7 +554,8 @@ def test_fill_reconciliation_ignores_duplicate_fill_and_triggers_slippage_kill_s
     assert latest_audit["event_type"] == "DUPLICATE_FILL_IGNORED"
 
 
-def test_fill_reconciliation_records_only_incremental_partial_fill_updates():
+@pytest.mark.asyncio
+async def test_fill_reconciliation_records_only_incremental_partial_fill_updates():
     repo = _repo()
     repo.create_schema()
     repo.seed_defaults()
@@ -584,7 +589,7 @@ def test_fill_reconciliation_records_only_incremental_partial_fill_updates():
         "updated_at": "2026-06-04T10:05:01Z",
     }
 
-    first = FillReconciliationLoop(
+    first = await FillReconciliationLoop(
         repo,
         settings,
         adapter=FakeAlpacaAdapter(
@@ -598,7 +603,7 @@ def test_fill_reconciliation_records_only_incremental_partial_fill_updates():
             )
         ),
     ).run_once()
-    second = FillReconciliationLoop(
+    second = await FillReconciliationLoop(
         repo,
         settings,
         adapter=FakeAlpacaAdapter(
@@ -624,7 +629,8 @@ def test_fill_reconciliation_records_only_incremental_partial_fill_updates():
     assert order["status"] == OrderStatus.FILLED.value
 
 
-def test_fill_reconciliation_records_rejected_broker_order_once():
+@pytest.mark.asyncio
+async def test_fill_reconciliation_records_rejected_broker_order_once():
     repo = _repo()
     repo.create_schema()
     repo.seed_defaults()
@@ -658,8 +664,8 @@ def test_fill_reconciliation_records_rejected_broker_order_once():
     )
     loop = FillReconciliationLoop(repo, settings, adapter=FakeAlpacaAdapter(sync))
 
-    first = loop.run_once()
-    second = loop.run_once()
+    first = await loop.run_once()
+    second = await loop.run_once()
     order = repo.latest_orders(1)[0]
     errors = repo.latest_execution_errors(10)
 
@@ -672,7 +678,8 @@ def test_fill_reconciliation_records_rejected_broker_order_once():
     assert errors[0]["reason"] == "insufficient buying power"
 
 
-def test_fill_reconciliation_triggers_kill_switch_on_broker_sync_failure():
+@pytest.mark.asyncio
+async def test_fill_reconciliation_triggers_kill_switch_on_broker_sync_failure():
     repo = _repo()
     repo.create_schema()
     repo.seed_defaults()
@@ -690,7 +697,7 @@ def test_fill_reconciliation_triggers_kill_switch_on_broker_sync_failure():
         alpaca_paper_secret_key="secret",
     )
 
-    result = FillReconciliationLoop(repo, settings, adapter=FakeAlpacaAdapter(sync)).run_once()
+    result = await FillReconciliationLoop(repo, settings, adapter=FakeAlpacaAdapter(sync)).run_once()
     kill_switch = repo.latest_kill_switches(1)[0]
 
     assert result.success is False
@@ -698,7 +705,8 @@ def test_fill_reconciliation_triggers_kill_switch_on_broker_sync_failure():
     assert repo.active_kill_switch_count() == 1
 
 
-def test_fill_reconciliation_triggers_kill_switch_on_unexpected_broker_position():
+@pytest.mark.asyncio
+async def test_fill_reconciliation_triggers_kill_switch_on_unexpected_broker_position():
     repo = _repo()
     repo.create_schema()
     repo.seed_defaults()
@@ -716,7 +724,7 @@ def test_fill_reconciliation_triggers_kill_switch_on_unexpected_broker_position(
         alpaca_paper_secret_key="secret",
     )
 
-    result = FillReconciliationLoop(repo, settings, adapter=FakeAlpacaAdapter(sync)).run_once()
+    result = await FillReconciliationLoop(repo, settings, adapter=FakeAlpacaAdapter(sync)).run_once()
     position = repo.latest_positions(1)[0]
     kill_switch = repo.latest_kill_switches(1)[0]
 
