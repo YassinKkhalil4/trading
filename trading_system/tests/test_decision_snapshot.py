@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
@@ -229,13 +231,14 @@ def test_signal_snapshot_created_on_bridge_success():
     assert payload["entity_refs"]["signal_id"] == result.signal_id
 
 
-def test_risk_snapshot_created_on_paper_submit():
+@pytest.mark.asyncio
+async def test_risk_snapshot_created_on_paper_submit():
     repo = _repo()
     settings = _settings()
     signal_id = _store_runtime_signal(repo, settings)
     service = TradingRuntimeService(repo, settings=settings)
 
-    service.submit_signal_to_paper(
+    await service.submit_signal_to_paper(
         signal_id=signal_id,
         account_equity=100_000,
         open_positions=0,

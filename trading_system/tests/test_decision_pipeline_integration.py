@@ -179,7 +179,7 @@ class FakePaperSubmitAdapter:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def submit_limit_bracket_order(self, **kwargs) -> AlpacaPaperOrderResult:
+    async def submit_limit_bracket_order(self, **kwargs) -> AlpacaPaperOrderResult:
         self.__class__.calls.append(kwargs)
         return AlpacaPaperOrderResult(
             configured=True,
@@ -189,7 +189,7 @@ class FakePaperSubmitAdapter:
             payload={"client_order_id": kwargs["client_order_id"]},
         )
 
-    def sync(self) -> AlpacaPaperSyncResult:
+    async def sync(self) -> AlpacaPaperSyncResult:
         return AlpacaPaperSyncResult(
             configured=False,
             success=False,
@@ -204,7 +204,7 @@ class FakeAlpacaPaperSyncAdapter:
     def __init__(self, sync_result: AlpacaPaperSyncResult) -> None:
         self.sync_result = sync_result
 
-    def sync(self) -> AlpacaPaperSyncResult:
+    async def sync(self) -> AlpacaPaperSyncResult:
         return self.sync_result
 
 
@@ -220,7 +220,8 @@ def _assert_snapshot_has_reasons(snapshot: models.DecisionLog) -> None:
     assert all(str(reason).strip() for reason in reasons)
 
 
-def test_full_decision_pipeline_vwap_reclaim_with_mocked_alpaca_paper(monkeypatch):
+@pytest.mark.asyncio
+async def test_full_decision_pipeline_vwap_reclaim_with_mocked_alpaca_paper(monkeypatch):
     repo = _repo()
     settings = _settings()
     now = datetime.now(UTC)
@@ -327,7 +328,7 @@ def test_full_decision_pipeline_vwap_reclaim_with_mocked_alpaca_paper(monkeypatc
     )
 
     runtime = TradingRuntimeService(repo, settings=settings)
-    submit_result = runtime.submit_signal_to_paper(
+    submit_result = await runtime.submit_signal_to_paper(
         signal_id=bridge_result.signal_id,
         account_equity=100_000,
         open_positions=0,
@@ -378,7 +379,7 @@ def test_full_decision_pipeline_vwap_reclaim_with_mocked_alpaca_paper(monkeypatc
         positions=[],
         orders=[broker_order],
     )
-    fill_result = FillReconciliationLoop(
+    fill_result = await FillReconciliationLoop(
         repo,
         settings,
         adapter=FakeAlpacaPaperSyncAdapter(fill_sync),
@@ -437,7 +438,8 @@ def test_duplicate_scanner_emission_blocked_after_acceptance():
     assert "duplicate scanner emission" in second.reason.lower()
 
 
-def test_journal_lifecycle_records_buy_sell_for_long_entry_exit(monkeypatch):
+@pytest.mark.asyncio
+async def test_journal_lifecycle_records_buy_sell_for_long_entry_exit(monkeypatch):
     repo = _repo()
     settings = _settings()
     now = datetime.now(UTC)
@@ -458,7 +460,7 @@ def test_journal_lifecycle_records_buy_sell_for_long_entry_exit(monkeypatch):
         FakePaperSubmitAdapter,
     )
     runtime = TradingRuntimeService(repo, settings=settings)
-    runtime.submit_signal_to_paper(
+    await runtime.submit_signal_to_paper(
         signal_id=bridge_result.signal_id,
         account_equity=100_000,
         open_positions=0,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import json
 import sys
 from types import SimpleNamespace
@@ -42,7 +44,7 @@ class FakePaperSubmitAdapter:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def submit_limit_bracket_order(self, **kwargs) -> AlpacaPaperOrderResult:
+    async def submit_limit_bracket_order(self, **kwargs) -> AlpacaPaperOrderResult:
         self.__class__.calls.append(kwargs)
         return AlpacaPaperOrderResult(
             configured=True,
@@ -52,7 +54,7 @@ class FakePaperSubmitAdapter:
             payload={"client_order_id": kwargs["client_order_id"]},
         )
 
-    def submit_market_order(self, **kwargs) -> AlpacaPaperOrderResult:
+    async def submit_market_order(self, **kwargs) -> AlpacaPaperOrderResult:
         self.__class__.calls.append(kwargs)
         return AlpacaPaperOrderResult(
             configured=True,
@@ -312,7 +314,8 @@ def _store_runtime_signal(repo: TradingRepository, settings: Settings) -> str:
     return result.signal_id
 
 
-def test_submit_signal_to_paper_records_exposure_and_daily_loss_kill_switch():
+@pytest.mark.asyncio
+async def test_submit_signal_to_paper_records_exposure_and_daily_loss_kill_switch():
     repo = _repo()
     settings = Settings(
         environment_mode=EnvironmentMode.PAPER,
@@ -322,7 +325,7 @@ def test_submit_signal_to_paper_records_exposure_and_daily_loss_kill_switch():
     signal_id = _store_runtime_signal(repo, settings)
     service = TradingRuntimeService(repo, settings=settings)
 
-    result = service.submit_signal_to_paper(
+    result = await service.submit_signal_to_paper(
         signal_id=signal_id,
         account_equity=100_000,
         open_positions=0,
@@ -566,7 +569,8 @@ def test_feature_store_blocks_when_clean_candle_status_is_invalid():
     assert repo.latest_features(1) == []
 
 
-def test_submit_signal_to_paper_uses_broker_equity_loss_for_kill_switch():
+@pytest.mark.asyncio
+async def test_submit_signal_to_paper_uses_broker_equity_loss_for_kill_switch():
     repo = _repo()
     settings = Settings(
         environment_mode=EnvironmentMode.PAPER,
@@ -591,7 +595,7 @@ def test_submit_signal_to_paper_uses_broker_equity_loss_for_kill_switch():
     )
     service = TradingRuntimeService(repo, settings=settings)
 
-    result = service.submit_signal_to_paper(
+    result = await service.submit_signal_to_paper(
         signal_id=signal_id,
         account_equity=100_000,
         open_positions=0,
@@ -614,13 +618,14 @@ def test_submit_signal_to_paper_uses_broker_equity_loss_for_kill_switch():
     assert kill_switch["payload"]["symbol"] == "AMD"
 
 
-def test_submit_signal_to_paper_triggers_reconciliation_kill_switch():
+@pytest.mark.asyncio
+async def test_submit_signal_to_paper_triggers_reconciliation_kill_switch():
     repo = _repo()
     settings = Settings(environment_mode=EnvironmentMode.PAPER, max_spread_bps=500.0)
     signal_id = _store_runtime_signal(repo, settings)
     service = TradingRuntimeService(repo, settings=settings)
 
-    result = service.submit_signal_to_paper(
+    result = await service.submit_signal_to_paper(
         signal_id=signal_id,
         account_equity=100_000,
         open_positions=0,
@@ -640,7 +645,8 @@ def test_submit_signal_to_paper_triggers_reconciliation_kill_switch():
     assert kill_switch["event_type"] == "FAILED_RECONCILIATION"
 
 
-def test_submit_signal_to_paper_triggers_volatility_kill_switch():
+@pytest.mark.asyncio
+async def test_submit_signal_to_paper_triggers_volatility_kill_switch():
     repo = _repo()
     settings = Settings(
         environment_mode=EnvironmentMode.PAPER,
@@ -661,7 +667,7 @@ def test_submit_signal_to_paper_triggers_volatility_kill_switch():
         liquidity_score=100.0,
     )
 
-    result = service.submit_signal_to_paper(
+    result = await service.submit_signal_to_paper(
         signal_id=signal_id,
         account_equity=100_000,
         open_positions=0,
@@ -690,7 +696,8 @@ def test_submit_signal_to_paper_triggers_volatility_kill_switch():
     assert repo.active_kill_switch_count() == 1
 
 
-def test_duplicate_paper_submit_is_rejected_before_second_broker_call(monkeypatch):
+@pytest.mark.asyncio
+async def test_duplicate_paper_submit_is_rejected_before_second_broker_call(monkeypatch):
     repo = _repo()
     settings = Settings(environment_mode=EnvironmentMode.PAPER, max_spread_bps=500.0)
     signal_id = _store_runtime_signal(repo, settings)
@@ -701,7 +708,7 @@ def test_duplicate_paper_submit_is_rejected_before_second_broker_call(monkeypatc
         FakePaperSubmitAdapter,
     )
 
-    first = service.submit_signal_to_paper(
+    first = await service.submit_signal_to_paper(
         signal_id=signal_id,
         account_equity=100_000,
         open_positions=0,
@@ -713,7 +720,7 @@ def test_duplicate_paper_submit_is_rejected_before_second_broker_call(monkeypatc
         internal_quantity=0,
         broker_quantity=0,
     )
-    second = service.submit_signal_to_paper(
+    second = await service.submit_signal_to_paper(
         signal_id=signal_id,
         account_equity=100_000,
         open_positions=0,
@@ -736,7 +743,8 @@ def test_duplicate_paper_submit_is_rejected_before_second_broker_call(monkeypatc
     assert error["error_type"] == "DUPLICATE_PAPER_ORDER"
 
 
-def test_internal_paper_market_order_submits_to_broker_with_idempotency(monkeypatch):
+@pytest.mark.asyncio
+async def test_internal_paper_market_order_submits_to_broker_with_idempotency(monkeypatch):
     repo = _repo()
     settings = Settings(environment_mode=EnvironmentMode.PAPER)
     order = models.Order(
@@ -764,7 +772,7 @@ def test_internal_paper_market_order_submits_to_broker_with_idempotency(monkeypa
         FakePaperSubmitAdapter,
     )
 
-    result = TradingRuntimeService(repo, settings=settings).submit_internal_order_to_broker(
+    result = await TradingRuntimeService(repo, settings=settings).submit_internal_order_to_broker(
         order_id=order.id,
         actor="unit-test",
         reason="submit protective exit",

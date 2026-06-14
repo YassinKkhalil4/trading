@@ -11,6 +11,9 @@ import { MANUAL_OPERATIONS, runManualOperation, type ManualOperation } from "@/l
 import { useMutation } from "@tanstack/react-query";
 import { FormEvent, useMemo, useState } from "react";
 
+const AUDIT_EVENT_LABEL = "MANUAL_OPERATION_RUN";
+const LAST_SELECTED_RESULT_LABEL = "Last {selected?.label} result";
+
 type OperationResult = {
   label: string;
   data: unknown;
@@ -87,7 +90,7 @@ export default function AdminOperationsPage() {
           <h1 className="mt-2 text-3xl font-semibold text-white">Manual Operations</h1>
           <p className="mt-2 max-w-3xl text-sm text-slate-400">
             Trigger audited backend operations from the dashboard instead of manual cURL calls. Scanner runs, symbol
-            universe updates, and fill reconciliation are role-gated by the API.
+            universe updates, and fill reconciliation are role-gated by the API. Audit event: {AUDIT_EVENT_LABEL}.
           </p>
         </header>
 
@@ -141,7 +144,7 @@ export default function AdminOperationsPage() {
           ))}
         </section>
         {currentError ? <div className="rounded-2xl border border-risk bg-risk/10 p-4 text-risk">{(currentError as Error).message}</div> : null}
-        {operationResult ? <pre className="overflow-auto rounded-2xl border bg-slate-900 p-4 text-sm text-slate-200">Last {operationResult.label} result: {JSON.stringify(operationResult.data, null, 2)}</pre> : null}
+        {operationResult ? <pre aria-label={LAST_SELECTED_RESULT_LABEL} className="overflow-auto rounded-2xl border bg-slate-900 p-4 text-sm text-slate-200">Last {selected?.label ?? operationResult.label} result: {JSON.stringify(operationResult.data, null, 2)}</pre> : null}
       </div>
     </main>
   );

@@ -48,7 +48,7 @@ class FakeLiveSubmitAdapter:
         self.payload = None
         self.calls = []
 
-    def submit_limit_bracket_order(self, **kwargs) -> AlpacaLiveOrderResult:
+    async def submit_limit_bracket_order(self, **kwargs) -> AlpacaLiveOrderResult:
         self.payload = kwargs
         self.calls.append(kwargs)
         return AlpacaLiveOrderResult(
@@ -59,7 +59,7 @@ class FakeLiveSubmitAdapter:
             payload={"client_order_id": kwargs["client_order_id"]},
         )
 
-    def submit_market_order(self, **kwargs) -> AlpacaLiveOrderResult:
+    async def submit_market_order(self, **kwargs) -> AlpacaLiveOrderResult:
         self.payload = kwargs
         self.calls.append(kwargs)
         return AlpacaLiveOrderResult(
@@ -76,7 +76,7 @@ class FakeLiveRejectedAdapter:
         self.settings = settings
         self.configured = True
 
-    def submit_limit_bracket_order(self, **kwargs) -> AlpacaLiveOrderResult:
+    async def submit_limit_bracket_order(self, **kwargs) -> AlpacaLiveOrderResult:
         return AlpacaLiveOrderResult(
             configured=True,
             submitted=False,
@@ -91,7 +91,7 @@ class FakeLiveSuccessEmergencyAdapter:
         self.settings = settings
         self.configured = True
 
-    def cancel_all_orders(self) -> AlpacaLiveEmergencyResult:
+    async def cancel_all_orders(self) -> AlpacaLiveEmergencyResult:
         return AlpacaLiveEmergencyResult(
             configured=True,
             success=True,
@@ -99,7 +99,7 @@ class FakeLiveSuccessEmergencyAdapter:
             payload={"operation": "cancel_all"},
         )
 
-    def flatten_all_positions(self) -> AlpacaLiveEmergencyResult:
+    async def flatten_all_positions(self) -> AlpacaLiveEmergencyResult:
         return AlpacaLiveEmergencyResult(
             configured=True,
             success=True,
@@ -113,7 +113,7 @@ class FakeLiveEmergencyFailureAdapter:
         self.settings = settings
         self.configured = True
 
-    def cancel_all_orders(self) -> AlpacaLiveEmergencyResult:
+    async def cancel_all_orders(self) -> AlpacaLiveEmergencyResult:
         return AlpacaLiveEmergencyResult(
             configured=True,
             success=False,
@@ -121,7 +121,7 @@ class FakeLiveEmergencyFailureAdapter:
             payload={"operation": "cancel_all"},
         )
 
-    def flatten_all_positions(self) -> AlpacaLiveEmergencyResult:
+    async def flatten_all_positions(self) -> AlpacaLiveEmergencyResult:
         return AlpacaLiveEmergencyResult(
             configured=True,
             success=False,
@@ -134,7 +134,7 @@ class FakeLiveSyncAdapter:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def sync(self) -> AlpacaLiveSyncResult:
+    async def sync(self) -> AlpacaLiveSyncResult:
         return AlpacaLiveSyncResult(
             configured=True,
             success=True,
@@ -595,7 +595,8 @@ def test_expired_live_approval_blocks_readiness_check():
     assert repo.session.get(models.SystemLog, approval.id).status == "EXPIRED"
 
 
-def test_mocked_live_allowed_flow_uses_separate_live_adapter_after_all_gates_pass():
+@pytest.mark.asyncio
+async def test_mocked_live_allowed_flow_uses_separate_live_adapter_after_all_gates_pass():
     repo = _repo()
     settings = _live_settings()
     _make_live_ready(repo, settings)
@@ -620,7 +621,7 @@ def test_mocked_live_allowed_flow_uses_separate_live_adapter_after_all_gates_pas
     )
     adapter = FakeLiveSubmitAdapter(settings)
 
-    result = LiveExecutionService(repo, adapter=adapter).submit_limit_order(
+    result = await LiveExecutionService(repo, adapter=adapter).submit_limit_order(
         signal=trade_signal,
         signal_id=signal_row.id,
         risk_decision=RiskDecision(
@@ -641,7 +642,8 @@ def test_mocked_live_allowed_flow_uses_separate_live_adapter_after_all_gates_pas
     assert order["broker_order_id"] == "broker-live-1"
 
 
-def test_duplicate_live_submit_is_rejected_before_second_broker_call():
+@pytest.mark.asyncio
+async def test_duplicate_live_submit_is_rejected_before_second_broker_call():
     repo = _repo()
     settings = _live_settings()
     _make_live_ready(repo, settings)
@@ -674,13 +676,13 @@ def test_duplicate_live_submit_is_rejected_before_second_broker_call():
         risk_amount=50.0,
     )
 
-    first = service.submit_limit_order(
+    first = await service.submit_limit_order(
         signal=trade_signal,
         signal_id=signal_row.id,
         risk_decision=risk_decision,
         reconciliation=ReconciliationResult(ok=True, reason="clean reconciliation"),
     )
-    second = service.submit_limit_order(
+    second = await service.submit_limit_order(
         signal=trade_signal,
         signal_id=signal_row.id,
         risk_decision=risk_decision,
@@ -712,7 +714,8 @@ def test_duplicate_live_submit_is_rejected_before_second_broker_call():
         ("reconciliation", "live_reconciliation_clean"),
     ],
 )
-def test_mocked_live_blocked_flow_rejects_before_broker_when_any_gate_fails(broken_gate, expected_blocker):
+@pytest.mark.asyncio
+async def test_mocked_live_blocked_flow_rejects_before_broker_when_any_gate_fails(broken_gate, expected_blocker):
     repo = _repo()
     ready_settings = _live_settings()
     _make_live_ready(repo, ready_settings)
@@ -790,7 +793,7 @@ def test_mocked_live_blocked_flow_rejects_before_broker_when_any_gate_fails(brok
     signal_row = _store_test_signal(repo)
     adapter = FakeLiveSubmitAdapter(settings)
 
-    result = LiveExecutionService(repo, adapter=adapter).submit_limit_order(
+    result = await LiveExecutionService(repo, adapter=adapter).submit_limit_order(
         signal=_trade_signal_from_row(signal_row),
         signal_id=signal_row.id,
         risk_decision=RiskDecision(
@@ -992,7 +995,8 @@ def test_oms_stale_submitted_orders_are_auto_cancelled_internally():
     assert updated.cancelled_at is not None
 
 
-def test_live_broker_submit_failure_rejects_order_and_persists_execution_error():
+@pytest.mark.asyncio
+async def test_live_broker_submit_failure_rejects_order_and_persists_execution_error():
     repo = _repo()
     settings = _live_settings()
     _make_live_ready(repo, settings)
@@ -1016,7 +1020,7 @@ def test_live_broker_submit_failure_rejects_order_and_persists_execution_error()
         rule_version=signal_row.signal_rule_version,
     )
 
-    result = LiveExecutionService(repo, adapter=FakeLiveRejectedAdapter(settings)).submit_limit_order(
+    result = await LiveExecutionService(repo, adapter=FakeLiveRejectedAdapter(settings)).submit_limit_order(
         signal=trade_signal,
         signal_id=signal_row.id,
         risk_decision=RiskDecision(
@@ -1045,7 +1049,8 @@ def test_live_broker_submit_failure_rejects_order_and_persists_execution_error()
     assert snapshot["execution_errors"][0]["id"] == error["id"]
 
 
-def test_internal_live_market_order_is_blocked_until_live_gates_pass():
+@pytest.mark.asyncio
+async def test_internal_live_market_order_is_blocked_until_live_gates_pass():
     repo = _repo()
     signal_row = _store_test_signal(repo)
     order = models.Order(
@@ -1068,7 +1073,7 @@ def test_internal_live_market_order_is_blocked_until_live_gates_pass():
     repo.session.add(order)
     repo.session.commit()
 
-    result = TradingRuntimeService(repo, settings=Settings(environment_mode=EnvironmentMode.LIVE_DISABLED)).submit_internal_order_to_broker(
+    result = await TradingRuntimeService(repo, settings=Settings(environment_mode=EnvironmentMode.LIVE_DISABLED)).submit_internal_order_to_broker(
         order_id=order.id,
         actor="unit-test",
         reason="submit live protective exit",
@@ -1079,7 +1084,8 @@ def test_internal_live_market_order_is_blocked_until_live_gates_pass():
     assert repo.latest_broker_sync_logs(1) == []
 
 
-def test_internal_live_market_order_submits_after_all_live_gates_pass(monkeypatch):
+@pytest.mark.asyncio
+async def test_internal_live_market_order_submits_after_all_live_gates_pass(monkeypatch):
     repo = _repo()
     settings = _live_settings()
     _make_live_ready(repo, settings)
@@ -1108,7 +1114,7 @@ def test_internal_live_market_order_submits_after_all_live_gates_pass(monkeypatc
         FakeLiveSubmitAdapter,
     )
 
-    result = TradingRuntimeService(repo, settings=settings).submit_internal_order_to_broker(
+    result = await TradingRuntimeService(repo, settings=settings).submit_internal_order_to_broker(
         order_id=order.id,
         actor="unit-test",
         reason="submit live protective exit",
@@ -1207,14 +1213,15 @@ def test_kill_switch_blocks_live_gate_after_readiness_passed():
     assert "no_active_kill_switch" in gate.blockers
 
 
-def test_live_submit_is_testable_but_records_blocked_order_by_default():
+@pytest.mark.asyncio
+async def test_live_submit_is_testable_but_records_blocked_order_by_default():
     repo = _repo()
     signal = _store_test_signal(repo)
     settings = Settings(environment_mode=EnvironmentMode.LIVE_DISABLED)
     service = TradingRuntimeService(repo, settings=settings)
 
     with pytest.raises(RuntimeError, match="Alpaca live sync blocked"):
-        service.submit_signal_to_live(
+        await service.submit_signal_to_live(
             signal_id=signal.id,
             weekly_loss_pct=0.0,
             sector_exposure_pct=0.0,
@@ -1225,12 +1232,13 @@ def test_live_submit_is_testable_but_records_blocked_order_by_default():
     assert repo.latest_orders(1) == []
 
 
-def test_live_emergency_actions_are_blocked_and_audited_by_default():
+@pytest.mark.asyncio
+async def test_live_emergency_actions_are_blocked_and_audited_by_default():
     repo = _repo()
     service = TradingRuntimeService(repo, settings=Settings(environment_mode=EnvironmentMode.LIVE_DISABLED))
 
-    cancel = service.cancel_all_live_orders(actor="admin", reason="unit test cancel")
-    flatten = service.flatten_all_live_positions(actor="admin", reason="unit test flatten")
+    cancel = await service.cancel_all_live_orders(actor="admin", reason="unit test cancel")
+    flatten = await service.flatten_all_live_positions(actor="admin", reason="unit test flatten")
     audit_events = {row["event_type"] for row in repo.latest_audit_logs(10)}
     errors = repo.latest_execution_errors(5)
 
@@ -1247,7 +1255,8 @@ def test_live_emergency_actions_are_blocked_and_audited_by_default():
     assert {"LIVE_CANCEL_ALL_ORDERS", "LIVE_FLATTEN_ALL_POSITIONS"}.issubset(audit_events)
 
 
-def test_alpaca_live_sync_persists_account_snapshot(monkeypatch):
+@pytest.mark.asyncio
+async def test_alpaca_live_sync_persists_account_snapshot(monkeypatch):
     repo = _repo()
     settings = _live_settings()
     service = TradingRuntimeService(repo, settings=settings)
@@ -1256,7 +1265,7 @@ def test_alpaca_live_sync_persists_account_snapshot(monkeypatch):
         FakeLiveSyncAdapter,
     )
 
-    result = service.sync_alpaca_live()
+    result = await service.sync_alpaca_live()
     account = repo.latest_broker_account_snapshot(
         environment_mode=EnvironmentMode.LIVE.value,
         broker="alpaca_live",
@@ -1270,7 +1279,8 @@ def test_alpaca_live_sync_persists_account_snapshot(monkeypatch):
     assert repo.counts()["broker_account_snapshots"] == 1
 
 
-def test_alpaca_live_sync_is_blocked_by_default_before_adapter_call(monkeypatch):
+@pytest.mark.asyncio
+async def test_alpaca_live_sync_is_blocked_by_default_before_adapter_call(monkeypatch):
     repo = _repo()
     service = TradingRuntimeService(repo, settings=Settings(environment_mode=EnvironmentMode.LIVE_DISABLED))
 
@@ -1283,7 +1293,7 @@ def test_alpaca_live_sync_is_blocked_by_default_before_adapter_call(monkeypatch)
         ShouldNotBeCalled,
     )
 
-    result = service.sync_alpaca_live()
+    result = await service.sync_alpaca_live()
     sync_log = repo.latest_broker_sync_logs(1)[0]
     audit = repo.latest_audit_logs(1)[0]
 
@@ -1295,7 +1305,8 @@ def test_alpaca_live_sync_is_blocked_by_default_before_adapter_call(monkeypatch)
     assert audit["event_type"] == "ALPACA_LIVE_SYNC_BLOCKED"
 
 
-def test_live_emergency_adapter_failures_are_persisted_as_execution_errors(monkeypatch):
+@pytest.mark.asyncio
+async def test_live_emergency_adapter_failures_are_persisted_as_execution_errors(monkeypatch):
     repo = _repo()
     settings = _live_settings()
     _make_live_ready(repo, settings)
@@ -1305,8 +1316,8 @@ def test_live_emergency_adapter_failures_are_persisted_as_execution_errors(monke
         FakeLiveEmergencyFailureAdapter,
     )
 
-    cancel = service.cancel_all_live_orders(actor="admin", reason="unit test cancel")
-    flatten = service.flatten_all_live_positions(actor="admin", reason="unit test flatten")
+    cancel = await service.cancel_all_live_orders(actor="admin", reason="unit test cancel")
+    flatten = await service.flatten_all_live_positions(actor="admin", reason="unit test flatten")
     errors = repo.latest_execution_errors(5)
     audits = repo.latest_audit_logs(5)
 
@@ -1321,7 +1332,8 @@ def test_live_emergency_adapter_failures_are_persisted_as_execution_errors(monke
     assert "LIVE_FLATTEN_ALL_POSITIONS" in audit_events
 
 
-def test_live_emergency_actions_call_backend_adapter_after_all_gates_pass(monkeypatch):
+@pytest.mark.asyncio
+async def test_live_emergency_actions_call_backend_adapter_after_all_gates_pass(monkeypatch):
     repo = _repo()
     settings = _live_settings()
     _make_live_ready(repo, settings)
@@ -1331,8 +1343,8 @@ def test_live_emergency_actions_call_backend_adapter_after_all_gates_pass(monkey
         FakeLiveSuccessEmergencyAdapter,
     )
 
-    cancel = service.cancel_all_live_orders(actor="admin", reason="unit test cancel")
-    flatten = service.flatten_all_live_positions(actor="admin", reason="unit test flatten")
+    cancel = await service.cancel_all_live_orders(actor="admin", reason="unit test cancel")
+    flatten = await service.flatten_all_live_positions(actor="admin", reason="unit test flatten")
     audits = repo.latest_audit_logs(5)
 
     assert cancel["success"] is True
