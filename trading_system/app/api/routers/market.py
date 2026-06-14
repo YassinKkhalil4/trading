@@ -6,7 +6,10 @@ router = APIRouter()
 
 
 @router.get("/calendar/session")
-def calendar_session(timestamp: datetime) -> dict:
+def calendar_session(
+    timestamp: datetime,
+    _principal: AdminPrincipal = Depends(require_principal),
+) -> dict:
     info = get_session(timestamp)
     return {
         "status": info.status.value,
@@ -18,7 +21,11 @@ def calendar_session(timestamp: datetime) -> dict:
 
 
 @router.get("/calendar/opening-range")
-def calendar_opening_range(session_date: datetime, minutes: int = 15) -> dict:
+def calendar_opening_range(
+    session_date: datetime,
+    minutes: int = 15,
+    _principal: AdminPrincipal = Depends(require_principal),
+) -> dict:
     start, end = opening_range_window(session_date.date(), minutes=minutes)
     return {"start": start.isoformat(), "end": end.isoformat(), "minutes": minutes}
 

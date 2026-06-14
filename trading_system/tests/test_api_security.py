@@ -26,6 +26,36 @@ from trading_system.app.security.auth import (
 client = TestClient(app)
 
 
+def test_cors_is_restricted_to_configured_origins():
+    cors_middleware = next(
+        middleware
+        for middleware in app.user_middleware
+        if middleware.cls.__name__ == "CORSMiddleware"
+    )
+
+    assert cors_middleware.kwargs["allow_origins"] == ["https://trading.example.com"]
+    assert "*" not in cors_middleware.kwargs["allow_origins"]
+
+
+def test_read_routes_are_protected_by_default():
+    public_get_routes = {
+        "/health",
+    }
+    auth_dependencies = {require_principal, require_admin_token, require_trader_or_admin}
+    unprotected = []
+
+    for route in app.routes:
+        if not isinstance(route, APIRoute) or "GET" not in route.methods:
+            continue
+        if route.path in public_get_routes:
+            continue
+        dependency_calls = {dependency.call for dependency in route.dependant.dependencies}
+        if not dependency_calls.intersection(auth_dependencies):
+            unprotected.append(route.path)
+
+    assert unprotected == []
+
+
 def test_public_health_endpoint_remains_available():
     response = client.get("/health")
 
