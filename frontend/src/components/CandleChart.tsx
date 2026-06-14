@@ -1,8 +1,8 @@
 "use client";
 
-import { getCandles, type CandleTimeFrame } from "@/lib/api";
+import type { CandleTimeFrame } from "@/lib/api";
+import { useCandles } from "@/lib/queries";
 import { useDashboardStore, type StrategyMarker } from "@/store/use-dashboard-store";
-import { useQuery } from "@tanstack/react-query";
 import { createChart, type IChartApi, type ISeriesApi, type SeriesMarker, type Time } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -30,10 +30,7 @@ export function CandleChart() {
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const markerSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const activeFrame = TIME_FRAMES.find((frame) => frame.queryValue === selectedFrame) ?? TIME_FRAMES[0];
-  const { data, isLoading } = useQuery({
-    queryKey: ["candles", symbol, activeFrame.apiValue],
-    queryFn: () => getCandles(symbol, 500, undefined, activeFrame.apiValue),
-  });
+  const { data, isLoading } = useCandles(symbol, activeFrame.apiValue, 500);
 
   const visibleMarkers = useMemo(
     () =>

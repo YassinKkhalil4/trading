@@ -251,6 +251,41 @@ class AuthService:
         )
         return LoginResult(True, token, username, user.role, expires_at, "Login successful.")
 
+    def refresh(self, token: str) -> LoginResult:
+        session = self.repository.admin_session_by_hash(hash_session_token(token, self.settings))
+        if not session:
+            return LoginResult(False, None, "unknown", None, None, "Invalid or expired session.")
+        user = self.repository.admin_user_by_id(session.user_id)
+        if not user or not user.is_active:
+            return LoginResult(False, None, "unknown", None, None, "Invalid or inactive admin user.")
+        expires_at = datetime.now(UTC) + timedelta(minutes=self.settings.auth_session_minutes)
+        refreshed_token = create_session_token(
+            user_id=user.id,
+            username=user.username,
+            role=user.role,
+            expires_at=expires_at,
+            settings=self.settings,
+        )
+        self.repository.revoke_admin_session(
+            hash_session_token(token, self.settings),
+            reason="Admin session rotated during refresh.",
+        )
+        self.repository.store_admin_session(
+            user_id=user.id,
+            token_hash=hash_session_token(refreshed_token, self.settings),
+            expires_at=expires_at,
+            reason="Admin session refreshed before expiration.",
+        )
+        self.repository.store_audit_log(
+            actor=user.username,
+            event_type="SESSION_REFRESH",
+            entity_type="admin_session",
+            entity_id=None,
+            reason="Admin session refreshed before expiration.",
+            payload={"role": user.role, "expires_at": expires_at.isoformat()},
+        )
+        return LoginResult(True, refreshed_token, user.username, user.role, expires_at, "Session refreshed.")
+
     def authenticate_token(self, token: str) -> AdminPrincipal | None:
         jwt_payload = decode_session_token(token, self.settings)
         session = self.repository.admin_session_by_hash(hash_session_token(token, self.settings))

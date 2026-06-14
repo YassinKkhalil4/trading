@@ -1,6 +1,6 @@
 "use client";
 
-import { getActionFeedEvents } from "@/lib/api";
+import { useActionFeedEvents } from "@/lib/queries";
 import { useActionFeedStore, type ActionFeedSeverity } from "@/store/use-action-feed-store";
 import { useEffect, useRef, useState } from "react";
 
@@ -15,10 +15,11 @@ export function ActionFeed() {
   const setEvents = useActionFeedStore((state) => state.setEvents);
   const [autoScroll, setAutoScroll] = useState(true);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const { data } = useActionFeedEvents(200);
 
   useEffect(() => {
-    getActionFeedEvents().then((payload) => setEvents(payload.events)).catch(() => undefined);
-  }, [setEvents]);
+    if (data?.events) setEvents(data.events);
+  }, [data?.events, setEvents]);
 
   useEffect(() => {
     if (autoScroll) bottomRef.current?.scrollIntoView({ block: "end" });

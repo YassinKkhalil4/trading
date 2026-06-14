@@ -3,8 +3,7 @@
 import { ActionFeed } from "@/components/ActionFeed";
 import { LiveReadinessMonitor } from "@/components/LiveReadinessMonitor";
 import { TradingEventBridge } from "@/components/TradingEventBridge";
-import { getExecutionOrders, getExecutionPositions } from "@/lib/api";
-import { useQuery } from "@tanstack/react-query";
+import { useExecutionOrders, useExecutionPositions } from "@/lib/queries";
 
 function value(row: Record<string, unknown>, key: string) {
   const item = row[key];
@@ -38,8 +37,8 @@ function DataTable({ title, rows, columns }: { title: string; rows: Record<strin
 }
 
 export default function TradesPage() {
-  const orders = useQuery({ queryKey: ["execution", "orders"], queryFn: () => getExecutionOrders(100) });
-  const positions = useQuery({ queryKey: ["execution", "positions"], queryFn: () => getExecutionPositions(100) });
+  const orders = useExecutionOrders(100);
+  const positions = useExecutionPositions(100);
   const orderRows = orders.data?.orders ?? [];
   const positionRows = positions.data?.positions ?? [];
 
