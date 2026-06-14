@@ -749,12 +749,16 @@ def _scan_to_signal(request: VwapReclaimScanRequest):
     )
     if not decision.accepted:
         return decision, None
+    strategy = strategy_registry.get(decision.strategy_id)
     stop_loss = request.stop_loss or request.vwap
     signal = SignalEngine().create_vwap_reclaim_signal(
         scanner_decision=decision,
         source_timestamp=request.timestamp,
         price=request.price,
         stop_loss=stop_loss,
+        strategy_version=strategy.version,
+        target_1_rr=strategy.target_1_rr,
+        target_2_rr=strategy.target_2_rr,
     )
     return decision, signal
 

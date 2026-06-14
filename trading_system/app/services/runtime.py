@@ -324,12 +324,16 @@ class TradingRuntimeService:
                 collected,
             )
 
+        strategy = StrategyRegistryService().get(decision.strategy_id)
         stop_loss = min(snapshot.vwap, snapshot.price * 0.995)
         signal = SignalEngine().create_vwap_reclaim_signal(
             scanner_decision=decision,
             source_timestamp=snapshot.timestamp,
             price=snapshot.price,
             stop_loss=stop_loss,
+            strategy_version=strategy.version,
+            target_1_rr=strategy.target_1_rr,
+            target_2_rr=strategy.target_2_rr,
         )
         signal_row = self.repository.store_signal(signal)
         self.repository.store_signal_version(
