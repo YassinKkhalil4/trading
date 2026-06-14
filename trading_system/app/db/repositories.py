@@ -3120,8 +3120,7 @@ class TradingRepository:
         return [model_to_dict(row) for row in latest_by_symbol.values()]
 
     def store_short_interest_snapshot(self, **kwargs: Any) -> models.ShortInterestSnapshot:
-        if "payload" in kwargs:
-            kwargs["payload"] = _json_safe(kwargs["payload"])
+        kwargs.pop("payload", None)
         if "symbol" in kwargs:
             kwargs["symbol"] = str(kwargs["symbol"]).upper()
         row = models.ShortInterestSnapshot(**kwargs)
@@ -3134,8 +3133,7 @@ class TradingRepository:
     def store_options_intelligence_snapshot(
         self, **kwargs: Any
     ) -> models.OptionsIntelligenceSnapshot:
-        if "payload" in kwargs:
-            kwargs["payload"] = _json_safe(kwargs["payload"])
+        kwargs.pop("payload", None)
         if "symbol" in kwargs:
             kwargs["symbol"] = str(kwargs["symbol"]).upper()
         row = models.OptionsIntelligenceSnapshot(**kwargs)

@@ -980,7 +980,6 @@ class ShortInterestSnapshot(IdMixin, TimestampMixin, SourceTimestampMixin, Base)
     data_confidence: Mapped[float] = mapped_column(Float, default=0.0)
     provider: Mapped[str | None] = mapped_column(String(80), index=True)
     reason: Mapped[str] = mapped_column(Text)
-    payload: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class OptionsIntelligenceSnapshot(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
@@ -999,7 +998,6 @@ class OptionsIntelligenceSnapshot(IdMixin, TimestampMixin, SourceTimestampMixin,
     data_confidence: Mapped[float] = mapped_column(Float, default=0.0)
     provider: Mapped[str | None] = mapped_column(String(80), index=True)
     reason: Mapped[str] = mapped_column(Text)
-    payload: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class StrategySetupTag(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
