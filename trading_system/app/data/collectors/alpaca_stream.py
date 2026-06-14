@@ -11,6 +11,7 @@ from trading_system.app.core.enums import DataQualityStatus
 from trading_system.app.data.provider_capabilities import assert_provider_usage
 from trading_system.app.data.validators.market_data import MarketDataRecord, validate_market_data_record
 from trading_system.app.db.repositories import TradingRepository
+from trading_system.app.services.streaming_events import publish_trading_event
 
 
 ALPACA_MARKET_DATA_PROVIDER = "alpaca_market_data"
@@ -111,6 +112,20 @@ class AlpacaMarketDataStream:
             processed=processed,
             reason="Processed Alpaca websocket event." if processed else "Recorded non-bar stream event.",
         )
+        publish_trading_event(
+            "MARKET_DATA_STREAM_EVENT",
+            {
+                "provider": ALPACA_MARKET_DATA_PROVIDER,
+                "stream_name": self.settings.alpaca_market_data_feed,
+                "event_type": event_type,
+                "symbol": symbol,
+                "source_timestamp": source_timestamp.isoformat(),
+                "processed": processed,
+                "payload": event,
+            },
+            source="alpaca_stream",
+            settings=self.settings,
+        )
         if not processed or not symbol:
             return 0
 
@@ -159,6 +174,24 @@ class AlpacaMarketDataStream:
                 "data_quality_status": validation.status.value,
                 "quality_reason": validation.reason,
             }
+        )
+        publish_trading_event(
+            "MARKET_DATA_CANDLE",
+            {
+                "provider": ALPACA_MARKET_DATA_PROVIDER,
+                "symbol": symbol,
+                "timeframe": "1Min",
+                "timestamp": source_timestamp.isoformat(),
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+                "vwap": record.vwap,
+                "data_quality_status": validation.status.value,
+            },
+            source="alpaca_stream",
+            settings=self.settings,
         )
         if validation.status != DataQualityStatus.VALID:
             self.repository.store_data_quality_error(

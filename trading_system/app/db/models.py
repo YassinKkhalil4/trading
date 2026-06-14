@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -219,6 +220,7 @@ class CleanMarketData(TimestampMixin, Base):
     __tablename__ = "clean_market_data"
     __table_args__ = (
         Index("ix_clean_market_data_symbol_time", "symbol", "source_timestamp"),
+        Index("ix_clean_market_data_symbol_time_desc", "symbol", text("source_timestamp DESC")),
     )
 
     provider: Mapped[str] = mapped_column(String(80), primary_key=True)
