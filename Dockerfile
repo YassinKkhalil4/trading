@@ -15,6 +15,6 @@ COPY trading_system ./trading_system
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-EXPOSE 8000 8501
+EXPOSE 8000
 
 CMD ["uvicorn", "trading_system.app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
