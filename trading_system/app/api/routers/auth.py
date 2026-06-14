@@ -26,6 +26,29 @@ def auth_login(request: AuthLoginRequest) -> dict:
         session.close()
 
 
+@router.post("/auth/refresh")
+def auth_refresh(
+    principal: AdminPrincipal = Depends(require_principal),
+    authorization: str | None = Header(default=None),
+) -> dict:
+    token = authorization.removeprefix("Bearer ").strip() if authorization else ""
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        result = AuthService(service.repository, service.settings).refresh(token)
+        if not result.authenticated or not result.token:
+            raise HTTPException(status_code=401, detail=result.reason)
+        return {
+            "token": result.token,
+            "username": result.username or principal.username,
+            "role": result.role or principal.role,
+            "expires_at": result.expires_at.isoformat() if result.expires_at else None,
+            "reason": result.reason,
+        }
+    finally:
+        session.close()
+
+
 @router.post("/auth/logout")
 def auth_logout(
     principal: AdminPrincipal = Depends(require_principal),

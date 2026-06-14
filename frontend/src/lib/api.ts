@@ -1,3 +1,5 @@
+import { clearAuthSession, getAuthToken, persistAuthSession } from "@/store/use-auth-store";
+
 export type CandleTimeFrame = "1Min" | "5Min" | "15Min" | "1Hour";
 
 export type Candle = {
@@ -20,15 +22,50 @@ export type Position = {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
-async function fetchJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
+type RequestOptions = RequestInit & { retryOnUnauthorized?: boolean };
+
+function authHeaders(): HeadersInit {
+  const token = getAuthToken();
+  return {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+async function refreshAuthToken() {
+  const token = getAuthToken();
+  if (!token) return false;
+  const response = await fetch(`${API_BASE}/auth/refresh`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     cache: "no-store",
   });
+  if (!response.ok) {
+    clearAuthSession();
+    return false;
+  }
+  persistAuthSession(await response.json());
+  return true;
+}
+
+export async function fetchJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const { retryOnUnauthorized = true, headers, ...requestOptions } = options;
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...requestOptions,
+    headers: { ...authHeaders(), ...headers },
+    cache: "no-store",
+  });
+  if (response.status === 401 && retryOnUnauthorized && (await refreshAuthToken())) {
+    return fetchJson<T>(path, { ...options, retryOnUnauthorized: false });
+  }
   if (!response.ok) {
     throw new Error(`API ${response.status}: ${await response.text()}`);
   }
   return response.json() as Promise<T>;
+}
+
+export function refreshSession() {
+  return refreshAuthToken();
 }
 
 export function getCandles(symbol: string, limit = 500, cursor?: string, timeframe: CandleTimeFrame = "1Min") {

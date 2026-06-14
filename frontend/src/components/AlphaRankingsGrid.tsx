@@ -1,7 +1,7 @@
 "use client";
 
-import { getStrategies, type Strategy } from "@/lib/api";
-import { useQuery } from "@tanstack/react-query";
+import type { Strategy } from "@/lib/api";
+import { useStrategies } from "@/lib/queries";
 import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import { FixedSizeList } from "react-window";
 
@@ -31,7 +31,7 @@ const columns = [
 ];
 
 export function AlphaRankingsGrid() {
-  const strategies = useQuery({ queryKey: ["strategies"], queryFn: getStrategies });
+  const strategies = useStrategies();
   const strategiesById = new Map((strategies.data?.strategies ?? []).map((strategy) => [strategy.strategy_id, strategy]));
   const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel() });
   const tableRows = table.getRowModel().rows;

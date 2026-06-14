@@ -1,8 +1,9 @@
 "use client";
 
-import { getLiveReadinessStatus, type ReadinessStatus } from "@/lib/api";
+import type { ReadinessStatus } from "@/lib/api";
+import { useLiveReadinessStatus } from "@/lib/queries";
 import { AlertTriangle, CheckCircle2, CircleAlert, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 type ReadinessKey = keyof Omit<ReadinessStatus, "reasons" | "checked_at">;
 
@@ -15,29 +16,7 @@ const labels: Record<ReadinessKey, string> = {
 
 export function LiveReadinessMonitor() {
   const [open, setOpen] = useState(false);
-  const [status, setStatus] = useState<ReadinessStatus | null>(null);
-  const [error, setError] = useState<Error | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function refresh() {
-      try {
-        const payload = await getLiveReadinessStatus();
-        if (!cancelled) {
-          setStatus(payload);
-          setError(null);
-        }
-      } catch (refreshError) {
-        if (!cancelled) setError(refreshError as Error);
-      }
-    }
-    refresh();
-    const interval = window.setInterval(refresh, 30_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, []);
+  const { data: status = null, error } = useLiveReadinessStatus() as { data: ReadinessStatus | null; error: Error | null };
 
   const failures = useMemo(() => {
     if (!status) return [] as ReadinessKey[];

@@ -1,5 +1,6 @@
 "use client";
 
+import { queryKeys } from "@/lib/queries";
 import { useActionFeedStore, type ActionFeedSeverity } from "@/store/use-action-feed-store";
 import { useDashboardStore } from "@/store/use-dashboard-store";
 import { useQueryClient } from "@tanstack/react-query";
@@ -89,8 +90,8 @@ export function TradingEventBridge() {
       }
 
       if (["FILL_RECEIVED", "ORDER_CANCELLED"].includes(event.type)) {
-        queryClient.invalidateQueries({ queryKey: ["execution", "orders"] });
-        queryClient.invalidateQueries({ queryKey: ["execution", "positions"] });
+        queryClient.invalidateQueries({ queryKey: queryKeys.executionOrders });
+        queryClient.invalidateQueries({ queryKey: queryKeys.executionPositions });
       }
 
       if (["ORDER_STATUS", "FILL", "SIGNAL_UPDATE"].includes(event.type)) {
