@@ -94,7 +94,31 @@ export type LiveReadinessDetail = {
 };
 
 export type ExecutionOrder = Record<string, unknown>;
-export type ExecutionPosition = Record<string, unknown>;
+export type ExecutionPosition = {
+  id?: string;
+  symbol: string;
+  quantity: number;
+  average_price?: number | null;
+  broker_quantity?: number | null;
+  broker_average_price?: number | null;
+  reconciliation_status?: string;
+  environment_mode?: string;
+  source_timestamp?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+};
+
+export type ExposureSnapshot = {
+  id?: string;
+  account_equity: number;
+  total_exposure: number;
+  sector_exposure: Record<string, number>;
+  strategy_exposure: Record<string, number>;
+  symbol_exposure: Record<string, number>;
+  source_timestamp?: string;
+  reason?: string | null;
+  [key: string]: unknown;
+};
 
 export interface ReadinessStatus {
   broker_connected: boolean;
@@ -131,6 +155,10 @@ export function getExecutionOrders(limit = 100) {
 
 export function getExecutionPositions(limit = 100) {
   return fetchJson<{ positions: ExecutionPosition[] }>(`/api/v1/execution/positions?limit=${limit}`);
+}
+
+export function getRiskExposures(limit = 100) {
+  return fetchJson<{ exposure_snapshots: ExposureSnapshot[] }>(`/api/v1/risk/exposures?limit=${limit}`);
 }
 
 export interface AlphaScannerRunRequest {

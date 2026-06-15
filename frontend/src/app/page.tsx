@@ -1,12 +1,19 @@
+"use client";
+
 import { ActionFeed } from "@/components/ActionFeed";
 import { AlphaRankingsGrid } from "@/components/AlphaRankingsGrid";
 import { CandleChart } from "@/components/CandleChart";
+import { ExposureSummary } from "@/components/ExposureSummary";
 import { LiveReadinessMonitor } from "@/components/LiveReadinessMonitor";
 import { PositionCard } from "@/components/PositionCard";
 import { RegimeGauge } from "@/components/RegimeGauge";
 import { TradingEventBridge } from "@/components/TradingEventBridge";
+import { useExecutionPositions } from "@/lib/queries";
 
 export default function DashboardPage() {
+  const { data, error, isLoading } = useExecutionPositions(100);
+  const positions = data?.positions ?? [];
+
   return (
     <main className="min-h-screen bg-slate-950">
       <TradingEventBridge />
@@ -35,9 +42,28 @@ export default function DashboardPage() {
         </nav>
         <section className="space-y-4">
           <div className="grid grid-cols-3 gap-4">
-            <PositionCard symbol="AAPL" quantity={1200} pnl={1.8} />
-            <PositionCard symbol="NVDA" quantity={300} pnl={-0.4} />
+            <ExposureSummary />
             <RegimeGauge regime="BULL_TREND" confidence={82} />
+            <div className="rounded-xl border bg-slate-900 p-4 shadow-sm">
+              <div className="text-xs uppercase tracking-wide text-slate-500">Positions</div>
+              <div className="mt-2 text-2xl font-semibold text-white">{positions.length}</div>
+              <div className="text-sm text-slate-400">Live execution book rows</div>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4 xl:grid-cols-3">
+            {error ? <div className="rounded-xl border border-rose-800 bg-rose-950 p-4 text-sm text-rose-200">Unable to load positions: {error.message}</div> : null}
+            {isLoading ? <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-500">Loading execution positions…</div> : null}
+            {!isLoading && positions.length === 0 && !error ? <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-500">No open execution positions.</div> : null}
+            {positions.map((position) => (
+              <PositionCard
+                key={`${position.environment_mode ?? "book"}-${position.symbol}`}
+                symbol={position.symbol}
+                quantity={position.quantity}
+                averagePrice={position.average_price}
+                brokerQuantity={position.broker_quantity}
+                reconciliationStatus={position.reconciliation_status}
+              />
+            ))}
           </div>
           <CandleChart />
           <AlphaRankingsGrid />
