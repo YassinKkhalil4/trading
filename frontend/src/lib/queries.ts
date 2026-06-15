@@ -4,6 +4,7 @@ import {
   getExecutionOrders,
   getExecutionPositions,
   getLiveReadinessStatus,
+  getRiskExposures,
   getStrategies,
   type CandleTimeFrame,
 } from "@/lib/api";
@@ -15,6 +16,7 @@ export const queryKeys = {
   executionOrders: ["execution", "orders"] as const,
   executionPositions: ["execution", "positions"] as const,
   liveReadiness: ["live-readiness"] as const,
+  riskExposures: ["risk", "exposures"] as const,
   strategies: ["strategies"] as const,
 };
 
@@ -36,6 +38,10 @@ export function useExecutionPositions(limit = 100) {
 
 export function useLiveReadinessStatus() {
   return useQuery({ queryKey: queryKeys.liveReadiness, queryFn: getLiveReadinessStatus, refetchInterval: 30_000 });
+}
+
+export function useRiskExposures(limit = 100) {
+  return useQuery({ queryKey: [...queryKeys.riskExposures, limit], queryFn: () => getRiskExposures(limit), refetchInterval: 15_000 });
 }
 
 export function useStrategies() {
