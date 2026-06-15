@@ -66,12 +66,19 @@ class LiveGateService:
             "alpaca_live_healthy": self._provider_healthy("alpaca_live"),
             "live_account_snapshot_usable": self._live_account_snapshot_usable(),
             "live_reconciliation_clean": self._live_reconciliation_clean(),
+            "market_data_stream_healthy": self._market_data_stream_healthy(),
         }
         if require_strategy:
             checks["strategy_approved"] = self._strategy_approved(strategy_id)
         blockers = [name for name, passed in checks.items() if not passed]
+        critical_blocker_reasons = []
+        if not checks["market_data_stream_healthy"]:
+            critical_blocker_reasons.append(
+                "Market data stream heartbeat is stale or dead. Live trading halted."
+            )
         payload = {
             "checks": checks,
+            "critical_blocker_reasons": critical_blocker_reasons,
             "action": action,
             "strategy_id": strategy_id,
             "signal_id": signal_id,
@@ -80,9 +87,12 @@ class LiveGateService:
             "latest_live_account_snapshot": self._latest_live_account_payload(),
         }
         if blockers:
+            reason = "Live order blocked by required gates: " + ", ".join(blockers)
+            if critical_blocker_reasons:
+                reason += "; " + "; ".join(critical_blocker_reasons)
             return LiveGateDecision(
                 allowed=False,
-                reason="Live order blocked by required gates: " + ", ".join(blockers),
+                reason=reason,
                 blockers=blockers,
                 payload=payload,
             )
@@ -91,6 +101,17 @@ class LiveGateService:
             reason="All live order gates passed.",
             blockers=[],
             payload=payload,
+        )
+
+    def _market_data_stream_healthy(self) -> bool:
+        row = self.repository.session.scalar(
+            select(models.WorkerHeartbeat).where(models.WorkerHeartbeat.worker_name == "alpaca_stream")
+        )
+        return bool(
+            row
+            and row.last_success
+            and row.status == "HEALTHY"
+            and self._timestamp_fresh(row.last_finished_at, max_age_seconds=30)
         )
 
     def _latest_readiness_passed(self) -> bool:

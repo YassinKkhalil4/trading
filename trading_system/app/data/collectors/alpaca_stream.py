@@ -70,32 +70,81 @@ class AlpacaMarketDataStream:
             subscribe["statuses"] = symbols
 
         processed = candles = 0
-        try:
-            async with websockets.connect(self.settings.alpaca_market_data_stream_url) as websocket:
-                await websocket.send(
-                    json.dumps(
-                        {
-                            "action": "auth",
-                            "key": self.settings.alpaca_paper_api_key,
-                            "secret": self.settings.alpaca_paper_secret_key,
-                        }
+        attempts = 0
+        last_heartbeat_at: datetime | None = None
+        while True:
+            connected_at: datetime | None = None
+            try:
+                async with websockets.connect(self.settings.alpaca_market_data_stream_url) as websocket:
+                    connected_at = datetime.now(UTC)
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "action": "auth",
+                                "key": self.settings.alpaca_paper_api_key,
+                                "secret": self.settings.alpaca_paper_secret_key,
+                            }
+                        )
                     )
-                )
-                await websocket.send(json.dumps(subscribe))
-                while max_messages is None or processed < max_messages:
-                    message = await websocket.recv()
-                    events = json.loads(message)
-                    if isinstance(events, dict):
-                        events = [events]
-                    for event in events:
-                        processed += 1
-                        candles += self.process_event(event)
-                        if max_messages is not None and processed >= max_messages:
-                            break
-        except Exception as exc:
-            return AlpacaStreamRunResult(True, False, processed, candles, f"Alpaca stream stopped: {exc}")
+                    await websocket.send(json.dumps(subscribe))
+                    while max_messages is None or processed < max_messages:
+                        try:
+                            message = await asyncio.wait_for(websocket.recv(), timeout=30)
+                        except TimeoutError as exc:
+                            await websocket.close()
+                            raise ConnectionError("No Alpaca stream messages received for 30 seconds.") from exc
 
-        return AlpacaStreamRunResult(True, True, processed, candles, "Alpaca stream processed requested messages.")
+                        events = json.loads(message)
+                        if isinstance(events, dict):
+                            events = [events]
+                        batch_candles = 0
+                        for event in events:
+                            processed += 1
+                            batch_candles += self.process_event(event)
+                            if max_messages is not None and processed >= max_messages:
+                                break
+                        candles += batch_candles
+                        last_heartbeat_at = self._heartbeat_if_due(
+                            last_heartbeat_at=last_heartbeat_at,
+                            processed=processed,
+                            candles=candles,
+                        )
+                    return AlpacaStreamRunResult(
+                        True, True, processed, candles, "Alpaca stream processed requested messages."
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                held_for_seconds = (datetime.now(UTC) - connected_at).total_seconds() if connected_at else 0.0
+                attempts = 0 if held_for_seconds > 60 else attempts + 1
+                if max_messages is not None and processed >= max_messages:
+                    return AlpacaStreamRunResult(
+                        True, True, processed, candles, "Alpaca stream processed requested messages."
+                    )
+                await asyncio.sleep(min(2**attempts, 60))
+                if max_messages is not None:
+                    return AlpacaStreamRunResult(True, False, processed, candles, f"Alpaca stream stopped: {exc}")
+
+    def _heartbeat_if_due(
+        self,
+        *,
+        last_heartbeat_at: datetime | None,
+        processed: int,
+        candles: int,
+    ) -> datetime:
+        now = datetime.now(UTC)
+        if last_heartbeat_at and (now - last_heartbeat_at).total_seconds() < 5:
+            return last_heartbeat_at
+        self.repository.store_worker_heartbeat(
+            worker_name="alpaca_stream",
+            status="HEALTHY",
+            last_started_at=None,
+            last_finished_at=now,
+            last_success=True,
+            reason="Alpaca stream processed market data batch.",
+            payload={"messages_processed": processed, "candles_stored": candles},
+        )
+        return now
 
     def process_event(self, event: dict[str, Any]) -> int:
         event_type = str(event.get("T") or event.get("stream") or "unknown")
