@@ -43,7 +43,7 @@ export default function DashboardPage() {
         <section className="space-y-4">
           <div className="grid grid-cols-3 gap-4">
             <ExposureSummary />
-            <RegimeGauge regime="BULL_TREND" confidence={82} />
+            <RegimeGauge />
             <div className="rounded-xl border bg-slate-900 p-4 shadow-sm">
               <div className="text-xs uppercase tracking-wide text-slate-500">Positions</div>
               <div className="mt-2 text-2xl font-semibold text-white">{positions.length}</div>
