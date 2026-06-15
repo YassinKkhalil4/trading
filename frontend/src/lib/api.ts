@@ -76,6 +76,26 @@ export function getCandles(symbol: string, limit = 500, cursor?: string, timefra
   );
 }
 
+
+export type MarketRegimeSnapshot = {
+  id?: string;
+  market_regime: string;
+  confidence: number;
+  allowed_bias?: string | null;
+  risk_multiplier: number;
+  breakout_permission?: boolean;
+  mean_reversion_permission?: string | null;
+  reason?: string | null;
+  source_timestamp?: string;
+  created_at?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+};
+
+export function getLatestMarketRegime() {
+  return fetchJson<{ regime: MarketRegimeSnapshot | null }>("/api/v1/market/regime/latest");
+}
+
 export type LiveReadinessGate = {
   gate_name: string;
   passed: boolean;

@@ -3271,6 +3271,16 @@ class TradingRepository:
             .limit(1)
         )
 
+    def latest_market_regime_snapshot(self) -> models.MarketRegimeSnapshot | None:
+        return self.session.scalar(
+            select(models.MarketRegimeSnapshot)
+            .order_by(
+                desc(models.MarketRegimeSnapshot.source_timestamp),
+                desc(models.MarketRegimeSnapshot.created_at),
+            )
+            .limit(1)
+        )
+
     def latest_regime_snapshots(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.list_rows(models.MarketRegimeSnapshot, limit)
 

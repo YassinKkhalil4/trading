@@ -236,6 +236,19 @@ def daily_features(
     )
 
 
+@router.get("/api/v1/market/regime/latest")
+def latest_regime_snapshot_v1(
+    _principal: AdminPrincipal = Depends(require_principal),
+) -> dict:
+    session, service = _runtime()
+    try:
+        service.bootstrap()
+        row = service.repository.latest_market_regime_snapshot()
+        return {"regime": jsonable_encoder(model_to_dict(row)) if row else None}
+    finally:
+        session.close()
+
+
 @router.get("/regime/snapshots")
 def regime_snapshots(
     _principal: AdminPrincipal = Depends(require_principal),
