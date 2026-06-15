@@ -1,8 +1,71 @@
 "use client";
 
-import { useActionFeedEvents } from "@/lib/queries";
+import { useActionFeedEvents, useExecutionFills } from "@/lib/queries";
 import { useActionFeedStore, type ActionFeedSeverity } from "@/store/use-action-feed-store";
 import { useEffect, useRef, useState } from "react";
+
+
+function formatPrice(value?: number | null) {
+  if (typeof value !== "number" || Number.isNaN(value)) return "—";
+  return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+}
+
+function calculateSlippageBps(fillPrice?: number | null, expectedPrice?: number | null, side?: string | null, storedSlippageBps?: number | null) {
+  if (typeof expectedPrice === "number" && expectedPrice > 0 && typeof fillPrice === "number") {
+    const priceDelta = side?.toLowerCase() === "sell" ? expectedPrice - fillPrice : fillPrice - expectedPrice;
+    return (priceDelta / expectedPrice) * 10_000;
+  }
+  return typeof storedSlippageBps === "number" ? storedSlippageBps : null;
+}
+
+export function RecentFillsTable() {
+  const { data, error, isLoading } = useExecutionFills(8);
+  const fills = data?.fills ?? [];
+  const maxSlippageBps = data?.max_slippage_bps ?? 25;
+
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <h2 className="font-semibold text-white">Recent Fills</h2>
+          <span className="text-xs text-slate-500">Execution quality · Max {maxSlippageBps.toFixed(1)} bps</span>
+        </div>
+        {isLoading ? <span className="text-xs text-slate-500">Refreshing…</span> : null}
+      </div>
+      {error ? <div className="rounded-lg border border-rose-800 bg-rose-950 p-3 text-sm text-rose-200">Unable to load fills: {error.message}</div> : null}
+      {!error ? (
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-left text-sm">
+            <thead className="border-b border-slate-800 text-xs uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="pb-2 pr-4 font-medium">Symbol</th>
+                <th className="pb-2 pr-4 font-medium">Side</th>
+                <th className="pb-2 pr-4 text-right font-medium">Fill Price</th>
+                <th className="pb-2 text-right font-medium">Slippage Bps</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800">
+              {fills.length === 0 ? (
+                <tr><td colSpan={4} className="py-3 text-slate-500">No recent fills.</td></tr>
+              ) : fills.map((fill) => {
+                const slippageBps = calculateSlippageBps(fill.price, fill.expected_price, fill.side, fill.slippage_bps);
+                const breach = slippageBps !== null && Math.abs(slippageBps) > maxSlippageBps;
+                return (
+                  <tr key={fill.id} className="text-slate-300">
+                    <td className="py-2 pr-4 font-medium text-white">{fill.symbol}</td>
+                    <td className="py-2 pr-4 uppercase text-slate-400">{fill.side ?? "—"}</td>
+                    <td className="py-2 pr-4 text-right font-mono">${formatPrice(fill.price)}</td>
+                    <td className={`py-2 text-right font-mono ${breach ? "text-rose-300" : "text-emerald-300"}`}>{slippageBps === null ? "—" : slippageBps.toFixed(2)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 const severityClass: Record<ActionFeedSeverity, string> = {
   CRITICAL: "bg-rose-950 text-rose-200 border-rose-800",
