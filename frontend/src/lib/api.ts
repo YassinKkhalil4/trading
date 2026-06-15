@@ -114,6 +114,19 @@ export type LiveReadinessDetail = {
 };
 
 export type ExecutionOrder = Record<string, unknown>;
+export type ExecutionFill = {
+  id: string;
+  order_id: string;
+  symbol: string;
+  side?: string | null;
+  quantity?: number | null;
+  price: number;
+  expected_price?: number | null;
+  slippage_bps?: number | null;
+  source_timestamp?: string;
+  created_at?: string;
+  [key: string]: unknown;
+};
 export type ExecutionPosition = {
   id?: string;
   symbol: string;
@@ -171,6 +184,10 @@ export function getActionFeedEvents(limit = 100) {
 
 export function getExecutionOrders(limit = 100) {
   return fetchJson<{ orders: ExecutionOrder[] }>(`/api/v1/execution/orders?limit=${limit}`);
+}
+
+export function getExecutionFills(limit = 25) {
+  return fetchJson<{ fills: ExecutionFill[]; max_slippage_bps: number }>(`/api/v1/execution/fills?limit=${limit}`);
 }
 
 export function getExecutionPositions(limit = 100) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { ActionFeed } from "@/components/ActionFeed";
+import { ActionFeed, RecentFillsTable } from "@/components/ActionFeed";
 import { AlphaRankingsGrid } from "@/components/AlphaRankingsGrid";
 import { CandleChart } from "@/components/CandleChart";
 import { ExposureSummary } from "@/components/ExposureSummary";
@@ -66,6 +66,7 @@ export default function DashboardPage() {
             ))}
           </div>
           <CandleChart />
+          <RecentFillsTable />
           <AlphaRankingsGrid />
         </section>
         <aside className="space-y-3">

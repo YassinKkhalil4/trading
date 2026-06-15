@@ -66,9 +66,12 @@ def execution_fills(
     _principal: AdminPrincipal = Depends(require_principal),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict:
-    return _read_rows(
-        "fills", lambda repo, row_limit: repo.latest_fills(row_limit), limit
+    settings = get_settings()
+    rows = _read_rows(
+        "fills", lambda repo, row_limit: repo.latest_fills_with_orders(row_limit), limit
     )
+    rows["max_slippage_bps"] = settings.max_slippage_bps
+    return rows
 
 
 @router.get("/execution/positions")

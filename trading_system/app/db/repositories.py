@@ -3360,6 +3360,28 @@ class TradingRepository:
     def latest_fills(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.list_rows(models.Fill, limit)
 
+    def latest_fills_with_orders(self, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self.session.execute(
+            select(models.Fill, models.Order)
+            .join(models.Order, models.Fill.order_id == models.Order.id)
+            .order_by(desc(models.Fill.created_at))
+            .limit(limit)
+        ).all()
+        result = []
+        for fill, order in rows:
+            data = model_to_dict(fill)
+            data.update(
+                {
+                    "side": order.side,
+                    "expected_price": order.expected_price or order.limit_price,
+                    "environment_mode": order.environment_mode,
+                    "execution_environment": order.execution_environment,
+                    "broker": order.broker,
+                }
+            )
+            result.append(data)
+        return result
+
     def latest_broker_sync_logs(self, limit: int = 100) -> list[dict[str, Any]]:
         rows = self.session.scalars(
             select(models.SystemLog)
