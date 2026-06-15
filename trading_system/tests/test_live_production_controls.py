@@ -229,6 +229,15 @@ def _make_live_ready(repo: TradingRepository, settings: Settings) -> None:
             "quality_reason": "fresh Alpaca candle for live readiness",
         }
     )
+    repo.store_worker_heartbeat(
+        worker_name="alpaca_stream",
+        status="HEALTHY",
+        last_started_at=now,
+        last_finished_at=now,
+        last_success=True,
+        reason="test stream heartbeat",
+        payload={},
+    )
     repo.store_broker_sync(
         environment_mode=EnvironmentMode.LIVE.value,
         broker="alpaca_live",
@@ -506,6 +515,28 @@ def test_live_readiness_and_gates_can_pass_only_when_all_controls_are_green():
     assert gate.allowed is True
 
 
+def test_stale_alpaca_stream_heartbeat_blocks_live_gate():
+    repo = _repo()
+    settings = _live_settings()
+    _make_live_ready(repo, settings)
+    stale = datetime.now(UTC) - timedelta(seconds=31)
+    repo.store_worker_heartbeat(
+        worker_name="alpaca_stream",
+        status="HEALTHY",
+        last_started_at=stale,
+        last_finished_at=stale,
+        last_success=True,
+        reason="stale stream heartbeat",
+        payload={},
+    )
+
+    gate = LiveGateService(repo, settings).evaluate(strategy_id="VWAP_RECLAIM", signal_id="sig-test")
+
+    assert gate.allowed is False
+    assert "market_data_stream_healthy" in gate.blockers
+    assert "Market data stream heartbeat is stale or dead. Live trading halted." in gate.reason
+
+
 def test_live_readiness_report_audit_links_actor_and_report_id():
     repo = _repo()
     settings = _live_settings()
@@ -555,7 +586,6 @@ def test_missing_live_account_snapshot_blocks_readiness_and_gate():
 
 def test_expired_live_approval_is_marked_expired_and_audited():
     repo = _repo()
-    settings = _live_settings()
     expired = repo.store_live_trading_approval(
         approved_by="admin",
         reason="expired test approval",
