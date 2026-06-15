@@ -4,6 +4,7 @@ import {
   getExecutionOrders,
   getExecutionPositions,
   getLiveReadinessStatus,
+  getOpportunityDecisions,
   getLatestMarketRegime,
   getRiskExposures,
   getStrategies,
@@ -20,6 +21,7 @@ export const queryKeys = {
   marketRegime: ["market", "regime", "latest"] as const,
   riskExposures: ["risk", "exposures"] as const,
   strategies: ["strategies"] as const,
+  opportunityDecisions: ["opportunity-decisions"] as const,
 };
 
 export function useActionFeedEvents(limit = 100) {

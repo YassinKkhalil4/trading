@@ -15,3 +15,6 @@ credentials
 **/*.tfstate.backup
 **/terraform.tfvars
 EOF
+
+# Node dependencies
+node_modules/
