@@ -181,6 +181,26 @@ export function getRiskExposures(limit = 100) {
   return fetchJson<{ exposure_snapshots: ExposureSnapshot[] }>(`/api/v1/risk/exposures?limit=${limit}`);
 }
 
+
+export type OpportunityDecision = {
+  id: string;
+  decision_type: string;
+  outcome: string;
+  entity_type?: string | null;
+  entity_id?: string | null;
+  strategy_id?: string | null;
+  rule_version?: string | null;
+  reason: string;
+  payload?: Record<string, unknown> | null;
+  source_timestamp?: string;
+  created_at?: string;
+  [key: string]: unknown;
+};
+
+export function getOpportunityDecisions(limit = 200) {
+  return fetchJson<{ decisions: OpportunityDecision[] }>(`/api/v1/decisions?limit=${limit}`);
+}
+
 export interface AlphaScannerRunRequest {
   strategy_id: string;
   symbols?: string[];

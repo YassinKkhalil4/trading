@@ -46,6 +46,10 @@ export function useLatestMarketRegime() {
   return useQuery({ queryKey: queryKeys.marketRegime, queryFn: getLatestMarketRegime, refetchInterval: 30_000, refetchIntervalInBackground: true });
 }
 
+export function useOpportunityDecisions(limit = 200) {
+  return useQuery({ queryKey: [...queryKeys.opportunityDecisions, limit], queryFn: () => getOpportunityDecisions(limit), refetchInterval: 10_000 });
+}
+
 export function useRiskExposures(limit = 100) {
   return useQuery({ queryKey: [...queryKeys.riskExposures, limit], queryFn: () => getRiskExposures(limit), refetchInterval: 15_000 });
 }
