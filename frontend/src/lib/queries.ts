@@ -4,6 +4,7 @@ import {
   getExecutionOrders,
   getExecutionPositions,
   getLiveReadinessStatus,
+  getOpportunityDecisions,
   getRiskExposures,
   getStrategies,
   type CandleTimeFrame,
@@ -16,6 +17,7 @@ export const queryKeys = {
   executionOrders: ["execution", "orders"] as const,
   executionPositions: ["execution", "positions"] as const,
   liveReadiness: ["live-readiness"] as const,
+  opportunityDecisions: ["decisions", "opportunities"] as const,
   riskExposures: ["risk", "exposures"] as const,
   strategies: ["strategies"] as const,
 };
@@ -38,6 +40,10 @@ export function useExecutionPositions(limit = 100) {
 
 export function useLiveReadinessStatus() {
   return useQuery({ queryKey: queryKeys.liveReadiness, queryFn: getLiveReadinessStatus, refetchInterval: 30_000 });
+}
+
+export function useOpportunityDecisions(limit = 200) {
+  return useQuery({ queryKey: [...queryKeys.opportunityDecisions, limit], queryFn: () => getOpportunityDecisions(limit), refetchInterval: 10_000 });
 }
 
 export function useRiskExposures(limit = 100) {
