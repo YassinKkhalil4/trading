@@ -5,13 +5,13 @@ This Terraform stack targets AWS `us-east-1` by default and deploys the platform
 Resources included:
 
 - VPC, public/private subnets, NAT egress, VPC endpoints for S3/ECR/CloudWatch Logs/Secrets Manager, route tables, and security groups.
-- ECS Fargate task definitions/services for API, dashboard, scheduler, market stream, reconciliation, trade monitor, review, and learning.
+- ECS Fargate task definitions/services for API, scheduler, market stream, reconciliation, trade monitor, review, and learning.
 - RDS PostgreSQL 16 with automated backups, encryption, deletion protection, and a final snapshot.
 - ElastiCache Redis 7.
 - ECR repository.
 - S3 raw payload/archive bucket with versioning, encryption, public access blocked, and lifecycle retention.
 - Secrets Manager runtime secret for database URL, admin credentials, session signing, and Alpaca keys.
-- ALB listeners for API and dashboard.
+- ALB listeners for the API.
 - WAF association.
 - CloudWatch log group with retention.
 
@@ -145,7 +145,6 @@ The GitHub Actions workflow in `.github/workflows/ci-cd.yml` runs the same migra
 ## Post-deploy checks
 
 - API health: `curl -fsS "http://<alb-dns-name>/health"`
-- Dashboard: `http://<alb-dns-name>:8501`
 - Confirm task environment: `ENVIRONMENT_MODE=paper`, `ALLOW_LIVE_TRADING=false`, `ENABLE_LIVE_ORDER_PATH=false`
 
 Application tasks use a task role scoped to the raw archive S3 bucket. Runtime secrets are stored in AWS Secrets Manager and injected into ECS tasks at launch.

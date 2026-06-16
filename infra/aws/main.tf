@@ -42,8 +42,7 @@ locals {
     learning       = ["python", "-m", "trading_system.app.services.worker", "learning"]
   }
   load_balanced_services = {
-    api       = 8000
-    dashboard = 8501
+    api = 8000
   }
 }
 
@@ -138,12 +137,6 @@ resource "aws_security_group" "alb" {
       cidr_blocks = ["0.0.0.0/0"]
     }
   }
-  ingress {
-    from_port   = 8501
-    to_port     = 8501
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
   egress {
     from_port   = 0
     to_port     = 0
@@ -157,7 +150,7 @@ resource "aws_security_group" "app" {
   vpc_id = aws_vpc.main.id
   ingress {
     from_port       = 8000
-    to_port         = 8501
+    to_port         = 8000
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
   }
@@ -429,9 +422,9 @@ resource "aws_ecs_task_definition" "service" {
     image     = var.container_image
     command   = each.value
     essential = true
-    portMappings = contains(["api", "dashboard"], each.key) ? [{
-      containerPort = each.key == "api" ? 8000 : 8501
-      hostPort      = each.key == "api" ? 8000 : 8501
+    portMappings = each.key == "api" ? [{
+      containerPort = 8000
+      hostPort      = 8000
       protocol      = "tcp"
     }] : []
     environment = local.common_env
@@ -489,17 +482,6 @@ resource "aws_lb_listener" "api_http_forward" {
   }
 }
 
-resource "aws_lb_listener" "dashboard_http_forward" {
-  count             = var.enable_https ? 0 : 1
-  load_balancer_arn = aws_lb.app.arn
-  port              = 8501
-  protocol          = "HTTP"
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.service["dashboard"].arn
-  }
-}
-
 resource "aws_lb_listener" "api_http_redirect" {
   count             = var.enable_https ? 1 : 0
   load_balancer_arn = aws_lb.app.arn
@@ -525,34 +507,6 @@ resource "aws_lb_listener" "api_https" {
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.service["api"].arn
-  }
-}
-
-resource "aws_lb_listener" "dashboard_http_redirect" {
-  count             = var.enable_https ? 1 : 0
-  load_balancer_arn = aws_lb.app.arn
-  port              = 8501
-  protocol          = "HTTP"
-  default_action {
-    type = "redirect"
-    redirect {
-      port        = "8501"
-      protocol    = "HTTPS"
-      status_code = "HTTP_301"
-    }
-  }
-}
-
-resource "aws_lb_listener" "dashboard_https" {
-  count             = var.enable_https ? 1 : 0
-  load_balancer_arn = aws_lb.app.arn
-  port              = 8501
-  protocol          = "HTTPS"
-  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = var.acm_certificate_arn
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.service["dashboard"].arn
   }
 }
 
