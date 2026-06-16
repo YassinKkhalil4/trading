@@ -176,6 +176,8 @@ export type ActionFeedEvent = {
   severity: "INFO" | "WARN" | "CRITICAL";
   entity_id?: string | null;
   message: string;
+  type?: string;
+  payload?: Record<string, unknown>;
 };
 
 export function getActionFeedEvents(limit = 100) {
