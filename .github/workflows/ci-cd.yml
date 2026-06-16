@@ -53,7 +53,7 @@ jobs:
         id: task-defs
         env:
           IMAGE_URI: ${{ steps.image.outputs.image }}
-          SERVICES: api dashboard scheduler market_stream reconciliation trade_monitor reviews learning
+          SERVICES: api scheduler market_stream reconciliation trade_monitor reviews learning
         run: |
           set -euo pipefail
           mkdir -p /tmp/ecs-task-definitions
