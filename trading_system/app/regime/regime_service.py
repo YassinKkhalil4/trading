@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trading_system.app.core.enums import MarketRegime
 from trading_system.app.db.repositories import TradingRepository
-from trading_system.app.regime.market_regime_engine import RegimeInputs, classify_market_regime
+from trading_system.app.regime.market_regime_engine import build_hmm_inputs, classify_market_regime
 
 
 REGIME_SERVICE_VERSION = "regime_service_v1"
@@ -16,6 +15,7 @@ class RegimeRunResult:
     market_regime: str | None
     confidence: float | None
     reason: str
+    hmm_state_probabilities: dict[str, float] | None = None
     version: str = REGIME_SERVICE_VERSION
 
 
@@ -25,30 +25,16 @@ class MarketRegimeService:
 
     def run_once(self) -> RegimeRunResult:
         spy = self._frame("SPY")
-        qqq = self._frame("QQQ")
-        if len(spy) < 50 or len(qqq) < 20:
+        if len(spy) < 60:
             return RegimeRunResult(
                 False,
                 None,
                 None,
-                "Not enough SPY/QQQ clean candles to compute production regime.",
+                "Not enough SPY 5-minute clean candles to compute the HMM market regime.",
+                None,
             )
-        spy_close = spy["close"]
-        qqq_close = qqq["close"]
-        spy_20 = spy_close.rolling(20, min_periods=1).mean().iloc[-1]
-        spy_50 = spy_close.rolling(50, min_periods=1).mean().iloc[-1]
-        qqq_20 = qqq_close.rolling(20, min_periods=1).mean().iloc[-1]
-        breadth_positive = self._breadth_positive()
-        vix_level, vix_reason = self._estimate_vix(spy)
-        decision = classify_market_regime(
-            RegimeInputs(
-                spy_above_20ma=bool(spy_close.iloc[-1] > spy_20),
-                spy_above_50ma=bool(spy_close.iloc[-1] > spy_50),
-                qqq_above_20ma=bool(qqq_close.iloc[-1] > qqq_20),
-                vix_level=vix_level,
-                breadth_positive=breadth_positive,
-            )
-        )
+        inputs = build_hmm_inputs(spy)
+        decision = classify_market_regime(inputs)
         self.repository.store_market_regime_snapshot(
             market_regime=decision.market_regime.value,
             confidence=decision.confidence,
@@ -56,14 +42,16 @@ class MarketRegimeService:
             risk_multiplier=decision.risk_multiplier,
             breakout_permission=decision.breakout_permission,
             mean_reversion_permission=decision.mean_reversion_permission,
-            reason=f"{decision.reason} {vix_reason}",
+            reason=decision.reason,
             source_timestamp=spy.index[-1].to_pydatetime(),
+            hmm_state_probabilities=decision.hmm_state_probabilities,
         )
         return RegimeRunResult(
             True,
             decision.market_regime.value,
             decision.confidence,
-            "Market regime snapshot persisted.",
+            "Market regime HMM snapshot persisted.",
+            decision.hmm_state_probabilities,
         )
 
     def _estimate_vix(self, spy) -> tuple[float, str]:
@@ -97,7 +85,7 @@ class MarketRegimeService:
 
     def _frame(self, symbol: str):
         for provider in ["alpaca_market_data", "yahoo_chart"]:
-            frame = self.repository.clean_candles_df(symbol, provider=provider, limit=200)
+            frame = self.repository.clean_candles_df(symbol, provider=provider, limit=500)
             if not frame.empty:
                 return frame
         return self.repository.clean_candles_df(symbol, provider="yahoo_chart", limit=0)
