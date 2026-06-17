@@ -444,6 +444,7 @@ class MarketRegimeSnapshot(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     breakout_permission: Mapped[bool] = mapped_column(Boolean, default=False)
     mean_reversion_permission: Mapped[str] = mapped_column(String(64), default="limited")
     reason: Mapped[str | None] = mapped_column(Text)
+    hmm_state_probabilities: Mapped[dict | None] = mapped_column(JSONB)
 
 
 class Event(IdMixin, TimestampMixin, SourceTimestampMixin, Base):

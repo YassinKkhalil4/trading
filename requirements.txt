@@ -60,3 +60,6 @@ websockets
 vectorbt
 xgboost>=2.1.0
 scikit-learn>=1.5.0
+
+hmmlearn>=0.3.2
+scipy>=1.13.0

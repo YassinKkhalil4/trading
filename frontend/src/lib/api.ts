@@ -85,6 +85,7 @@ export type MarketRegimeSnapshot = {
   risk_multiplier: number;
   breakout_permission?: boolean;
   mean_reversion_permission?: string | null;
+  hmm_state_probabilities?: Record<string, number> | null;
   reason?: string | null;
   source_timestamp?: string;
   created_at?: string;

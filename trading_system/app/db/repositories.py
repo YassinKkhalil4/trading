@@ -1023,6 +1023,7 @@ class TradingRepository:
         mean_reversion_permission: str,
         reason: str,
         source_timestamp: datetime | None = None,
+        hmm_state_probabilities: dict | None = None,
     ) -> models.MarketRegimeSnapshot:
         row = models.MarketRegimeSnapshot(
             market_regime=market_regime,
@@ -1033,6 +1034,7 @@ class TradingRepository:
             mean_reversion_permission=mean_reversion_permission,
             reason=reason,
             source_timestamp=source_timestamp or _now(),
+            hmm_state_probabilities=hmm_state_probabilities,
         )
         self.session.add(row)
         self.session.commit()

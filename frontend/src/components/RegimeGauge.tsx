@@ -16,6 +16,8 @@ export function RegimeGauge({ regime, confidence }: { regime?: string; confidenc
   const activeRegime = snapshot?.market_regime ?? regime ?? "UNKNOWN";
   const activeConfidence = snapshot?.confidence ?? confidence ?? 0;
   const boundedConfidence = Math.max(0, Math.min(100, activeConfidence));
+  const chopProbability = snapshot?.hmm_state_probabilities?.high_variance_chop;
+  const crashProbabilityPercent = typeof chopProbability === "number" ? Math.max(0, Math.min(100, chopProbability * 100)) : null;
 
   return (
     <div className="rounded-xl border bg-slate-900 p-4">
@@ -36,6 +38,11 @@ export function RegimeGauge({ regime, confidence }: { regime?: string; confidenc
         <span>{isLoading ? "Hydrating latest regime…" : error ? "Unable to load latest regime" : `${boundedConfidence.toFixed(0)}% confidence`}</span>
         <span>{snapshot?.source_timestamp ? new Date(snapshot.source_timestamp).toLocaleTimeString() : "30s poll"}</span>
       </div>
+      {crashProbabilityPercent !== null ? (
+        <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+          HMM high-variance chop probability: {crashProbabilityPercent.toFixed(1)}%
+        </div>
+      ) : null}
       {snapshot?.reason ? <div className="mt-2 line-clamp-2 text-xs text-slate-400">{snapshot.reason}</div> : null}
     </div>
   );
