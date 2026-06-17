@@ -120,7 +120,7 @@ Persisted alpha intelligence tables include:
 - `POST /scheduler/run-once` runs one scheduled job: `market_data`, `features`, `regime`, `news`, `sec`, `catalysts`, `production_scanners`, `provider_health`, `universe`, `missing_candle_repair`, `live_readiness`, `fill_reconciliation`, `trade_monitor`, `reviews`, `learning`, or `all`.
 - `POST /live-readiness/report` stores a live-readiness report. It does not bypass live gates.
 - `GET /alpha/opportunity-scores`, `/alpha/candidates`, `/alpha/rejections`, `/alpha/expectancy`, and `/alpha/sector-leadership` expose alpha command-center data.
-- `POST /alpha/scanners/run`, `/alpha/scoring/run-once`, `/alpha/expectancy/refresh`, and `/alpha/regime/refresh` run alpha scanners/scoring/refreshes manually.
+- `POST /alpha/scanners/run`, `/alpha/expectancy/refresh`, and `/alpha/regime/refresh` run alpha scanners and refreshes manually.
 - `GET /alpha/point-in-time-universe`, `/alpha/short-interest`, `/alpha/options-intelligence`, and `/alpha/multi-bagger-candidates` expose the new missing intelligence layers.
 - `POST /alpha/point-in-time-universe/refresh`, `/alpha/short-interest/refresh`, `/alpha/options-intelligence/refresh`, and `/alpha/multi-bagger-candidates/score` refresh those layers from current persisted inputs.
 - `POST /execution/live/submit`, `POST /execution/live/cancel-all`, and `POST /execution/live/flatten-all` exist for live operations but return blocked responses unless live mode, live path, keys, readiness, approval, provider health, reconciliation, strategy approval, risk, and kill-switch gates pass.

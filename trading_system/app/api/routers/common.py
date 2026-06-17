@@ -24,7 +24,6 @@ from trading_system.app.alpha.intelligence import (
     ShortInterestService,
 )
 from trading_system.app.alpha.leadership import SectorLeadershipService
-from trading_system.app.alpha.scoring import AlphaOpportunityScoringService
 from trading_system.app.alpha.strategies import ALPHA_STRATEGIES
 from trading_system.app.core.enums import AdminRole, EnvironmentMode, MarketRegime
 from trading_system.app.data.market_calendar import get_session, opening_range_window
@@ -759,6 +758,12 @@ def _scan_to_signal(request: VwapReclaimScanRequest):
         strategy_version=strategy.version,
         target_1_rr=strategy.target_1_rr,
         target_2_rr=strategy.target_2_rr,
+        alpha_features={
+            "vwap_distance": (request.price - request.vwap) / request.vwap if request.vwap else 0.0,
+            "relative_volume_5m": request.relative_volume,
+            "spy_correlation_30m": 0.0,
+            "atr_ratio": (request.price - stop_loss) / request.price if request.price else 0.0,
+        },
     )
     return decision, signal
 

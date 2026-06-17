@@ -341,6 +341,12 @@ class TradingRuntimeService:
             strategy_version=strategy.version,
             target_1_rr=strategy.target_1_rr,
             target_2_rr=strategy.target_2_rr,
+            alpha_features={
+                "vwap_distance": (snapshot.price - snapshot.vwap) / snapshot.vwap if snapshot.vwap else 0.0,
+                "relative_volume_5m": snapshot.relative_volume,
+                "spy_correlation_30m": 0.0,
+                "atr_ratio": (snapshot.price - stop_loss) / snapshot.price if snapshot.price else 0.0,
+            },
         )
         signal_row = self.repository.store_signal(signal)
         self.repository.store_signal_version(

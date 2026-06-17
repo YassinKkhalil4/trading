@@ -45,6 +45,7 @@ def _signal():
         source_timestamp=_snapshot().timestamp,
         price=101,
         stop_loss=100,
+        alpha_probability=0.90,
     )
 
 
@@ -69,6 +70,7 @@ def test_signal_engine_uses_configured_vwap_reclaim_rr_targets():
         source_timestamp=_snapshot().timestamp,
         price=101,
         stop_loss=100,
+        alpha_probability=0.90,
         target_1_rr=1.5,
         target_2_rr=2.25,
     )
@@ -91,6 +93,7 @@ def test_signal_idempotency_rejects_duplicate():
         source_timestamp=_snapshot().timestamp,
         price=101,
         stop_loss=100,
+        alpha_probability=0.90,
     )
     with pytest.raises(DuplicateIdempotencyKeyError):
         engine.create_vwap_reclaim_signal(
@@ -98,6 +101,7 @@ def test_signal_idempotency_rejects_duplicate():
             source_timestamp=_snapshot().timestamp,
             price=101,
             stop_loss=100,
+            alpha_probability=0.90,
         )
 
 
@@ -112,6 +116,7 @@ def test_risk_rejects_max_trades_per_day():
         source_timestamp=_snapshot().timestamp,
         price=101,
         stop_loss=100,
+        alpha_probability=0.90,
     )
     settings = Settings(environment_mode=EnvironmentMode.PAPER, max_trades_per_day=1)
     risk = RiskEngine(settings).evaluate(
@@ -184,6 +189,7 @@ def test_paper_execution_requires_paper_mode():
         source_timestamp=_snapshot().timestamp,
         price=101,
         stop_loss=100,
+        alpha_probability=0.90,
     )
     risk = RiskEngine(Settings(environment_mode=EnvironmentMode.RESEARCH)).evaluate(
         signal,
