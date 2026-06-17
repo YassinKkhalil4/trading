@@ -31,5 +31,17 @@ class AbstractBrokerAdapter(ABC):
         """Submit a limit entry with attached take-profit and stop-loss orders."""
 
     @abstractmethod
+    async def submit_limit_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: float,
+        limit_price: float,
+        client_order_id: str,
+    ) -> Any:
+        """Submit a plain limit order."""
+
+    @abstractmethod
     async def cancel_all_orders(self) -> Any:
         """Cancel all open broker orders."""

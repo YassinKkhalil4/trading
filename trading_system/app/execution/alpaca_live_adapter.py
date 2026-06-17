@@ -38,7 +38,9 @@ class AlpacaLiveEmergencyResult:
 
 
 class AlpacaLiveAdapter(AbstractBrokerAdapter):
-    def __init__(self, settings: Settings | None = None, http: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self, settings: Settings | None = None, http: httpx.AsyncClient | None = None
+    ) -> None:
         self.settings = settings or get_settings()
         self.http = http or httpx.AsyncClient()
 
@@ -90,9 +92,13 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
         client_order_id: str,
     ) -> AlpacaLiveOrderResult:
         if not self.configured:
-            return AlpacaLiveOrderResult(False, False, "Alpaca live keys are not configured.", None, None)
+            return AlpacaLiveOrderResult(
+                False, False, "Alpaca live keys are not configured.", None, None
+            )
         if quantity <= 0:
-            return AlpacaLiveOrderResult(True, False, "Quantity must be positive before live submission.", None, None)
+            return AlpacaLiveOrderResult(
+                True, False, "Quantity must be positive before live submission.", None, None
+            )
         payload = {
             "symbol": symbol,
             "qty": str(quantity),
@@ -106,6 +112,7 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
             "stop_loss": {"stop_price": f"{stop_price:.2f}"},
         }
         try:
+
             async def submit_once():
                 response = await self.http.post(
                     f"{self.settings.alpaca_live_base_url}/v2/orders",
@@ -129,12 +136,102 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
                 submitted=False,
                 reason=f"Alpaca live order submission failed after bounded retries: {exc}",
                 broker_order_id=None,
-                payload={"request": payload, "max_attempts": self.settings.alpaca_order_max_attempts},
+                payload={
+                    "request": payload,
+                    "max_attempts": self.settings.alpaca_order_max_attempts,
+                },
             )
         return AlpacaLiveOrderResult(
             configured=True,
             submitted=True,
             reason=f"Alpaca live bracket order submitted after {retry_result.attempts} attempt(s).",
+            broker_order_id=str(data.get("id")) if data.get("id") else None,
+            payload=data,
+        )
+
+    async def latest_bid_ask_midpoint(self, symbol: str) -> float | None:
+        if not self.configured:
+            return None
+        try:
+            quote = await self._get(
+                f"/v2/stocks/{symbol.strip().upper()}/quotes/latest",
+                params={"feed": self.settings.alpaca_primary_data_feed},
+                base_url=self.settings.alpaca_live_data_url,
+            )
+        except httpx.HTTPError:
+            return None
+        raw_quote = quote.get("quote") if isinstance(quote, dict) else None
+        if not isinstance(raw_quote, dict):
+            return None
+        bid = float(raw_quote.get("bp") or 0)
+        ask = float(raw_quote.get("ap") or 0)
+        if bid <= 0 or ask <= 0:
+            return None
+        return (bid + ask) / 2
+
+    async def submit_limit_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: float,
+        limit_price: float,
+        client_order_id: str,
+    ) -> AlpacaLiveOrderResult:
+        if not self.configured:
+            return AlpacaLiveOrderResult(
+                False, False, "Alpaca live keys are not configured.", None, None
+            )
+        if quantity <= 0 or limit_price <= 0:
+            return AlpacaLiveOrderResult(
+                True,
+                False,
+                "Quantity and limit price must be positive before live submission.",
+                None,
+                None,
+            )
+        payload = {
+            "symbol": symbol,
+            "qty": str(quantity),
+            "side": side,
+            "type": "limit",
+            "time_in_force": "day",
+            "limit_price": f"{limit_price:.2f}",
+            "client_order_id": client_order_id,
+        }
+        try:
+
+            async def submit_once():
+                response = await self.http.post(
+                    f"{self.settings.alpaca_live_base_url}/v2/orders",
+                    headers=self._headers(),
+                    json=payload,
+                    timeout=15,
+                )
+                response.raise_for_status()
+                return response
+
+            retry_result = await request_with_retries(
+                submit_once,
+                max_attempts=self.settings.alpaca_order_max_attempts,
+                backoff_seconds=self.settings.alpaca_order_retry_backoff_seconds,
+            )
+            data = retry_result.value.json()
+        except httpx.HTTPError as exc:
+            return AlpacaLiveOrderResult(
+                configured=True,
+                submitted=False,
+                reason=f"Alpaca live limit order submission failed after bounded retries: {exc}",
+                broker_order_id=None,
+                payload={
+                    "request": payload,
+                    "max_attempts": self.settings.alpaca_order_max_attempts,
+                },
+            )
+        return AlpacaLiveOrderResult(
+            configured=True,
+            submitted=True,
+            reason=f"Alpaca live limit order submitted after {retry_result.attempts} attempt(s).",
             broker_order_id=str(data.get("id")) if data.get("id") else None,
             payload=data,
         )
@@ -148,9 +245,13 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
         client_order_id: str,
     ) -> AlpacaLiveOrderResult:
         if not self.configured:
-            return AlpacaLiveOrderResult(False, False, "Alpaca live keys are not configured.", None, None)
+            return AlpacaLiveOrderResult(
+                False, False, "Alpaca live keys are not configured.", None, None
+            )
         if quantity <= 0:
-            return AlpacaLiveOrderResult(True, False, "Quantity must be positive before live market submission.", None, None)
+            return AlpacaLiveOrderResult(
+                True, False, "Quantity must be positive before live market submission.", None, None
+            )
         payload = {
             "symbol": symbol,
             "qty": str(quantity),
@@ -160,6 +261,7 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
             "client_order_id": client_order_id,
         }
         try:
+
             async def submit_once():
                 response = await self.http.post(
                     f"{self.settings.alpaca_live_base_url}/v2/orders",
@@ -183,7 +285,10 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
                 submitted=False,
                 reason=f"Alpaca live market order submission failed after bounded retries: {exc}",
                 broker_order_id=None,
-                payload={"request": payload, "max_attempts": self.settings.alpaca_order_max_attempts},
+                payload={
+                    "request": payload,
+                    "max_attempts": self.settings.alpaca_order_max_attempts,
+                },
             )
         return AlpacaLiveOrderResult(
             configured=True,
@@ -195,8 +300,11 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
 
     async def cancel_all_orders(self) -> AlpacaLiveEmergencyResult:
         if not self.configured:
-            return AlpacaLiveEmergencyResult(False, False, "Alpaca live keys are not configured.", None)
+            return AlpacaLiveEmergencyResult(
+                False, False, "Alpaca live keys are not configured.", None
+            )
         try:
+
             async def cancel_once():
                 response = await self.http.delete(
                     f"{self.settings.alpaca_live_base_url}/v2/orders",
@@ -229,10 +337,15 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
 
     async def cancel_order(self, broker_order_id: str) -> AlpacaLiveEmergencyResult:
         if not self.configured:
-            return AlpacaLiveEmergencyResult(False, False, "Alpaca live keys are not configured.", None)
+            return AlpacaLiveEmergencyResult(
+                False, False, "Alpaca live keys are not configured.", None
+            )
         if not broker_order_id:
-            return AlpacaLiveEmergencyResult(True, False, "Broker order id is required for live cancellation.", None)
+            return AlpacaLiveEmergencyResult(
+                True, False, "Broker order id is required for live cancellation.", None
+            )
         try:
+
             async def cancel_once():
                 response = await self.http.delete(
                     f"{self.settings.alpaca_live_base_url}/v2/orders/{broker_order_id}",
@@ -254,7 +367,10 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
                 True,
                 False,
                 f"Alpaca live order cancel failed after bounded retries: {exc}",
-                {"broker_order_id": broker_order_id, "max_attempts": self.settings.alpaca_order_max_attempts},
+                {
+                    "broker_order_id": broker_order_id,
+                    "max_attempts": self.settings.alpaca_order_max_attempts,
+                },
             )
         return AlpacaLiveEmergencyResult(
             True,
@@ -265,8 +381,11 @@ class AlpacaLiveAdapter(AbstractBrokerAdapter):
 
     async def flatten_all_positions(self) -> AlpacaLiveEmergencyResult:
         if not self.configured:
-            return AlpacaLiveEmergencyResult(False, False, "Alpaca live keys are not configured.", None)
+            return AlpacaLiveEmergencyResult(
+                False, False, "Alpaca live keys are not configured.", None
+            )
         try:
+
             async def flatten_once():
                 response = await self.http.delete(
                     f"{self.settings.alpaca_live_base_url}/v2/positions",

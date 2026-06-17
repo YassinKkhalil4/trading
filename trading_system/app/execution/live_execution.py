@@ -21,7 +21,11 @@ from trading_system.app.execution.alpaca_live_adapter import (
     AlpacaLiveOrderResult,
 )
 from trading_system.app.execution.broker_adapter import AbstractBrokerAdapter
-from trading_system.app.execution.order_manager import OrderManager
+from trading_system.app.execution.order_manager import (
+    MAX_CHILD_NOTIONAL,
+    OrderManager,
+    TWAP_Order_Manager,
+)
 from trading_system.app.execution.order_side import entry_side_from_direction
 from trading_system.app.execution.paper_execution import PaperOrder
 from trading_system.app.execution.reconciliation import ReconciliationResult
@@ -68,9 +72,44 @@ class LiveExecutionService:
         if not gate.allowed:
             return self._blocked(signal, signal_id, gate.reason, gate.__dict__)
         if not risk_decision.approved:
-            return self._blocked(signal, signal_id, f"Risk rejected live order: {risk_decision.reason}", gate.__dict__)
+            return self._blocked(
+                signal,
+                signal_id,
+                f"Risk rejected live order: {risk_decision.reason}",
+                gate.__dict__,
+            )
         if not reconciliation.ok:
             return self._blocked(signal, signal_id, reconciliation.reason, gate.__dict__)
+
+        reference_price = signal.entry_zone[0]
+        twap_manager = TWAP_Order_Manager(self.repository, self.adapter.settings)
+        if twap_manager.should_slice(
+            quantity=risk_decision.position_size, reference_price=reference_price
+        ):
+            twap = twap_manager.schedule_parent_order(
+                signal_id=signal_id,
+                strategy_id=signal.strategy_id,
+                symbol=signal.symbol,
+                side=entry_side_from_direction(signal.direction),
+                quantity=risk_decision.position_size,
+                reference_price=reference_price,
+                source_timestamp=signal.source_timestamp,
+            )
+            return LiveExecutionResult(
+                accepted=twap.success,
+                reason=twap.reason,
+                gate_decision=gate.__dict__,
+                order={
+                    "parent_signal_id": signal_id,
+                    "child_order_count": len(twap.child_orders),
+                    "max_child_notional": MAX_CHILD_NOTIONAL,
+                },
+                broker_submit={
+                    "submitted": False,
+                    "twap_scheduled": twap.success,
+                    "payload": twap.payload,
+                },
+            )
 
         order_key = OrderManager.build_client_order_id(
             namespace="live_order",
@@ -210,7 +249,11 @@ class LiveExecutionService:
             entity_type="execution",
             entity_id=None,
             reason=result.reason,
-            payload={"success": result.success, "payload": result.payload, "gate_decision": gate.__dict__},
+            payload={
+                "success": result.success,
+                "payload": result.payload,
+                "gate_decision": gate.__dict__,
+            },
         )
         return result
 
@@ -248,7 +291,11 @@ class LiveExecutionService:
             entity_type="execution",
             entity_id=None,
             reason=result.reason,
-            payload={"success": result.success, "payload": result.payload, "gate_decision": gate.__dict__},
+            payload={
+                "success": result.success,
+                "payload": result.payload,
+                "gate_decision": gate.__dict__,
+            },
         )
         return result
 

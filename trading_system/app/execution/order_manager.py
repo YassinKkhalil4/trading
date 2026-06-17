@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
+import math
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -10,7 +13,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from trading_system.app.core.config import Settings, get_settings
-from trading_system.app.core.enums import DecisionOutcome, DecisionType, EnvironmentMode, OrderStatus
+from trading_system.app.core.enums import (
+    DecisionOutcome,
+    DecisionType,
+    EnvironmentMode,
+    ExecutionEnvironment,
+    OrderStatus,
+)
 from trading_system.app.db import models
 from trading_system.app.db.repositories import TradingRepository, model_to_dict
 from trading_system.app.execution.alpaca_live_adapter import AlpacaLiveAdapter
@@ -19,6 +28,11 @@ from trading_system.app.risk.live_gates import LiveGateService
 
 
 ORDER_MANAGER_VERSION = "order_manager_v1"
+TWAP_MANAGER_VERSION = "twap_order_manager_v1"
+MAX_CHILD_NOTIONAL = 10_000.0
+DEFAULT_TWAP_SLICES = 10
+DEFAULT_TWAP_INTERVAL_SECONDS = 30
+TWAP_CANCEL_AFTER_SECONDS = 25
 
 
 @dataclass(frozen=True)
@@ -42,6 +56,215 @@ class BrokerOrderEventResult:
     fill: dict[str, Any] | None
     payload: dict[str, Any]
     version: str = ORDER_MANAGER_VERSION
+
+
+@dataclass(frozen=True)
+class TWAPOrderPlanResult:
+    success: bool
+    reason: str
+    parent_signal_id: str | None
+    child_orders: list[dict[str, Any]]
+    payload: dict[str, Any]
+    version: str = TWAP_MANAGER_VERSION
+
+
+class TWAP_Order_Manager:
+    """Time-weighted order slicer that records child orders against one parent signal."""
+
+    def __init__(self, repository: TradingRepository, settings: Settings | None = None) -> None:
+        self.repository = repository
+        self.settings = settings or get_settings()
+        self.logger = logging.getLogger(__name__)
+
+    def should_slice(self, *, quantity: float, reference_price: float) -> bool:
+        return quantity * reference_price > MAX_CHILD_NOTIONAL
+
+    def schedule_parent_order(
+        self,
+        *,
+        signal_id: str,
+        strategy_id: str | None,
+        symbol: str,
+        side: str,
+        quantity: float,
+        reference_price: float,
+        source_timestamp: datetime | None = None,
+    ) -> TWAPOrderPlanResult:
+        source_timestamp = source_timestamp or datetime.now(UTC)
+        if quantity <= 0 or reference_price <= 0:
+            return TWAPOrderPlanResult(
+                False, "TWAP quantity and reference price must be positive.", signal_id, [], {}
+            )
+        total_notional = quantity * reference_price
+        slice_count = max(DEFAULT_TWAP_SLICES, math.ceil(total_notional / MAX_CHILD_NOTIONAL))
+        base_notional = total_notional / slice_count
+        if base_notional > MAX_CHILD_NOTIONAL:
+            return TWAPOrderPlanResult(
+                False,
+                "TWAP child notional guard failed.",
+                signal_id,
+                [],
+                {"base_notional": base_notional},
+            )
+
+        from trading_system.app.tasks import execute_twap_child_order
+
+        signatures = []
+        planned_children = []
+        for index in range(slice_count):
+            child_notional = total_notional / slice_count
+            child_quantity = child_notional / reference_price
+            child_key = OrderManager.build_client_order_id(
+                namespace="twap_child",
+                symbol=symbol,
+                strategy_id=strategy_id,
+                source_timestamp=source_timestamp,
+                side=side,
+                leg=f"child_{index + 1}",
+            )
+            row = models.Order(
+                signal_id=signal_id,
+                idempotency_key=child_key,
+                environment_mode=EnvironmentMode.LIVE.value,
+                execution_environment=ExecutionEnvironment.LIVE.value,
+                broker="alpaca_live",
+                symbol=symbol.strip().upper(),
+                side=side.strip().lower(),
+                quantity=child_quantity,
+                order_type="limit",
+                limit_price=reference_price,
+                stop_loss=None,
+                status=OrderStatus.CREATED.value,
+                expected_price=reference_price,
+                source_timestamp=source_timestamp,
+            )
+            self.repository.session.add(row)
+            self.repository.session.flush()
+            planned_children.append(model_to_dict(row))
+            signatures.append(
+                execute_twap_child_order.s(
+                    child_order_id=row.id,
+                    child_index=index + 1,
+                    child_count=slice_count,
+                    base_notional=child_notional,
+                    reference_price=reference_price,
+                ).set(countdown=index * DEFAULT_TWAP_INTERVAL_SECONDS)
+            )
+        self.repository.session.commit()
+        workflow = None
+        if signatures:
+            from celery import chain
+
+            workflow = chain(*signatures).apply_async()
+        payload = {
+            "parent_signal_id": signal_id,
+            "slice_count": slice_count,
+            "interval_seconds": DEFAULT_TWAP_INTERVAL_SECONDS,
+            "cancel_after_seconds": TWAP_CANCEL_AFTER_SECONDS,
+            "total_notional": total_notional,
+            "max_child_notional": MAX_CHILD_NOTIONAL,
+            "celery_workflow_id": getattr(workflow, "id", None),
+        }
+        self.repository.store_decision_log(
+            decision_type=DecisionType.EXECUTION,
+            outcome=DecisionOutcome.APPROVED,
+            entity_type="twap_parent_signal",
+            entity_id=signal_id,
+            strategy_id=strategy_id,
+            rule_version=TWAP_MANAGER_VERSION,
+            reason="Large live parent order sliced into TWAP child orders.",
+            payload=payload,
+            source_timestamp=source_timestamp,
+        )
+        return TWAPOrderPlanResult(
+            True, "TWAP child-order chain scheduled.", signal_id, planned_children, payload
+        )
+
+    def execute_child_order(
+        self,
+        previous_result: dict[str, Any] | None,
+        *,
+        child_order_id: str,
+        base_notional: float,
+        reference_price: float,
+        **_: Any,
+    ) -> dict[str, Any]:
+        carry_notional = float((previous_result or {}).get("carry_notional", 0.0))
+        order = self.repository.session.get(models.Order, child_order_id)
+        if not order:
+            return {
+                "submitted": False,
+                "carry_notional": carry_notional + base_notional,
+                "reason": "Unknown TWAP child order.",
+            }
+        target_notional = min(MAX_CHILD_NOTIONAL, base_notional + carry_notional)
+        aggressive = carry_notional > 0
+        side = order.side
+        live_midpoint = asyncio.run(
+            AlpacaLiveAdapter(self.settings).latest_bid_ask_midpoint(order.symbol)
+        )
+        midpoint = live_midpoint or reference_price
+        limit_price = midpoint * (
+            1.0025 if side == "buy" and aggressive else 0.9975 if aggressive else 1.0
+        )
+        order.quantity = target_notional / limit_price
+        order.limit_price = round(limit_price, 2)
+        order.expected_price = order.limit_price
+        order.status = OrderStatus.SUBMITTED.value
+        order.submitted_at = datetime.now(UTC)
+        self.repository.session.commit()
+        broker_submit = asyncio.run(
+            AlpacaLiveAdapter(self.settings).submit_limit_order(
+                symbol=order.symbol,
+                side=order.side,
+                quantity=order.quantity,
+                limit_price=order.limit_price,
+                client_order_id=order.idempotency_key,
+            )
+        )
+        if broker_submit.submitted:
+            self.repository.mark_order_broker_result(
+                order_id=order.id,
+                broker_order_id=broker_submit.broker_order_id,
+                status=OrderStatus.SUBMITTED.value,
+                reason=broker_submit.reason,
+            )
+        else:
+            self.repository.mark_order_broker_result(
+                order_id=order.id,
+                broker_order_id=broker_submit.broker_order_id,
+                status=OrderStatus.REJECTED.value,
+                reason=broker_submit.reason,
+            )
+            return {
+                "submitted": False,
+                "carry_notional": target_notional,
+                "reason": "TWAP child submit failed; notional carried into next slice.",
+            }
+        time.sleep(TWAP_CANCEL_AFTER_SECONDS)
+        order = self.repository.session.get(models.Order, child_order_id)
+        if (
+            order
+            and order.status not in {OrderStatus.FILLED.value, OrderStatus.CANCELLED.value}
+            and order.broker_order_id
+        ):
+            cancel = asyncio.run(
+                AlpacaLiveAdapter(self.settings).cancel_order(order.broker_order_id)
+            )
+            order.status = OrderStatus.CANCELLED.value if cancel.success else order.status
+            order.cancelled_at = datetime.now(UTC) if cancel.success else order.cancelled_at
+            self.repository.session.commit()
+            return {
+                "submitted": broker_submit.submitted,
+                "cancelled": cancel.success,
+                "carry_notional": target_notional,
+                "reason": "Unfilled TWAP child carried into next slice.",
+            }
+        return {
+            "submitted": broker_submit.submitted,
+            "carry_notional": 0.0,
+            "reason": broker_submit.reason,
+        }
 
 
 class OrderManager:
@@ -101,7 +324,14 @@ class OrderManager:
 
         exit_side = "sell" if normalized_side == "buy" else "buy"
         leg_specs = [
-            ("entry", normalized_side, "limit", limit_price, stop_loss, OrderStatus.SUBMITTED.value),
+            (
+                "entry",
+                normalized_side,
+                "limit",
+                limit_price,
+                stop_loss,
+                OrderStatus.SUBMITTED.value,
+            ),
             ("take_profit", exit_side, "limit", take_profit_price, None, OrderStatus.CREATED.value),
             ("stop_loss", exit_side, "stop", None, stop_loss, OrderStatus.CREATED.value),
         ]
@@ -139,7 +369,10 @@ class OrderManager:
                 len(existing),
                 0,
                 "Duplicate bracket ClOrdID rejected before broker submission.",
-                {"orders": [model_to_dict(row) for row in existing], "client_order_ids": client_order_ids},
+                {
+                    "orders": [model_to_dict(row) for row in existing],
+                    "client_order_ids": client_order_ids,
+                },
             )
 
         rows = []
@@ -174,14 +407,19 @@ class OrderManager:
                 sorted(client_order_ids.values()),
             )
             existing = self.repository.session.scalars(
-                select(models.Order).where(models.Order.idempotency_key.in_(client_order_ids.values()))
+                select(models.Order).where(
+                    models.Order.idempotency_key.in_(client_order_ids.values())
+                )
             ).all()
             return OrderManagerResult(
                 False,
                 len(existing),
                 0,
                 "Duplicate idempotency key rejected during bracket order commit.",
-                {"orders": [model_to_dict(row) for row in existing], "client_order_ids": client_order_ids},
+                {
+                    "orders": [model_to_dict(row) for row in existing],
+                    "client_order_ids": client_order_ids,
+                },
             )
         payload = {
             "order_class": "bracket",
@@ -225,7 +463,9 @@ class OrderManager:
                 reason=reason,
                 payload=broker_order,
             )
-            return BrokerOrderEventResult(False, False, 0, 0, reason, None, None, {"broker_order": broker_order})
+            return BrokerOrderEventResult(
+                False, False, 0, 0, reason, None, None, {"broker_order": broker_order}
+            )
 
         row = None
         if client_order_id:
@@ -237,16 +477,24 @@ class OrderManager:
                 select(models.Order).where(models.Order.broker_order_id == broker_order_id)
             )
         if not row:
-            reason = "Unknown broker order event ignored; OMS will not create live orders from webhooks."
+            reason = (
+                "Unknown broker order event ignored; OMS will not create live orders from webhooks."
+            )
             self.repository.store_audit_log(
                 actor="system",
                 event_type="UNKNOWN_BROKER_ORDER_EVENT_IGNORED",
                 entity_type="order",
                 entity_id=client_order_id or broker_order_id,
                 reason=reason,
-                payload={"broker": broker, "environment_mode": environment_mode, "broker_order": broker_order},
+                payload={
+                    "broker": broker,
+                    "environment_mode": environment_mode,
+                    "broker_order": broker_order,
+                },
             )
-            return BrokerOrderEventResult(True, True, 0, 0, reason, None, None, {"broker_order": broker_order})
+            return BrokerOrderEventResult(
+                True, True, 0, 0, reason, None, None, {"broker_order": broker_order}
+            )
 
         previous = model_to_dict(row)
         next_status = self._normalize_broker_status(str(broker_order.get("status") or row.status))
@@ -279,20 +527,21 @@ class OrderManager:
         row.broker_order_id = broker_order_id or row.broker_order_id
         row.status = next_status
         if next_status == OrderStatus.REJECTED.value:
-            row.rejection_reason = (
-                str(
-                    broker_order.get("failed_reason")
-                    or broker_order.get("reject_reason")
-                    or broker_order.get("reason")
-                    or "Broker reported order rejection."
-                )
+            row.rejection_reason = str(
+                broker_order.get("failed_reason")
+                or broker_order.get("reject_reason")
+                or broker_order.get("reason")
+                or "Broker reported order rejection."
             )
         if next_status in {OrderStatus.CANCELLED.value, OrderStatus.STALE_CANCELLED.value}:
             row.cancelled_at = datetime.now(UTC)
         row.limit_price = self._float_or_none(broker_order.get("limit_price")) or row.limit_price
         self.repository.session.commit()
 
-        if next_status == OrderStatus.REJECTED.value and previous["status"] != OrderStatus.REJECTED.value:
+        if (
+            next_status == OrderStatus.REJECTED.value
+            and previous["status"] != OrderStatus.REJECTED.value
+        ):
             self.repository.store_execution_error(
                 order_id=row.id,
                 environment_mode=environment_mode,
@@ -482,9 +731,13 @@ class OrderManager:
             self.repository.session.commit()
         except IntegrityError:
             self.repository.session.rollback()
-            self.logger.warning("Idempotency collision for replacement order key: %s", replacement.idempotency_key)
+            self.logger.warning(
+                "Idempotency collision for replacement order key: %s", replacement.idempotency_key
+            )
             existing = self.repository.session.scalar(
-                select(models.Order).where(models.Order.idempotency_key == replacement.idempotency_key)
+                select(models.Order).where(
+                    models.Order.idempotency_key == replacement.idempotency_key
+                )
             )
             return OrderManagerResult(
                 False,
@@ -556,8 +809,7 @@ class OrderManager:
         normalized_symbol = symbol.upper()
         normalized_side = side.lower()
         idempotency_key = (
-            f"protective-exit:{signal_id or normalized_symbol}:"
-            f"{normalized_side}:{environment_mode}"
+            f"protective-exit:{signal_id or normalized_symbol}:{normalized_side}:{environment_mode}"
         )
         existing = self.repository.session.scalar(
             select(models.Order).where(models.Order.idempotency_key == idempotency_key)
