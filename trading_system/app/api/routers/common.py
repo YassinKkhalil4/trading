@@ -227,21 +227,6 @@ class AdminUserActiveBody(BaseModel):
 class AdminUserUnlockBody(BaseModel):
     username: str
     reason: str
-
-
-class StrategyStatusChangeBody(BaseModel):
-    requested_status: str
-    strategy_version: str = "v1"
-    evidence: dict = Field(default_factory=dict)
-    reason: str
-
-
-class StrategyStatusDecisionBody(BaseModel):
-    request_id: str
-    approved: bool
-    decision_reason: str
-
-
 class BacktestRunRequest(BaseModel):
     strategy_id: str = "VWAP_RECLAIM"
     symbol: str = "SPY"
@@ -276,18 +261,6 @@ class KillSwitchResolveBody(BaseModel):
 
 class LiveEmergencyBody(BaseModel):
     reason: str
-
-
-class LiveApprovalBody(BaseModel):
-    reason: str
-    expires_at: datetime | None = None
-
-
-class LiveApprovalRevokeBody(BaseModel):
-    approval_id: str
-    reason: str
-
-
 class JournalEntryCreateBody(BaseModel):
     symbol: str
     strategy_id: str | None = None

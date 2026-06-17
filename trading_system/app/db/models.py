@@ -33,7 +33,6 @@ from trading_system.app.core.enums import (
     ProviderReliabilityLevel,
     RecommendationStatus,
     SignalStatus,
-    StrategyApprovalStatus,
     StrategyStatus,
     TradeType,
 )
@@ -536,7 +535,6 @@ class StrategyRegistry(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     max_drawdown_limit: Mapped[float | None] = mapped_column(Float)
     allowed_symbols: Mapped[list[str]] = mapped_column(JSONB, default=list)
     max_risk_per_trade: Mapped[float | None] = mapped_column(Float)
-    requires_human_approval: Mapped[bool] = mapped_column(Boolean, default=True)
     paused_reason: Mapped[str | None] = mapped_column(Text)
     changed_reason: Mapped[str | None] = mapped_column(Text)
     logic_version: Mapped[str] = mapped_column(String(32), default="v1")
@@ -560,24 +558,6 @@ class StrategyCooldown(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     cooldown_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     reason: Mapped[str] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-
-
-class StrategyApprovalRequest(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
-    __tablename__ = "strategy_approval_requests"
-
-    strategy_id: Mapped[str] = mapped_column(String(80), index=True)
-    strategy_version: Mapped[str] = mapped_column(String(32), default="v1", index=True)
-    requested_status: Mapped[str] = mapped_column(String(40), index=True)
-    current_status: Mapped[str] = mapped_column(String(40))
-    status: Mapped[str] = mapped_column(
-        String(32), default=StrategyApprovalStatus.REQUESTED.value, index=True
-    )
-    requested_by: Mapped[str] = mapped_column(String(80), default="system")
-    approved_by: Mapped[str | None] = mapped_column(String(80))
-    evidence: Mapped[dict] = mapped_column(JSONB, default=dict)
-    reason: Mapped[str] = mapped_column(Text)
-    decision_reason: Mapped[str | None] = mapped_column(Text)
-    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ScannerResult(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
@@ -1087,7 +1067,5 @@ class ParameterChangeRequest(IdMixin, TimestampMixin, SourceTimestampMixin, Base
     proposed_value: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32), default=RecommendationStatus.PROPOSED.value)
     reason: Mapped[str] = mapped_column(Text)
-    human_approved_by: Mapped[str | None] = mapped_column(String(80))
-    human_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     applied_reason: Mapped[str | None] = mapped_column(Text)

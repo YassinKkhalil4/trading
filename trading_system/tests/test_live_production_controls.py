@@ -36,7 +36,6 @@ from trading_system.app.risk.risk_engine import RiskDecision
 from trading_system.app.security.auth import AuthService, decode_session_token
 from trading_system.app.services.runtime import TradingRuntimeService
 from trading_system.app.signals.signal_engine import TradeSignal
-from trading_system.app.strategies.approval import StrategyApprovalWorkflow
 
 
 def _repo() -> TradingRepository:
@@ -180,11 +179,6 @@ def _make_live_ready(repo: TradingRepository, settings: Settings) -> None:
     )
     strategy.status = StrategyStatus.APPROVED_SMALL_SIZE.value
     repo.session.commit()
-    repo.store_live_trading_approval(
-        approved_by="admin",
-        reason="test approval",
-        expires_at=datetime.now(UTC) + timedelta(hours=1),
-    )
     for provider in ["alpaca_market_data", "alpaca_live"]:
         repo.store_provider_health_snapshot(
             provider_name=provider,
@@ -369,152 +363,6 @@ def test_auth_service_locks_user_after_repeated_failed_logins():
     assert user is not None
     assert user.locked_until is not None
     assert "FAILED_LOGIN_LOCKED" in {row["event_type"] for row in repo.latest_audit_logs(10)}
-
-
-def test_strategy_approval_requires_evidence_then_updates_status():
-    repo = _repo()
-    workflow = StrategyApprovalWorkflow(repo)
-
-    missing = workflow.request_status_change(
-        strategy_id="VWAP_RECLAIM",
-        strategy_version="v1",
-        requested_status=StrategyStatus.APPROVED_SMALL_SIZE.value,
-        requested_by="admin",
-        evidence={},
-        reason="promote",
-    )
-    assert missing.accepted is False
-    assert "one_step_promotion" in missing.reason
-
-    report = repo.store_backtest_report(
-        strategy_id="VWAP_RECLAIM",
-        strategy_version="v1",
-        universe_name="approval-test",
-        assumptions={"slippage_bps": 5},
-        metrics={"trade_count": 24, "profit_factor": 1.32},
-        report_uri="s3://unit-test/backtests/vwap-reclaim.json",
-        survivorship_bias_warning="Unit test report only; production reports must use a liquid universe.",
-        reason="persisted backtest evidence",
-    )
-    paper_request = workflow.request_status_change(
-        strategy_id="VWAP_RECLAIM",
-        strategy_version="v1",
-        requested_status=StrategyStatus.PAPER_TESTING.value,
-        requested_by="admin",
-        evidence={
-            "strategy_id": "VWAP_RECLAIM",
-            "strategy_version": "v1",
-            "backtest_report_id": report.id,
-        },
-        reason="backtest evidence supports paper testing",
-    )
-    assert paper_request.accepted is True
-    paper_decision = workflow.approve_status_change(
-        request_id=paper_request.request_id,
-        approved=True,
-        decided_by="admin",
-        decision_reason="backtest evidence reviewed",
-    )
-    assert paper_decision.approved is True
-
-    strategy = repo.session.scalar(
-        select(models.StrategyRegistry).where(models.StrategyRegistry.strategy_id == "VWAP_RECLAIM")
-    )
-    strategy.backtest_trade_count = 30
-    strategy.out_of_sample_tested = True
-    strategy.evidence_quality_score = 0.8
-    repo.session.commit()
-
-    request = workflow.request_status_change(
-        strategy_id="VWAP_RECLAIM",
-        strategy_version="v1",
-        requested_status=StrategyStatus.APPROVED_SMALL_SIZE.value,
-        requested_by="admin",
-        evidence={
-            "paper_trades": 20,
-            "paper_positive_expectancy": True,
-            "rule_violations": 0,
-            "reconciliation_clean": True,
-        },
-        reason="paper evidence supports small-size testing",
-    )
-    assert request.accepted is True
-
-    decision = workflow.approve_status_change(
-        request_id=request.request_id,
-        approved=True,
-        decided_by="admin",
-        decision_reason="evidence reviewed",
-    )
-    assert decision.approved is True
-    strategy = repo.session.scalar(
-        select(models.StrategyRegistry).where(models.StrategyRegistry.strategy_id == "VWAP_RECLAIM")
-    )
-    assert strategy.status == StrategyStatus.APPROVED_SMALL_SIZE.value
-
-
-def test_strategy_paper_testing_requires_persisted_backtest_report():
-    repo = _repo()
-    strategy = repo.session.scalar(
-        select(models.StrategyRegistry).where(models.StrategyRegistry.strategy_id == "VWAP_RECLAIM")
-    )
-    strategy.status = StrategyStatus.RESEARCH.value
-    repo.session.commit()
-    workflow = StrategyApprovalWorkflow(repo)
-
-    ad_hoc_metrics = workflow.request_status_change(
-        strategy_id="VWAP_RECLAIM",
-        strategy_version="v1",
-        requested_status=StrategyStatus.PAPER_TESTING.value,
-        requested_by="researcher",
-        evidence={
-            "strategy_id": "VWAP_RECLAIM",
-            "strategy_version": "v1",
-            "backtest_metrics": {"trade_count": 12, "profit_factor": 1.4},
-        },
-        reason="ad hoc metrics are not enough",
-    )
-
-    report = repo.store_backtest_report(
-        strategy_id="VWAP_RECLAIM",
-        strategy_version="v1",
-        universe_name="unit-test",
-        assumptions={"slippage_bps": 5},
-        metrics={"trade_count": 12, "profit_factor": 1.4},
-        report_uri="s3://unit-test/backtests/vwap.json",
-        survivorship_bias_warning="Universe fixed for unit test.",
-        reason="Persisted backtest evidence.",
-    )
-    audit = repo.latest_audit_logs(1)[0]
-    persisted = workflow.request_status_change(
-        strategy_id="VWAP_RECLAIM",
-        strategy_version="v1",
-        requested_status=StrategyStatus.PAPER_TESTING.value,
-        requested_by="researcher",
-        evidence={
-            "strategy_id": "VWAP_RECLAIM",
-            "strategy_version": "v1",
-            "backtest_report_id": report.id,
-        },
-        reason="persisted backtest supports paper testing",
-    )
-    decision = workflow.approve_status_change(
-        request_id=persisted.request_id,
-        approved=True,
-        decided_by="admin",
-        decision_reason="backtest evidence reviewed",
-    )
-
-    assert ad_hoc_metrics.accepted is False
-    assert "persisted_backtest_report" in ad_hoc_metrics.reason
-    assert audit["event_type"] == "BACKTEST_REPORT_STORED"
-    assert audit["entity_id"] == report.id
-    assert audit["payload"]["metrics"]["trade_count"] == 12
-    assert persisted.accepted is True
-    assert decision.approved is True
-    assert strategy.status == StrategyStatus.PAPER_TESTING.value
-
-
 def test_live_readiness_and_gates_can_pass_only_when_all_controls_are_green():
     repo = _repo()
     settings = _live_settings()
@@ -565,24 +413,6 @@ def test_live_readiness_report_audit_links_actor_and_report_id():
     assert audit["entity_id"] == result.report_id
     assert audit["payload"]["live_allowed"] is True
 
-
-def test_runtime_bootstrap_preserves_strategy_approval_state():
-    repo = _repo()
-    settings = _live_settings()
-    _make_live_ready(repo, settings)
-
-    TradingRuntimeService(repo, settings=settings).bootstrap()
-    gate = LiveGateService(repo, settings).evaluate(
-        strategy_id="VWAP_RECLAIM", signal_id="sig-test"
-    )
-    strategy = repo.session.scalar(
-        select(models.StrategyRegistry).where(models.StrategyRegistry.strategy_id == "VWAP_RECLAIM")
-    )
-
-    assert strategy.status == StrategyStatus.APPROVED_SMALL_SIZE.value
-    assert gate.allowed is True
-
-
 def test_missing_live_account_snapshot_blocks_readiness_and_gate():
     repo = _repo()
     settings = _live_settings()
@@ -605,55 +435,6 @@ def test_missing_live_account_snapshot_blocks_readiness_and_gate():
         if item["check_name"] == "live_account_snapshot_usable"
     )
     assert check["passed"] is False
-
-
-def test_expired_live_approval_is_marked_expired_and_audited():
-    repo = _repo()
-    expired = repo.store_live_trading_approval(
-        approved_by="admin",
-        reason="expired test approval",
-        expires_at=datetime.now(UTC) - timedelta(minutes=1),
-    )
-
-    active = repo.active_live_trading_approval()
-    row = repo.session.get(models.SystemLog, expired.id)
-    audit = repo.latest_audit_logs(1)[0]
-
-    assert active is None
-    assert row.status == "EXPIRED"
-    assert row.payload["revoked_at"] is not None
-    assert audit["event_type"] == "LIVE_APPROVAL_EXPIRED"
-    assert audit["entity_id"] == expired.id
-
-
-def test_expired_live_approval_blocks_readiness_check():
-    repo = _repo()
-    settings = _live_settings()
-    _make_live_ready(repo, settings)
-    approval = repo.active_live_trading_approval()
-    payload = dict(approval.payload or {})
-    payload["expires_at"] = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
-    approval.payload = payload
-    repo.session.commit()
-
-    readiness = LiveReadinessService(repo, settings).generate_report()
-    gate = LiveGateService(repo, settings).evaluate(
-        strategy_id="VWAP_RECLAIM", signal_id="sig-test"
-    )
-    report = repo.latest_live_readiness_reports(1)[0]
-    check = next(
-        item
-        for item in report["payload"]["checks"]
-        if item["check_name"] == "active_human_live_approval"
-    )
-
-    assert readiness.live_allowed is False
-    assert gate.allowed is False
-    assert "active_human_approval" in gate.blockers
-    assert check["passed"] is False
-    assert repo.session.get(models.SystemLog, approval.id).status == "EXPIRED"
-
-
 @pytest.mark.asyncio
 async def test_mocked_live_allowed_flow_uses_separate_live_adapter_after_all_gates_pass():
     repo = _repo()
@@ -766,9 +547,7 @@ async def test_duplicate_live_submit_is_rejected_before_second_broker_call():
         ("allow_live_trading", "allow_live_trading"),
         ("confirm_live_trading", "confirm_live_trading"),
         ("live_keys", "live_keys_present"),
-        ("human_approval", "active_human_approval"),
         ("kill_switch", "no_active_kill_switch"),
-        ("strategy_approval", "strategy_approved"),
         ("broker_health", "alpaca_live_healthy"),
         ("reconciliation", "live_reconciliation_clean"),
     ],
@@ -821,21 +600,8 @@ async def test_mocked_live_blocked_flow_rejects_before_broker_when_any_gate_fail
             alpaca_live_secret_key="live-secret",
             admin_session_secret="unit-test-live-session-secret",
         )
-    elif broken_gate == "human_approval":
-        repo.session.query(models.SystemLog).filter(
-            models.SystemLog.log_type == "LIVE_TRADING_APPROVAL"
-        ).delete(synchronize_session=False)
-        repo.session.commit()
     elif broken_gate == "kill_switch":
         KillSwitchService(repo).activate(event_type="TEST", reason="unit test", payload={})
-    elif broken_gate == "strategy_approval":
-        strategy = repo.session.scalar(
-            select(models.StrategyRegistry).where(
-                models.StrategyRegistry.strategy_id == "VWAP_RECLAIM"
-            )
-        )
-        strategy.status = StrategyStatus.PAUSED.value
-        repo.session.commit()
     elif broken_gate == "broker_health":
         repo.store_provider_health_snapshot(
             provider_name="alpaca_live",

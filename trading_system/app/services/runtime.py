@@ -103,11 +103,6 @@ from trading_system.app.services.replay.decision_snapshot_service import Decisio
 from trading_system.app.services.signals.scanner_signal_bridge import ScannerSignalBridgeService
 from trading_system.app.services.scheduler import ScheduledCollectorRunner, ScheduledJobResult
 from trading_system.app.signals.signal_engine import SignalEngine, TradeSignal
-from trading_system.app.strategies.approval import (
-    StrategyApprovalWorkflow,
-    StrategyStatusDecisionResult,
-    StrategyStatusRequestResult,
-)
 from trading_system.app.strategies.cooldowns import StrategyCooldownBook
 from trading_system.app.strategies.registry import StrategyRegistryService
 
@@ -1521,42 +1516,6 @@ class TradingRuntimeService:
         self.bootstrap()
         return MissingCandleRepairService(self.repository, self.settings).run_once(symbols)
 
-    def request_strategy_status_change(
-        self,
-        *,
-        strategy_id: str,
-        strategy_version: str,
-        requested_status: str,
-        requested_by: str,
-        evidence: dict[str, Any],
-        reason: str,
-    ) -> StrategyStatusRequestResult:
-        self.bootstrap()
-        return StrategyApprovalWorkflow(self.repository).request_status_change(
-            strategy_id=strategy_id,
-            strategy_version=strategy_version,
-            requested_status=requested_status,
-            requested_by=requested_by,
-            evidence=evidence,
-            reason=reason,
-        )
-
-    def approve_strategy_status_change(
-        self,
-        *,
-        request_id: str,
-        approved: bool,
-        decided_by: str,
-        decision_reason: str,
-    ) -> StrategyStatusDecisionResult:
-        self.bootstrap()
-        return StrategyApprovalWorkflow(self.repository).approve_status_change(
-            request_id=request_id,
-            approved=approved,
-            decided_by=decided_by,
-            decision_reason=decision_reason,
-        )
-
     def activate_kill_switch(
         self,
         *,
@@ -1684,9 +1643,7 @@ class TradingRuntimeService:
             "strategy_recommendations": self.repository.latest_strategy_recommendations(100),
             "backtest_reports": self.repository.latest_backtest_reports(50),
             "live_readiness_reports": self.repository.latest_live_readiness_reports(20),
-            "live_trading_approvals": self.repository.latest_live_trading_approvals(20),
             "kill_switches": self.repository.latest_kill_switches(100),
-            "strategy_approval_requests": self.repository.latest_strategy_approval_requests(100),
             "missing_candle_gaps": self.repository.latest_missing_candle_gaps(100),
             "opportunity_scores": self.repository.latest_opportunity_scores(100),
             "alpha_rejections": self.repository.latest_alpha_rejections(100),

@@ -374,18 +374,6 @@ def backtest_reports(
     )
 
 
-@router.get("/strategy-approvals/requests")
-def strategy_approval_requests(
-    _principal: AdminPrincipal = Depends(require_principal),
-    limit: int = Query(default=100, ge=1, le=500),
-) -> dict:
-    return _read_rows(
-        "strategy_approval_requests",
-        lambda repo, row_limit: repo.latest_strategy_approval_requests(row_limit),
-        limit,
-    )
-
-
 @router.get("/kill-switches")
 def kill_switches(
     _principal: AdminPrincipal = Depends(require_principal),
@@ -455,50 +443,6 @@ def backtests_run(
             result=result,
         )
         return result
-    finally:
-        session.close()
-
-
-@router.post("/strategies/{strategy_id}/request-status-change")
-def request_strategy_status_change(
-    strategy_id: str,
-    request: StrategyStatusChangeBody,
-    principal: AdminPrincipal = Depends(require_trader_or_admin),
-) -> dict:
-    session, service = _runtime()
-    try:
-        result = service.request_strategy_status_change(
-            strategy_id=strategy_id,
-            strategy_version=request.strategy_version,
-            requested_status=request.requested_status,
-            requested_by=principal.username,
-            evidence=request.evidence,
-            reason=request.reason,
-        )
-        return result.__dict__
-    finally:
-        session.close()
-
-
-@router.post("/strategies/{strategy_id}/approve-status-change")
-def approve_strategy_status_change(
-    strategy_id: str,
-    request: StrategyStatusDecisionBody,
-    principal: AdminPrincipal = Depends(require_admin_token),
-) -> dict:
-    session, service = _runtime()
-    try:
-        result = service.approve_strategy_status_change(
-            request_id=request.request_id,
-            approved=request.approved,
-            decided_by=principal.username,
-            decision_reason=request.decision_reason,
-        )
-        if result.request and result.request["strategy_id"] != strategy_id:
-            raise HTTPException(
-                status_code=409, detail="Request does not belong to strategy path."
-            )
-        return result.__dict__
     finally:
         session.close()
 
@@ -731,73 +675,6 @@ def live_readiness_detail(
             service.repository, service.settings
         ).get_detail_report()
         return detail.to_dict()
-    finally:
-        session.close()
-
-
-@router.get("/live-readiness/approvals")
-def live_readiness_approvals(
-    _principal: AdminPrincipal = Depends(require_principal),
-    limit: int = Query(default=20, ge=1, le=100),
-) -> dict:
-    session, service = _runtime()
-    try:
-        service.bootstrap()
-        return {
-            "live_trading_approvals": service.repository.latest_live_trading_approvals(
-                limit
-            )
-        }
-    finally:
-        session.close()
-
-
-@router.post("/live-readiness/approve")
-def live_readiness_approve(
-    request: LiveApprovalBody,
-    principal: AdminPrincipal = Depends(require_admin_token),
-) -> dict:
-    session, service = _runtime()
-    try:
-        service.bootstrap()
-        row = service.repository.store_live_trading_approval(
-            approved_by=principal.username,
-            reason=request.reason,
-            expires_at=request.expires_at,
-        )
-        service.repository.store_audit_log(
-            actor=principal.username,
-            event_type="LIVE_APPROVAL_CREATED",
-            entity_type="live_trading_approval",
-            entity_id=row.id,
-            reason=request.reason,
-            payload={
-                "expires_at": (
-                    request.expires_at.isoformat() if request.expires_at else None
-                )
-            },
-        )
-        return {"approval": service.repository.latest_live_trading_approvals(1)[0]}
-    finally:
-        session.close()
-
-
-@router.post("/live-readiness/approvals/revoke")
-def live_readiness_approval_revoke(
-    request: LiveApprovalRevokeBody,
-    principal: AdminPrincipal = Depends(require_admin_token),
-) -> dict:
-    session, service = _runtime()
-    try:
-        service.bootstrap()
-        service.repository.revoke_live_trading_approval(
-            approval_id=request.approval_id,
-            revoked_by=principal.username,
-            reason=request.reason,
-        )
-        return {"approval": service.repository.latest_live_trading_approvals(1)[0]}
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
     finally:
         session.close()
 

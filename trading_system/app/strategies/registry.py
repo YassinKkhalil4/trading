@@ -15,7 +15,6 @@ class StrategyDefinition:
     trade_type: TradeType
     allowed_timeframes: list[str]
     allowed_regimes: list[str]
-    requires_human_approval: bool = True
     logic_version: str = "v1"
     target_1_rr: float = 2.0
     target_2_rr: float = 3.0
@@ -77,7 +76,6 @@ def default_strategy_definitions() -> list[StrategyDefinition]:
                 trade_type=TradeType(seed["trade_type"]),
                 allowed_timeframes=list(seed["allowed_timeframes"]),
                 allowed_regimes=list(seed["allowed_regimes"]),
-                requires_human_approval=bool(seed.get("requires_human_approval", True)),
                 logic_version=seed.get("logic_version", "v1"),
                 target_1_rr=float(seed.get("target_1_rr", 2.0)),
                 target_2_rr=float(seed.get("target_2_rr", 3.0)),

@@ -36,7 +36,6 @@ GATE_NAMES = [
     "broker_reconciliation_clean",
     "no_active_kill_switch",
     "approved_strategy",
-    "human_live_approval_active",
     "data_quality_valid",
     "market_session_valid",
 ]
@@ -71,11 +70,6 @@ def _make_live_ready_at(repo: TradingRepository, settings: Settings, checked_at:
     )
     strategy.status = StrategyStatus.APPROVED_SMALL_SIZE.value
     repo.session.commit()
-    repo.store_live_trading_approval(
-        approved_by="admin",
-        reason="test approval",
-        expires_at=datetime.now(UTC) + timedelta(hours=1),
-    )
     for provider in ["alpaca_market_data", "alpaca_live"]:
         repo.store_provider_health_snapshot(
             provider_name=provider,
@@ -134,7 +128,7 @@ def test_all_detail_gates_pass_when_live_ready():
 
     assert result.overall_status == "PASSED"
     assert result.checked_at == PASS_CHECKED_AT
-    assert len(result.gates) == 13
+    assert len(result.gates) == len(GATE_NAMES)
     assert all(gate.passed for gate in result.gates)
     assert [gate.gate_name for gate in result.gates] == GATE_NAMES
 
@@ -185,11 +179,6 @@ def test_detail_gate_failure_blocks_overall_status(gate_name: str):
         )
         strategy.status = StrategyStatus.PAUSED.value
         repo.session.commit()
-    elif gate_name == "human_live_approval_active":
-        repo.session.query(models.SystemLog).filter(
-            models.SystemLog.log_type == "LIVE_TRADING_APPROVAL"
-        ).delete(synchronize_session=False)
-        repo.session.commit()
     elif gate_name == "data_quality_valid":
         candle = repo.session.scalar(
             select(models.CleanMarketData).where(models.CleanMarketData.provider == "alpaca_market_data")
@@ -204,7 +193,7 @@ def test_detail_gate_failure_blocks_overall_status(gate_name: str):
     gates = _gate_map(result)
 
     assert result.overall_status == "BLOCKED"
-    assert len(result.gates) == 13
+    assert len(result.gates) == len(GATE_NAMES)
     assert gates[gate_name].passed is False
     assert gates[gate_name].blocking_reason
 
@@ -246,6 +235,6 @@ def test_live_readiness_detail_api_returns_gate_report(monkeypatch):
     payload = response.json()
     assert payload["overall_status"] == "PASSED"
     assert payload["checked_at"] == PASS_CHECKED_AT.isoformat()
-    assert len(payload["gates"]) == 13
+    assert len(payload["gates"]) == len(GATE_NAMES)
     assert [gate["gate_name"] for gate in payload["gates"]] == GATE_NAMES
     assert all(gate["passed"] for gate in payload["gates"])

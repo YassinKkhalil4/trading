@@ -110,12 +110,10 @@ def test_sensitive_read_endpoints_require_authentication():
         "/reviews/weekly",
         "/learning/recommendations",
         "/backtests/reports",
-        "/strategy-approvals/requests",
         "/kill-switches",
         "/decisions",
         "/audit/logs",
         "/live-readiness/reports",
-        "/live-readiness/approvals",
     ]
     for endpoint in endpoints:
         response = client.get(endpoint)
@@ -157,9 +155,7 @@ def test_api_exposes_required_dashboard_and_operations_surfaces():
         "/reviews/weekly",
         "/learning/recommendations",
         "/backtests/reports",
-        "/strategy-approvals/requests",
         "/live-readiness/reports",
-        "/live-readiness/approvals",
         "/kill-switches",
         "/decisions",
         "/audit/logs",
@@ -197,7 +193,6 @@ def test_operational_mutation_endpoints_require_authentication():
         ("/broker/alpaca-paper/sync", {}),
         ("/provider-health/run", {}),
         ("/live-readiness/report", {}),
-        ("/live-readiness/approvals/revoke", {"approval_id": "missing", "reason": "test"}),
         ("/execution/paper/submit-vwap-reclaim", {}),
         ("/execution/orders/replace", {"order_id": "missing", "reason": "test"}),
         ("/execution/orders/submit-broker", {"order_id": "missing", "reason": "test"}),
@@ -236,15 +231,6 @@ def test_live_approval_revoke_endpoint_is_admin_only_and_uses_repository(monkeyp
         def __init__(self) -> None:
             self.revoked: dict | None = None
 
-        def revoke_live_trading_approval(self, *, approval_id: str, revoked_by: str, reason: str):
-            self.revoked = {
-                "approval_id": approval_id,
-                "revoked_by": revoked_by,
-                "reason": reason,
-            }
-
-        def latest_live_trading_approvals(self, limit: int = 20) -> list[dict]:
-            return [
                 {
                     "id": self.revoked["approval_id"] if self.revoked else "unknown",
                     "status": "REVOKED",
@@ -269,7 +255,6 @@ def test_live_approval_revoke_endpoint_is_admin_only_and_uses_repository(monkeyp
     app.dependency_overrides[require_admin_token] = lambda: AdminPrincipal(username="risk-admin", role="ADMIN")
     try:
         response = client.post(
-            "/live-readiness/approvals/revoke",
             json={"approval_id": "approval-1", "reason": "Operator ended the live window."},
         )
     finally:
