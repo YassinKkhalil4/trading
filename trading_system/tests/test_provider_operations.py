@@ -26,7 +26,19 @@ from trading_system.app.execution.paper_execution import PaperOrder
 from trading_system.app.ops.coordination import CoordinationLockManager, LockHandle
 from trading_system.app.risk.live_readiness import LiveReadinessService
 from trading_system.app.services.scheduler import ScheduledCollectorRunner
-from trading_system.app.services.runtime import TradingRuntimeService
+from trading_system.app.services.orchestrators.data_pipeline_orchestrator import DataPipelineOrchestrator
+from trading_system.app.services.orchestrators.execution_orchestrator import ExecutionOrchestrator
+from trading_system.app.services.orchestrators.research_orchestrator import ResearchOrchestrator
+from trading_system.app.services.orchestrators.risk_and_sync_orchestrator import RiskAndSyncOrchestrator
+
+
+class TradingRuntimeService(
+    DataPipelineOrchestrator,
+    ExecutionOrchestrator,
+    RiskAndSyncOrchestrator,
+    ResearchOrchestrator,
+):
+    """Test-only compatibility facade over physically extracted orchestrators."""
 
 
 class FakeResponse:
@@ -156,11 +168,11 @@ def test_runtime_primary_collection_blocks_yahoo_fallback_outside_research(monke
     FakeAlpacaBarsFailureCollector.calls = []
     FakeYahooCollector.calls = []
     monkeypatch.setattr(
-        "trading_system.app.services.runtime.AlpacaBarsCollector",
+        "trading_system.app.services.orchestrators.data_pipeline_orchestrator.AlpacaBarsCollector",
         FakeAlpacaBarsFailureCollector,
     )
     monkeypatch.setattr(
-        "trading_system.app.services.runtime.YahooChartCollector",
+        "trading_system.app.services.orchestrators.data_pipeline_orchestrator.YahooChartCollector",
         FakeYahooCollector,
     )
 

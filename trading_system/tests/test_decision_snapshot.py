@@ -34,7 +34,19 @@ from trading_system.app.services.replay.decision_snapshot_service import (
     DecisionSnapshotStage,
     FORBIDDEN_SNAPSHOT_KEYS,
 )
-from trading_system.app.services.runtime import TradingRuntimeService
+from trading_system.app.services.orchestrators.data_pipeline_orchestrator import DataPipelineOrchestrator
+from trading_system.app.services.orchestrators.execution_orchestrator import ExecutionOrchestrator
+from trading_system.app.services.orchestrators.research_orchestrator import ResearchOrchestrator
+from trading_system.app.services.orchestrators.risk_and_sync_orchestrator import RiskAndSyncOrchestrator
+
+
+class TradingRuntimeService(
+    DataPipelineOrchestrator,
+    ExecutionOrchestrator,
+    RiskAndSyncOrchestrator,
+    ResearchOrchestrator,
+):
+    """Test-only compatibility facade over physically extracted orchestrators."""
 from trading_system.app.services.signals.scanner_signal_bridge import ScannerSignalBridgeService
 from trading_system.app.signals.signal_engine import TradeSignal
 from trading_system.app.core.enums import Direction, SignalStatus, TradeType

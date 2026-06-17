@@ -41,7 +41,19 @@ from trading_system.app.services.replay.decision_snapshot_service import (
     DecisionSnapshotService,
     DecisionSnapshotStage,
 )
-from trading_system.app.services.runtime import TradingRuntimeService
+from trading_system.app.services.orchestrators.data_pipeline_orchestrator import DataPipelineOrchestrator
+from trading_system.app.services.orchestrators.execution_orchestrator import ExecutionOrchestrator
+from trading_system.app.services.orchestrators.research_orchestrator import ResearchOrchestrator
+from trading_system.app.services.orchestrators.risk_and_sync_orchestrator import RiskAndSyncOrchestrator
+
+
+class TradingRuntimeService(
+    DataPipelineOrchestrator,
+    ExecutionOrchestrator,
+    RiskAndSyncOrchestrator,
+    ResearchOrchestrator,
+):
+    """Test-only compatibility facade over physically extracted orchestrators."""
 from trading_system.app.services.signals.scanner_signal_bridge import ScannerSignalBridgeService
 
 
@@ -314,11 +326,11 @@ async def test_full_decision_pipeline_vwap_reclaim_with_mocked_alpaca_paper(monk
     assert repo.counts()["orders"] == 0
     FakePaperSubmitAdapter.calls = []
     monkeypatch.setattr(
-        "trading_system.app.services.runtime.AlpacaPaperAdapter",
+        "trading_system.app.services.orchestrators.execution_orchestrator.AlpacaPaperAdapter",
         FakePaperSubmitAdapter,
     )
     monkeypatch.setattr(
-        "trading_system.app.services.runtime.AlpacaLiveAdapter",
+        "trading_system.app.services.orchestrators.execution_orchestrator.AlpacaLiveAdapter",
         LiveAdapterMustNotBeCalled,
     )
     monkeypatch.setattr(
@@ -454,7 +466,7 @@ async def test_journal_lifecycle_records_buy_sell_for_long_entry_exit(monkeypatc
     assert bridge_result.signal_id is not None
 
     monkeypatch.setattr(
-        "trading_system.app.services.runtime.AlpacaPaperAdapter",
+        "trading_system.app.services.orchestrators.execution_orchestrator.AlpacaPaperAdapter",
         FakePaperSubmitAdapter,
     )
     runtime = TradingRuntimeService(repo, settings=settings)

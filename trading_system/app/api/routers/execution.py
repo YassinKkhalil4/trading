@@ -5,6 +5,13 @@ from trading_system.app.api.routers.common import *
 router = APIRouter()
 
 
+def _local_runtime_for(orchestrator_type: type):
+    try:
+        return _runtime(orchestrator_type)
+    except TypeError:
+        return _runtime()
+
+
 @router.get("/risk/checks")
 def risk_checks(
     _principal: AdminPrincipal = Depends(require_principal),
@@ -168,7 +175,7 @@ async def submit_live_signal(
     request: DbPaperSubmitRequest,
     _principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
-    session, service = _runtime()
+    session, service = _local_runtime_for(ExecutionOrchestrator)
     try:
         result = await service.submit_signal_to_live(
             signal_id=request.signal_id,
@@ -194,7 +201,7 @@ async def cancel_all_live_orders(
     request: LiveEmergencyBody,
     principal: AdminPrincipal = Depends(require_admin_token),
 ) -> dict:
-    session, service = _runtime()
+    session, service = _local_runtime_for(RiskAndSyncOrchestrator)
     try:
         return await service.cancel_all_live_orders(
             actor=principal.username, reason=request.reason
@@ -208,7 +215,7 @@ async def flatten_all_live_positions(
     request: LiveEmergencyBody,
     principal: AdminPrincipal = Depends(require_admin_token),
 ) -> dict:
-    session, service = _runtime()
+    session, service = _local_runtime_for(RiskAndSyncOrchestrator)
     try:
         return await service.flatten_all_live_positions(
             actor=principal.username, reason=request.reason
@@ -222,7 +229,7 @@ def replace_order(
     request: OrderReplaceBody,
     principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
-    session, service = _runtime()
+    session, service = _local_runtime_for(ExecutionOrchestrator)
     try:
         service.bootstrap()
         return (
@@ -245,7 +252,7 @@ async def submit_internal_order_to_broker(
     request: OrderBrokerSubmitBody,
     principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
-    session, service = _runtime()
+    session, service = _local_runtime_for(ExecutionOrchestrator)
     try:
         return await service.submit_internal_order_to_broker(
             order_id=request.order_id,
@@ -260,7 +267,7 @@ async def submit_internal_order_to_broker(
 async def sync_alpaca_paper(
     principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
-    session, service = _runtime()
+    session, service = _local_runtime_for(RiskAndSyncOrchestrator)
     try:
         service.bootstrap()
         result = await service.sync_alpaca_paper()
@@ -280,7 +287,7 @@ async def sync_alpaca_paper(
 async def sync_alpaca_live(
     principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
-    session, service = _runtime()
+    session, service = _local_runtime_for(RiskAndSyncOrchestrator)
     try:
         service.bootstrap()
         result = await service.sync_alpaca_live()
@@ -300,7 +307,7 @@ async def sync_alpaca_live(
 def run_fill_reconciliation(
     principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
-    session, service = _runtime()
+    session, service = _local_runtime_for(RiskAndSyncOrchestrator)
     try:
         service.bootstrap()
         result = service.run_fill_reconciliation_once()
@@ -322,7 +329,7 @@ def risk_check_vwap_reclaim(
     _principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
     decision, signal = _scan_to_signal(request.scan)
-    session, service = _runtime()
+    session, service = _local_runtime_for(RiskAndSyncOrchestrator)
     try:
         scanner_result_id, signal_id = _persist_direct_scan_decision(
             service.repository,
@@ -456,7 +463,7 @@ async def submit_paper_order(
             reason=(risk_decision.reason if not risk_decision.approved else reconciliation.reason),
             created_at=datetime.now(UTC),
         )
-    session, service = _runtime()
+    session, service = _local_runtime_for(RiskAndSyncOrchestrator)
     try:
         scanner_result_id, signal_id = _persist_direct_scan_decision(
             service.repository,
