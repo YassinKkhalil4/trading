@@ -26,7 +26,19 @@ from trading_system.app.db.session import build_engine
 from trading_system.app.execution.alpaca_paper_adapter import AlpacaPaperOrderResult
 from trading_system.app.features.production_features import ProductionFeatureEngine
 from trading_system.app.scanners.production_scanners import PRODUCTION_DATA_PROVIDER
-from trading_system.app.services.runtime import TradingRuntimeService
+from trading_system.app.services.orchestrators.data_pipeline_orchestrator import DataPipelineOrchestrator
+from trading_system.app.services.orchestrators.execution_orchestrator import ExecutionOrchestrator
+from trading_system.app.services.orchestrators.research_orchestrator import ResearchOrchestrator
+from trading_system.app.services.orchestrators.risk_and_sync_orchestrator import RiskAndSyncOrchestrator
+
+
+class TradingRuntimeService(
+    DataPipelineOrchestrator,
+    ExecutionOrchestrator,
+    RiskAndSyncOrchestrator,
+    ResearchOrchestrator,
+):
+    """Test-only compatibility facade over physically extracted orchestrators."""
 from trading_system.app.strategies.registry import StrategyRegistryService
 
 
@@ -702,7 +714,7 @@ async def test_duplicate_paper_submit_is_rejected_before_second_broker_call(monk
     service = TradingRuntimeService(repo, settings=settings)
     FakePaperSubmitAdapter.calls = []
     monkeypatch.setattr(
-        "trading_system.app.services.runtime.AlpacaPaperAdapter",
+        "trading_system.app.services.orchestrators.execution_orchestrator.AlpacaPaperAdapter",
         FakePaperSubmitAdapter,
     )
 
@@ -766,7 +778,7 @@ async def test_internal_paper_market_order_submits_to_broker_with_idempotency(mo
     repo.session.commit()
     FakePaperSubmitAdapter.calls = []
     monkeypatch.setattr(
-        "trading_system.app.services.runtime.AlpacaPaperAdapter",
+        "trading_system.app.services.orchestrators.execution_orchestrator.AlpacaPaperAdapter",
         FakePaperSubmitAdapter,
     )
 

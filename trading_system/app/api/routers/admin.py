@@ -402,7 +402,7 @@ def repair_missing_candles(
     request: CollectRequest,
     principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
-    session, service = _runtime()
+    session, service = _runtime_for(DataPipelineOrchestrator)
     try:
         result = service.repair_missing_candles(request.symbols)
         _audit_manual_operation(
@@ -423,7 +423,7 @@ def backtests_run(
     request: BacktestRunRequest,
     principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
-    session, service = _runtime()
+    session, service = _runtime_for(ResearchOrchestrator)
     try:
         result = service.run_backtest(
             strategy_id=request.strategy_id,
@@ -684,7 +684,7 @@ def kill_switch_activate(
     request: KillSwitchActivateBody,
     principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
-    session, service = _runtime()
+    session, service = _runtime_for(RiskAndSyncOrchestrator)
     try:
         return service.activate_kill_switch(
             event_type=request.event_type,
@@ -701,7 +701,7 @@ def kill_switch_resolve(
     request: KillSwitchResolveBody,
     principal: AdminPrincipal = Depends(require_admin_token),
 ) -> dict:
-    session, service = _runtime()
+    session, service = _runtime_for(RiskAndSyncOrchestrator)
     try:
         return service.resolve_kill_switch(
             event_id=request.event_id,
@@ -809,7 +809,7 @@ def production_scanners_run(
 def trade_monitor_run(
     principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
-    session, service = _runtime()
+    session, service = _runtime_for(RiskAndSyncOrchestrator)
     try:
         result = service.run_trade_monitor()
         _audit_manual_operation(

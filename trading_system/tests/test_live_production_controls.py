@@ -34,7 +34,19 @@ from trading_system.app.risk.live_gates import LiveGateService
 from trading_system.app.risk.live_readiness import LiveReadinessService
 from trading_system.app.risk.risk_engine import RiskDecision
 from trading_system.app.security.auth import AuthService, decode_session_token
-from trading_system.app.services.runtime import TradingRuntimeService
+from trading_system.app.services.orchestrators.data_pipeline_orchestrator import DataPipelineOrchestrator
+from trading_system.app.services.orchestrators.execution_orchestrator import ExecutionOrchestrator
+from trading_system.app.services.orchestrators.research_orchestrator import ResearchOrchestrator
+from trading_system.app.services.orchestrators.risk_and_sync_orchestrator import RiskAndSyncOrchestrator
+
+
+class TradingRuntimeService(
+    DataPipelineOrchestrator,
+    ExecutionOrchestrator,
+    RiskAndSyncOrchestrator,
+    ResearchOrchestrator,
+):
+    """Test-only compatibility facade over physically extracted orchestrators."""
 from trading_system.app.signals.signal_engine import TradeSignal
 
 
@@ -943,7 +955,7 @@ async def test_internal_live_market_order_submits_after_all_live_gates_pass(monk
     repo.session.add(order)
     repo.session.commit()
     monkeypatch.setattr(
-        "trading_system.app.services.runtime.AlpacaLiveAdapter",
+        "trading_system.app.services.orchestrators.execution_orchestrator.AlpacaLiveAdapter",
         FakeLiveSubmitAdapter,
     )
 
@@ -1104,7 +1116,7 @@ async def test_alpaca_live_sync_persists_account_snapshot(monkeypatch):
     settings = _live_settings()
     service = TradingRuntimeService(repo, settings=settings)
     monkeypatch.setattr(
-        "trading_system.app.services.runtime.AlpacaLiveAdapter",
+        "trading_system.app.services.orchestrators.execution_orchestrator.AlpacaLiveAdapter",
         FakeLiveSyncAdapter,
     )
 
@@ -1134,7 +1146,7 @@ async def test_alpaca_live_sync_is_blocked_by_default_before_adapter_call(monkey
             raise AssertionError("live adapter should not be constructed when sync is blocked")
 
     monkeypatch.setattr(
-        "trading_system.app.services.runtime.AlpacaLiveAdapter",
+        "trading_system.app.services.orchestrators.execution_orchestrator.AlpacaLiveAdapter",
         ShouldNotBeCalled,
     )
 
@@ -1157,7 +1169,7 @@ async def test_live_emergency_adapter_failures_are_persisted_as_execution_errors
     _make_live_ready(repo, settings)
     service = TradingRuntimeService(repo, settings=settings)
     monkeypatch.setattr(
-        "trading_system.app.services.runtime.AlpacaLiveAdapter",
+        "trading_system.app.services.orchestrators.execution_orchestrator.AlpacaLiveAdapter",
         FakeLiveEmergencyFailureAdapter,
     )
 
@@ -1184,7 +1196,7 @@ async def test_live_emergency_actions_call_backend_adapter_after_all_gates_pass(
     _make_live_ready(repo, settings)
     service = TradingRuntimeService(repo, settings=settings)
     monkeypatch.setattr(
-        "trading_system.app.services.runtime.AlpacaLiveAdapter",
+        "trading_system.app.services.orchestrators.risk_and_sync_orchestrator.AlpacaLiveAdapter",
         FakeLiveSuccessEmergencyAdapter,
     )
 

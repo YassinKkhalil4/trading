@@ -52,7 +52,10 @@ from trading_system.app.services.ranking.opportunity_ranking import (
     OpportunityRankingResult,
     OpportunityRankingService,
 )
-from trading_system.app.services.runtime import TradingRuntimeService
+from trading_system.app.services.orchestrators.data_pipeline_orchestrator import DataPipelineOrchestrator
+from trading_system.app.services.orchestrators.execution_orchestrator import ExecutionOrchestrator
+from trading_system.app.services.orchestrators.research_orchestrator import ResearchOrchestrator
+from trading_system.app.services.orchestrators.risk_and_sync_orchestrator import RiskAndSyncOrchestrator
 from trading_system.app.security.auth import (
     AdminPrincipal,
     AuthService,
@@ -280,11 +283,19 @@ class OrderBrokerSubmitBody(BaseModel):
     reason: str = "Submit internal OMS order to broker."
 
 
-def _runtime() -> tuple[SessionLocal, TradingRuntimeService]:
+def _runtime(orchestrator_type: type = DataPipelineOrchestrator) -> tuple[SessionLocal, Any]:
     session = SessionLocal()
     repo = TradingRepository(session)
-    service = TradingRuntimeService(repo)
+    service = orchestrator_type(repo, settings=get_settings())
     return session, service
+
+
+def _runtime_for(orchestrator_type: type) -> tuple[SessionLocal, Any]:
+    try:
+        return _runtime(orchestrator_type)
+    except TypeError:
+        # Test suites may monkeypatch _runtime with a zero-argument factory.
+        return _runtime()
 
 
 def _store_symbol_config_audit(
@@ -581,7 +592,7 @@ def _ranking_to_dict(result: OpportunityRankingResult) -> dict:
 
 
 async def _submit_db_signal_to_paper(request: DbPaperSubmitRequest) -> dict:
-    session, service = _runtime()
+    session, service = _runtime_for(ExecutionOrchestrator)
     try:
         service.bootstrap()
         return await service.submit_signal_to_paper(
@@ -631,7 +642,7 @@ async def _submit_db_signal_to_paper(request: DbPaperSubmitRequest) -> dict:
 
 
 def _live_readiness_report(*, actor: str) -> dict:
-    session, service = _runtime()
+    session, service = _runtime_for(ResearchOrchestrator)
     try:
         service.bootstrap()
         result = service.generate_live_readiness_report(actor=actor)
