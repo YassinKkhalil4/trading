@@ -139,14 +139,3 @@ class RecommendationStatus(str, Enum):
     REJECTED = "REJECTED"
     SUPERSEDED = "SUPERSEDED"
 
-
-class StrategyApprovalStatus(str, Enum):
-    REQUESTED = "REQUESTED"
-    APPROVED = "APPROVED"
-    REJECTED = "REJECTED"
-
-
-class LiveApprovalStatus(str, Enum):
-    ACTIVE = "ACTIVE"
-    REVOKED = "REVOKED"
-    EXPIRED = "EXPIRED"

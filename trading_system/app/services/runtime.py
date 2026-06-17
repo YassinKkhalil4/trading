@@ -8,7 +8,6 @@ from typing import Any
 import pandas as pd
 from sqlalchemy import desc, func, select
 
-from trading_system.app.ai.thesis_engine import build_rule_based_thesis
 from trading_system.app.catalysts.catalyst_engine import CatalystEngine, CatalystRunResult
 from trading_system.app.core.config import Settings, get_settings
 from trading_system.app.core.enums import (
@@ -47,12 +46,14 @@ from trading_system.app.execution.fill_reconciliation import (
     FillReconciliationResult,
 )
 from trading_system.app.execution.live_execution import LiveExecutionResult, LiveExecutionService
-from trading_system.app.execution.paper_execution import PaperExecutionEngine
+from trading_system.app.execution.paper_execution import PaperOrder
+from trading_system.app.execution.order_side import entry_side_from_direction
 from trading_system.app.execution.reconciliation import (
     PositionSnapshot,
     ReconciliationResult,
     reconcile_positions,
 )
+from trading_system.app.signals.idempotency import build_idempotency_key
 from trading_system.app.features.calculations import (
     FEATURE_CALCULATION_VERSION,
     LiquidityGates,
@@ -66,7 +67,6 @@ from trading_system.app.features.production_features import (
     FeatureRunResult,
     ProductionFeatureEngine,
 )
-from trading_system.app.journal.review_engine import ReviewRunResult, TradeReviewEngine
 from trading_system.app.learning.recommendations import (
     LearningRecommendationEngine,
     LearningRunResult,
@@ -103,11 +103,6 @@ from trading_system.app.services.replay.decision_snapshot_service import Decisio
 from trading_system.app.services.signals.scanner_signal_bridge import ScannerSignalBridgeService
 from trading_system.app.services.scheduler import ScheduledCollectorRunner, ScheduledJobResult
 from trading_system.app.signals.signal_engine import SignalEngine, TradeSignal
-from trading_system.app.strategies.approval import (
-    StrategyApprovalWorkflow,
-    StrategyStatusDecisionResult,
-    StrategyStatusRequestResult,
-)
 from trading_system.app.strategies.cooldowns import StrategyCooldownBook
 from trading_system.app.strategies.registry import StrategyRegistryService
 
@@ -356,27 +351,13 @@ class TradingRuntimeService:
             payload=_trade_signal_to_payload(signal),
             source_timestamp=snapshot.timestamp,
         )
-        thesis = build_rule_based_thesis(
-            symbol=normalized,
-            setup_name="VWAP_RECLAIM",
-            scanner_reason=decision.reason,
-            catalyst_summary=None,
-            market_context=f"Market regime input: {snapshot.market_regime.value}",
-        )
-        thesis_row = self.repository.store_trade_thesis(
-            thesis,
-            signal_id=signal_row.id,
-            symbol=normalized,
-            strategy_id=signal.strategy_id,
-            source_timestamp=snapshot.timestamp,
-        )
         return ScanCycleResult(
             symbol=normalized,
             collected=collected,
             scanner_result_id=scanner_row.id,
             signal_id=signal_row.id,
-            thesis_id=thesis_row.id,
-            reason="Signal and thesis generated.",
+            thesis_id=None,
+            reason="Signal generated; deprecated trade thesis persistence has been removed.",
         )
 
     def _create_signal_via_ranking(
@@ -405,27 +386,59 @@ class TradingRuntimeService:
                 reason=bridge_result.blocked_reason or "Ranking gate did not produce a signal.",
             )
 
-        thesis = build_rule_based_thesis(
-            symbol=normalized,
-            setup_name="VWAP_RECLAIM",
-            scanner_reason=decision.reason,
-            catalyst_summary=None,
-            market_context=f"Market regime input: {snapshot.market_regime.value}",
-        )
-        thesis_row = self.repository.store_trade_thesis(
-            thesis,
-            signal_id=bridge_result.signal_id,
-            symbol=normalized,
-            strategy_id=scanner_row.strategy_id or "VWAP_RECLAIM",
-            source_timestamp=snapshot.timestamp,
-        )
         return ScanCycleResult(
             symbol=normalized,
             collected=collected,
             scanner_result_id=scanner_row.id,
             signal_id=bridge_result.signal_id,
-            thesis_id=thesis_row.id,
-            reason="Ranked signal and thesis generated.",
+            thesis_id=None,
+            reason="Ranked signal generated; deprecated trade thesis persistence has been removed.",
+        )
+
+    def _build_paper_order_candidate(
+        self,
+        *,
+        signal: Any,
+        risk_decision: Any,
+        reconciliation: ReconciliationResult,
+    ) -> PaperOrder:
+        if self.settings.environment_mode != EnvironmentMode.PAPER:
+            reason = "Paper execution requires ENVIRONMENT_MODE=paper."
+            quantity = 0
+            status = OrderStatus.REJECTED
+            idempotency_key = ""
+        elif not risk_decision.approved:
+            reason = f"Risk rejected order: {risk_decision.reason}"
+            quantity = 0
+            status = OrderStatus.REJECTED
+            idempotency_key = ""
+        elif not reconciliation.ok:
+            reason = reconciliation.reason
+            quantity = 0
+            status = OrderStatus.REJECTED
+            idempotency_key = ""
+        else:
+            idempotency_key = build_idempotency_key(
+                namespace="order",
+                symbol=signal.symbol,
+                strategy_id=signal.strategy_id,
+                source_timestamp=signal.source_timestamp,
+                direction=signal.direction.value,
+            )
+            quantity = risk_decision.position_size
+            status = OrderStatus.CREATED
+            reason = "Paper order candidate created for Alpaca Paper broker submission."
+        return PaperOrder(
+            symbol=signal.symbol,
+            side=entry_side_from_direction(signal.direction),
+            quantity=quantity,
+            order_type="limit",
+            limit_price=signal.entry_zone[0],
+            stop_loss=signal.stop_loss,
+            idempotency_key=idempotency_key,
+            status=status,
+            reason=reason,
+            created_at=datetime.now(UTC),
         )
 
     async def submit_signal_to_paper(
@@ -589,7 +602,7 @@ class TradingRuntimeService:
                 "live_sync": live_sync,
             },
         )
-        order = PaperExecutionEngine(settings=self.settings).submit_limit_order(
+        order = self._build_paper_order_candidate(
             signal=signal,
             risk_decision=risk_decision,
             reconciliation=reconciliation,
@@ -1486,9 +1499,6 @@ class TradingRuntimeService:
         self.bootstrap()
         return TradeMonitorService(self.repository).run_once()
 
-    def run_reviews(self) -> ReviewRunResult:
-        self.bootstrap()
-        return TradeReviewEngine(self.repository).run_once()
 
     def run_learning_review(self) -> LearningRunResult:
         self.bootstrap()
@@ -1505,42 +1515,6 @@ class TradingRuntimeService:
     def repair_missing_candles(self, symbols: list[str] | None = None) -> MissingCandleRepairResult:
         self.bootstrap()
         return MissingCandleRepairService(self.repository, self.settings).run_once(symbols)
-
-    def request_strategy_status_change(
-        self,
-        *,
-        strategy_id: str,
-        strategy_version: str,
-        requested_status: str,
-        requested_by: str,
-        evidence: dict[str, Any],
-        reason: str,
-    ) -> StrategyStatusRequestResult:
-        self.bootstrap()
-        return StrategyApprovalWorkflow(self.repository).request_status_change(
-            strategy_id=strategy_id,
-            strategy_version=strategy_version,
-            requested_status=requested_status,
-            requested_by=requested_by,
-            evidence=evidence,
-            reason=reason,
-        )
-
-    def approve_strategy_status_change(
-        self,
-        *,
-        request_id: str,
-        approved: bool,
-        decided_by: str,
-        decision_reason: str,
-    ) -> StrategyStatusDecisionResult:
-        self.bootstrap()
-        return StrategyApprovalWorkflow(self.repository).approve_status_change(
-            request_id=request_id,
-            approved=approved,
-            decided_by=decided_by,
-            decision_reason=decision_reason,
-        )
 
     def activate_kill_switch(
         self,
@@ -1643,7 +1617,6 @@ class TradingRuntimeService:
             "regime_snapshots": self.repository.latest_regime_snapshots(100),
             "scanner_results": self.repository.latest_scanner_results(100),
             "signals": self.repository.latest_signals(100),
-            "trade_theses": self.repository.latest_trade_theses(100),
             "risk_checks": self.repository.latest_risk_checks(100),
             "broker_account_snapshots": self.repository.latest_broker_account_snapshots(100),
             "orders": self.repository.latest_orders(100),
@@ -1666,14 +1639,11 @@ class TradingRuntimeService:
             "catalysts": self.repository.latest_catalysts(100),
             "fills": self.repository.latest_fills(100),
             "broker_sync_logs": self.repository.latest_broker_sync_logs(100),
-            "ai_reviews": self.repository.latest_ai_reviews(100),
             "weekly_reviews": self.repository.latest_weekly_reviews(20),
             "strategy_recommendations": self.repository.latest_strategy_recommendations(100),
             "backtest_reports": self.repository.latest_backtest_reports(50),
             "live_readiness_reports": self.repository.latest_live_readiness_reports(20),
-            "live_trading_approvals": self.repository.latest_live_trading_approvals(20),
             "kill_switches": self.repository.latest_kill_switches(100),
-            "strategy_approval_requests": self.repository.latest_strategy_approval_requests(100),
             "missing_candle_gaps": self.repository.latest_missing_candle_gaps(100),
             "opportunity_scores": self.repository.latest_opportunity_scores(100),
             "alpha_rejections": self.repository.latest_alpha_rejections(100),
@@ -1685,7 +1655,6 @@ class TradingRuntimeService:
             ),
             "short_interest": self.repository.latest_short_interest_snapshots(100),
             "options_intelligence": self.repository.latest_options_intelligence_snapshots(100),
-            "multi_bagger_candidates": self.repository.latest_multi_bagger_candidate_scores(100),
             "providers": self.repository.list_rows(models.ProviderCapability, 100),
             "strategies": self.repository.list_rows(models.StrategyRegistry, 100),
         }

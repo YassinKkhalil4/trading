@@ -53,6 +53,53 @@ class PartitionManager:
         self.session.commit()
         return created
 
+    def drop_partitions_older_than(
+        self, *, retention_days: int = 7, today: date | None = None
+    ) -> dict[str, list[str]]:
+        """Drop raw time-series partitions that end before the retention cutoff."""
+        cutoff = self._as_utc_datetime(today or datetime.now(UTC).date()) - timedelta(
+            days=retention_days
+        )
+        dropped: dict[str, list[str]] = {table_name: [] for table_name in self.PARTITIONED_TABLES}
+        rows = self.session.execute(
+            text(
+                """
+                SELECT
+                    parent.relname AS parent_table,
+                    child.relname AS partition_name,
+                    pg_get_expr(child.relpartbound, child.oid) AS partition_bound
+                FROM pg_inherits
+                JOIN pg_class parent ON pg_inherits.inhparent = parent.oid
+                JOIN pg_class child ON pg_inherits.inhrelid = child.oid
+                WHERE parent.relname = ANY(:table_names)
+                """
+            ),
+            {"table_names": list(self.PARTITIONED_TABLES)},
+        ).mappings()
+        for row in rows:
+            partition_end = self._partition_end_from_bound(str(row["partition_bound"]))
+            if partition_end is None or partition_end >= cutoff:
+                continue
+            partition_name = str(row["partition_name"])
+            self.session.execute(text(f'DROP TABLE IF EXISTS "{partition_name}"'))
+            dropped[str(row["parent_table"])].append(partition_name)
+        self.session.commit()
+        return dropped
+
+    @staticmethod
+    def _partition_end_from_bound(partition_bound: str) -> datetime | None:
+        marker = "TO ("
+        if marker not in partition_bound:
+            return None
+        end_fragment = partition_bound.split(marker, 1)[1].split(")", 1)[0].strip().strip("'")
+        try:
+            parsed = datetime.fromisoformat(end_fragment.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+
     def _weekly_partition(
         self, table_name: str, partition_start: datetime, partition_end: datetime
     ) -> PartitionRange:

@@ -640,41 +640,6 @@ def alpha_options_intelligence_refresh(
         session.close()
 
 
-@router.get("/alpha/multi-bagger-candidates")
-def alpha_multi_bagger_candidates(
-    _principal: AdminPrincipal = Depends(require_principal),
-    limit: int = Query(default=100, ge=1, le=500),
-) -> dict:
-    return _read_rows(
-        "multi_bagger_candidates",
-        lambda repo, row_limit: repo.latest_multi_bagger_candidate_scores(row_limit),
-        limit,
-    )
-
-
-@router.post("/alpha/multi-bagger-candidates/score")
-def alpha_multi_bagger_score(
-    request: AlphaRunRequest,
-    principal: AdminPrincipal = Depends(require_trader_or_admin),
-) -> dict:
-    session, service = _runtime()
-    try:
-        service.bootstrap()
-        result = MultiBaggerScoringService(service.repository).score_universe(
-            request.symbols
-        )
-        _audit_manual_operation(
-            service.repository,
-            actor=principal.username,
-            operation="alpha_multi_bagger_score",
-            reason=result.reason,
-            payload=request.model_dump(),
-            result={"records_created": result.records_created},
-        )
-        return result.__dict__
-    finally:
-        session.close()
-
 
 @router.get("/alpha/strategies")
 def alpha_strategies(_principal: AdminPrincipal = Depends(require_principal)) -> dict:
@@ -690,17 +655,6 @@ def signals(
         "signals", lambda repo, row_limit: repo.latest_signals(row_limit), limit
     )
 
-
-@router.get("/signals/theses")
-def trade_theses(
-    _principal: AdminPrincipal = Depends(require_principal),
-    limit: int = Query(default=100, ge=1, le=500),
-) -> dict:
-    return _read_rows(
-        "trade_theses",
-        lambda repo, row_limit: repo.latest_trade_theses(row_limit),
-        limit,
-    )
 
 
 @router.get("/providers/health")

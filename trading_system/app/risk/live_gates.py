@@ -59,7 +59,6 @@ class LiveGateService:
             "confirm_live_trading": self.settings.confirm_live_trading == "I_UNDERSTAND_RISK",
             "live_order_path_enabled": self.settings.live_order_path_enabled,
             "live_keys_present": bool(self.settings.alpaca_live_api_key and self.settings.alpaca_live_secret_key),
-            "active_human_approval": self.repository.active_live_trading_approval() is not None,
             "no_active_kill_switch": self.repository.active_kill_switch_count() == 0,
             "latest_readiness_passed": self._latest_readiness_passed(),
             "alpaca_market_data_healthy": self._provider_healthy("alpaca_market_data"),

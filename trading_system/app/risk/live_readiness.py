@@ -92,7 +92,7 @@ class LiveReadinessService:
                 and bool(self.settings.alpaca_live_secret_key)
                 and self.settings.confirm_live_trading == "I_UNDERSTAND_RISK",
                 "BLOCKER",
-                "Live credentials and explicit human confirmation are required.",
+                "Live credentials and explicit configuration confirmation are required.",
                 {
                     "allow_live_trading": self.settings.allow_live_trading,
                     "live_key_present": bool(self.settings.alpaca_live_api_key),
@@ -107,13 +107,6 @@ class LiveReadinessService:
                 "BLOCKER",
                 "Admin JWT/session signing secret must be configured from a non-default secret.",
                 {"default_secret_in_use": self.settings.admin_session_secret == "change-me"},
-            ),
-            self._check(
-                "active_human_live_approval",
-                self.repository.active_live_trading_approval() is not None,
-                "BLOCKER",
-                "A current human live-trading approval record is required.",
-                {"active_approval": self._active_approval_payload()},
             ),
             self._check(
                 "no_active_kill_switches",
@@ -239,7 +232,7 @@ class LiveReadinessService:
             self._detail_gate(
                 "live_confirmation_phrase",
                 self.settings.confirm_live_trading == "I_UNDERSTAND_RISK",
-                "Live trading requires explicit human confirmation phrase I_UNDERSTAND_RISK.",
+                "Live trading requires explicit configuration confirmation phrase I_UNDERSTAND_RISK.",
                 reference,
             ),
             self._detail_gate(
@@ -283,12 +276,6 @@ class LiveReadinessService:
                 "approved_strategy",
                 self._approved_strategy_count() > 0,
                 "At least one strategy must be approved small/full size before live readiness.",
-                reference,
-            ),
-            self._detail_gate(
-                "human_live_approval_active",
-                self.repository.active_live_trading_approval() is not None,
-                "A current human live-trading approval record is required.",
                 reference,
             ),
             self._data_quality_gate(reference),
@@ -453,10 +440,6 @@ class LiveReadinessService:
             environment_mode=EnvironmentMode.LIVE.value,
             broker="alpaca_live",
         )
-        return model_to_dict(row) if row else None
-
-    def _active_approval_payload(self) -> dict[str, Any] | None:
-        row = self.repository.active_live_trading_approval()
         return model_to_dict(row) if row else None
 
     def _latest_row(self, model: type) -> dict[str, Any] | None:

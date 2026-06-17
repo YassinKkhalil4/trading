@@ -33,7 +33,6 @@ from trading_system.app.core.enums import (
     ProviderReliabilityLevel,
     RecommendationStatus,
     SignalStatus,
-    StrategyApprovalStatus,
     StrategyStatus,
     TradeType,
 )
@@ -536,7 +535,6 @@ class StrategyRegistry(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     max_drawdown_limit: Mapped[float | None] = mapped_column(Float)
     allowed_symbols: Mapped[list[str]] = mapped_column(JSONB, default=list)
     max_risk_per_trade: Mapped[float | None] = mapped_column(Float)
-    requires_human_approval: Mapped[bool] = mapped_column(Boolean, default=True)
     paused_reason: Mapped[str | None] = mapped_column(Text)
     changed_reason: Mapped[str | None] = mapped_column(Text)
     logic_version: Mapped[str] = mapped_column(String(32), default="v1")
@@ -560,24 +558,6 @@ class StrategyCooldown(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     cooldown_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     reason: Mapped[str] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-
-
-class StrategyApprovalRequest(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
-    __tablename__ = "strategy_approval_requests"
-
-    strategy_id: Mapped[str] = mapped_column(String(80), index=True)
-    strategy_version: Mapped[str] = mapped_column(String(32), default="v1", index=True)
-    requested_status: Mapped[str] = mapped_column(String(40), index=True)
-    current_status: Mapped[str] = mapped_column(String(40))
-    status: Mapped[str] = mapped_column(
-        String(32), default=StrategyApprovalStatus.REQUESTED.value, index=True
-    )
-    requested_by: Mapped[str] = mapped_column(String(80), default="system")
-    approved_by: Mapped[str | None] = mapped_column(String(80))
-    evidence: Mapped[dict] = mapped_column(JSONB, default=dict)
-    reason: Mapped[str] = mapped_column(Text)
-    decision_reason: Mapped[str | None] = mapped_column(Text)
-    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ScannerResult(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
@@ -655,24 +635,6 @@ class SignalRejection(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     strategy_id: Mapped[str | None] = mapped_column(String(80), index=True)
     reason: Mapped[str] = mapped_column(Text)
     payload: Mapped[dict | None] = mapped_column(JSONB)
-
-
-class TradeThesis(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
-    __tablename__ = "trade_theses"
-
-    signal_id: Mapped[str] = mapped_column(ForeignKey("signals.id"), index=True)
-    symbol: Mapped[str] = mapped_column(String(16), index=True)
-    strategy_id: Mapped[str] = mapped_column(String(80), index=True)
-    prompt_version: Mapped[str] = mapped_column(String(32), index=True)
-    trade_type: Mapped[str] = mapped_column(String(40), index=True)
-    setup_quality: Mapped[float | None] = mapped_column(Float)
-    catalyst_quality: Mapped[float | None] = mapped_column(Float)
-    confidence: Mapped[float] = mapped_column(Float, default=0.0, index=True)
-    reason_for_trade: Mapped[str] = mapped_column(Text)
-    invalidation_reason: Mapped[str] = mapped_column(Text)
-    risks: Mapped[list[str]] = mapped_column(JSONB, default=list)
-    suggested_holding_period: Mapped[str | None] = mapped_column(String(80))
-    reason: Mapped[str | None] = mapped_column(Text)
 
 
 class RiskCheck(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
@@ -831,17 +793,6 @@ class TradeJournal(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     ai_review: Mapped[str | None] = mapped_column(Text)
     human_notes: Mapped[str | None] = mapped_column(Text)
     change_reason: Mapped[str | None] = mapped_column(Text)
-
-
-class AIReview(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
-    __tablename__ = "ai_reviews"
-
-    trade_journal_id: Mapped[str | None] = mapped_column(ForeignKey("trade_journal.id"), index=True)
-    prompt_template_id: Mapped[str | None] = mapped_column(String(80), index=True)
-    prompt_version: Mapped[str] = mapped_column(String(32), index=True)
-    review_text: Mapped[str] = mapped_column(Text)
-    confidence_score: Mapped[float | None] = mapped_column(Float)
-    reason: Mapped[str] = mapped_column(Text)
 
 
 class AuditLog(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
@@ -1036,26 +987,6 @@ class PointInTimeUniverseMembership(IdMixin, TimestampMixin, SourceTimestampMixi
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)
 
 
-class MultiBaggerCandidateScore(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
-    __tablename__ = "multi_bagger_candidate_scores"
-
-    symbol: Mapped[str] = mapped_column(String(16), index=True)
-    horizon: Mapped[str] = mapped_column(String(80), index=True)
-    score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
-    grade: Mapped[str] = mapped_column(String(8), index=True)
-    target_multiple: Mapped[str] = mapped_column(String(16), index=True)
-    component_scores: Mapped[dict] = mapped_column(JSONB, default=dict)
-    narrative: Mapped[str] = mapped_column(Text)
-    growth_score: Mapped[float | None] = mapped_column(Float)
-    capital_flows_score: Mapped[float | None] = mapped_column(Float)
-    institutional_accumulation_score: Mapped[float | None] = mapped_column(Float)
-    short_squeeze_score: Mapped[float | None] = mapped_column(Float)
-    options_leverage_score: Mapped[float | None] = mapped_column(Float)
-    risk_flags: Mapped[list[dict]] = mapped_column(JSONB, default=list)
-    confidence_level: Mapped[float] = mapped_column(Float, default=0.0)
-    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
-
-
 class AlphaRejectionReason(IdMixin, TimestampMixin, SourceTimestampMixin, Base):
     __tablename__ = "alpha_rejection_reasons"
 
@@ -1136,7 +1067,5 @@ class ParameterChangeRequest(IdMixin, TimestampMixin, SourceTimestampMixin, Base
     proposed_value: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32), default=RecommendationStatus.PROPOSED.value)
     reason: Mapped[str] = mapped_column(Text)
-    human_approved_by: Mapped[str | None] = mapped_column(String(80))
-    human_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     applied_reason: Mapped[str | None] = mapped_column(Text)

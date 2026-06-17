@@ -30,8 +30,11 @@ from trading_system.app.data.market_calendar import get_session, opening_range_w
 from trading_system.app.db import models
 from trading_system.app.db.repositories import TradingRepository, model_to_dict
 from trading_system.app.db.session import SessionLocal
+from trading_system.app.execution.alpaca_paper_adapter import AlpacaPaperAdapter
 from trading_system.app.execution.order_manager import OrderManager
-from trading_system.app.execution.paper_execution import PaperExecutionEngine
+from trading_system.app.execution.order_side import entry_side_from_direction
+from trading_system.app.execution.paper_execution import PaperOrder
+from trading_system.app.signals.idempotency import build_idempotency_key
 from trading_system.app.execution.reconciliation import (
     PositionSnapshot,
     reconcile_positions,
@@ -224,21 +227,6 @@ class AdminUserActiveBody(BaseModel):
 class AdminUserUnlockBody(BaseModel):
     username: str
     reason: str
-
-
-class StrategyStatusChangeBody(BaseModel):
-    requested_status: str
-    strategy_version: str = "v1"
-    evidence: dict = Field(default_factory=dict)
-    reason: str
-
-
-class StrategyStatusDecisionBody(BaseModel):
-    request_id: str
-    approved: bool
-    decision_reason: str
-
-
 class BacktestRunRequest(BaseModel):
     strategy_id: str = "VWAP_RECLAIM"
     symbol: str = "SPY"
@@ -273,18 +261,6 @@ class KillSwitchResolveBody(BaseModel):
 
 class LiveEmergencyBody(BaseModel):
     reason: str
-
-
-class LiveApprovalBody(BaseModel):
-    reason: str
-    expires_at: datetime | None = None
-
-
-class LiveApprovalRevokeBody(BaseModel):
-    approval_id: str
-    reason: str
-
-
 class JournalEntryCreateBody(BaseModel):
     symbol: str
     strategy_id: str | None = None
