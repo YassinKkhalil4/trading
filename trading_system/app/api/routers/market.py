@@ -464,33 +464,6 @@ def alpha_rejections(
     )
 
 
-@router.post("/alpha/scoring/run-once")
-def alpha_scoring_run_once(
-    request: AlphaRunRequest,
-    principal: AdminPrincipal = Depends(require_trader_or_admin),
-) -> dict:
-    session, service = _runtime()
-    try:
-        service.bootstrap()
-        result = AlphaOpportunityScoringService(
-            service.repository
-        ).score_recent_accepted(limit=request.limit, symbols=request.symbols)
-        _audit_manual_operation(
-            service.repository,
-            actor=principal.username,
-            operation="alpha_scoring_run_once",
-            reason="Alpha scoring run completed.",
-            payload={"limit": request.limit, "symbols": request.symbols},
-            result={"scores_created": len(result)},
-        )
-        return {
-            "scores_created": len(result),
-            "scores": [item.__dict__ for item in result],
-        }
-    finally:
-        session.close()
-
-
 @router.post("/alpha/scanners/run", status_code=status.HTTP_202_ACCEPTED)
 def alpha_scanner_run(
     request: AlphaScannerRunRequest,

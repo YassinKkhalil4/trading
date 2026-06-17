@@ -7,9 +7,20 @@ from typing import Any
 from sqlalchemy import desc, select
 
 from trading_system.app.alpha.leadership import SECTOR_ETFS
-from trading_system.app.alpha.scoring import grade_from_score
 from trading_system.app.db import models
 from trading_system.app.db.repositories import TradingRepository
+
+
+def grade_from_score(score: float) -> str:
+    if score >= 90:
+        return "A+"
+    if score >= 80:
+        return "A"
+    if score >= 70:
+        return "B"
+    if score >= 60:
+        return "C"
+    return "WATCH"
 
 
 @dataclass(frozen=True)

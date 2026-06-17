@@ -6,10 +6,11 @@ from datetime import datetime
 from trading_system.app.audit.logger import InMemoryDecisionLogger
 from trading_system.app.core.enums import DecisionOutcome, DecisionType, Direction, SignalStatus, TradeType
 from trading_system.app.scanners.vwap_reclaim import ScannerDecision
+from trading_system.app.alpha.ml_inference import ALPHA_PROBABILITY_THRESHOLD, predict_opportunity
 from trading_system.app.signals.idempotency import IdempotencyRegistry, build_idempotency_key
 
 
-SIGNAL_RULE_VERSION = "signal_engine_v1"
+SIGNAL_RULE_VERSION = "signal_engine_xgboost_v1"
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,8 @@ class SignalEngine:
         strategy_version: str = "v1",
         target_1_rr: float = 2.0,
         target_2_rr: float = 3.0,
+        alpha_features: dict[str, float] | None = None,
+        alpha_probability: float | None = None,
     ) -> TradeSignal:
         if not scanner_decision.accepted:
             self.decision_logger.record_simple(
@@ -71,6 +74,24 @@ class SignalEngine:
             raise ValueError("Risk/reward targets must be positive.")
         if target_2_rr < target_1_rr:
             raise ValueError("Second risk/reward target must be greater than or equal to the first target.")
+
+        probability = alpha_probability if alpha_probability is not None else None
+        if probability is None:
+            if alpha_features is None:
+                raise ValueError("Alpha model features are required before signal generation.")
+            probability = predict_opportunity(alpha_features)
+        if probability <= ALPHA_PROBABILITY_THRESHOLD:
+            self.decision_logger.record_simple(
+                DecisionType.SIGNAL,
+                DecisionOutcome.REJECTED,
+                f"Alpha model probability {probability:.4f} did not exceed {ALPHA_PROBABILITY_THRESHOLD:.2f}.",
+                entity_id=scanner_decision.symbol,
+                strategy_id=scanner_decision.strategy_id,
+                rule_version=SIGNAL_RULE_VERSION,
+            )
+            raise ValueError(
+                f"Alpha model probability {probability:.4f} must exceed {ALPHA_PROBABILITY_THRESHOLD:.2f}."
+            )
 
         risk_per_share = price - stop_loss
         target_1 = price + (risk_per_share * target_1_rr)
@@ -94,7 +115,7 @@ class SignalEngine:
             target_1=target_1,
             target_2=target_2,
             risk_reward=target_1_rr,
-            confidence_score=scanner_decision.score,
+            confidence_score=probability,
             time_horizon="intraday",
             invalidation="Loss of VWAP with rising sell volume.",
             source_timestamp=source_timestamp,

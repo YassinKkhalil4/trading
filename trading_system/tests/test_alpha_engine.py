@@ -6,7 +6,6 @@ from sqlalchemy.orm import sessionmaker
 
 from trading_system.app.alpha.expectancy import AlphaExpectancyRefreshService
 from trading_system.app.alpha.leadership import SectorLeadershipService
-from trading_system.app.alpha.scoring import AlphaOpportunityScoringService
 from trading_system.app.alpha.strategies import AlphaStrategyScannerService
 from trading_system.app.core.config import Settings
 from trading_system.app.core.enums import Direction, EnvironmentMode, TradeType
@@ -23,74 +22,6 @@ def _repo() -> TradingRepository:
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine)()
     return TradingRepository(session)
-
-
-def test_alpha_scoring_persists_explainable_components_and_rejection_penalty():
-    repo = _repo()
-    now = datetime.now(UTC)
-    scanner = models.ScannerResult(
-        scanner_name="CATALYST_VWAP_RECLAIM",
-        scanner_rule_version="test",
-        symbol="AAPL",
-        strategy_id="CATALYST_VWAP_RECLAIM",
-        accepted=True,
-        score=78.0,
-        reason="accepted",
-        payload={
-            "relative_volume": 3.2,
-            "gap_pct": 5.0,
-            "latest_close": 105.0,
-            "latest_vwap": 101.0,
-            "vwap_reclaim": True,
-            "relative_strength_20d": 3.0,
-            "spread_bps": 4.0,
-            "dollar_volume": 80_000_000.0,
-        },
-        source_timestamp=now,
-    )
-    repo.session.add_all(
-        [
-            scanner,
-            models.Catalyst(
-                symbol="AAPL",
-                catalyst_type="news_momentum",
-                materiality_score=80.0,
-                source_timestamp=now,
-            ),
-            models.CleanNews(
-                provider="alpha_vantage",
-                symbol="AAPL",
-                headline="AAPL wins major catalyst",
-                normalized_headline_hash="hash-aapl",
-                source_confidence_score=80.0,
-                sentiment_score=0.8,
-                relevance_score=0.9,
-                duplicate_headline=False,
-                rumor_flag=False,
-                source_timestamp=now,
-            ),
-            models.MarketRegimeSnapshot(
-                market_regime="BULL_TREND",
-                confidence=80.0,
-                allowed_bias="LONG_PREFERRED",
-                risk_multiplier=1.0,
-                breakout_permission=True,
-                mean_reversion_permission="limited",
-                reason="test",
-                source_timestamp=now,
-            ),
-        ]
-    )
-    repo.session.commit()
-
-    result = AlphaOpportunityScoringService(repo, Settings()).score_scanner_result(scanner)
-
-    assert result.score >= 60
-    assert result.grade in {"A+", "A", "B", "C"}
-    rows = repo.latest_opportunity_scores(10)
-    assert rows[0]["scanner_result_id"] == scanner.id
-    assert "catalyst_quality" in rows[0]["component_scores"]
-    assert repo.opportunity_score_components(rows[0]["id"])
 
 
 def test_alpha_scanner_persists_rejected_candidates_with_reason():
