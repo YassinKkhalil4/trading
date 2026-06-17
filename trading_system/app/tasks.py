@@ -14,7 +14,7 @@ from trading_system.app.db.repositories import TradingRepository
 from trading_system.app.db.session import SessionLocal
 from trading_system.app.research.backtest_service import BacktestService
 from trading_system.app.alpha.strategies import AlphaStrategyScannerService
-from trading_system.app.execution.order_manager import OrderManager
+from trading_system.app.execution.order_manager import OrderManager, TWAP_Order_Manager
 from trading_system.app.services.runtime import TradingRuntimeService
 from trading_system.app.services.scheduler import _job_cadences
 
@@ -40,6 +40,7 @@ celery.conf.update(
         "trading_system.app.tasks.run_production_scanners": {"queue": "execution"},
         "trading_system.app.tasks.run_alpha_strategy_scanner": {"queue": "execution"},
         "trading_system.app.tasks.request_bracket_order": {"queue": "execution"},
+        "trading_system.app.tasks.execute_twap_child_order": {"queue": "execution"},
         "trading_system.app.tasks.maintain_db_partitions": {"queue": "analytics"},
     },
     task_acks_late=True,
@@ -95,7 +96,6 @@ _TASK_OPTIONS = {
     "retry_jitter": True,
     "max_retries": 3,
 }
-
 
 
 @celery.task(name="trading_system.app.tasks.maintain_db_partitions", **_TASK_OPTIONS)
@@ -225,6 +225,7 @@ def run_backtest(
         ),
     )
 
+
 @celery.task(bind=True, name="trading_system.app.tasks.run_production_scanners", **_TASK_OPTIONS)
 def run_production_scanners(
     self,
@@ -257,4 +258,16 @@ def request_bracket_order(self, **kwargs: Any) -> Any:
     return _with_runtime(
         "request_bracket_order",
         lambda service: OrderManager(service.repository).request_bracket_order(**kwargs),
+    )
+
+
+@celery.task(bind=True, name="trading_system.app.tasks.execute_twap_child_order", **_TASK_OPTIONS)
+def execute_twap_child_order(
+    self, previous_result: dict[str, Any] | None = None, **kwargs: Any
+) -> Any:
+    return _with_runtime(
+        "execute_twap_child_order",
+        lambda service: TWAP_Order_Manager(service.repository).execute_child_order(
+            previous_result, **kwargs
+        ),
     )

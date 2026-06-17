@@ -7,7 +7,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from trading_system.app.core.config import Settings
-from trading_system.app.core.enums import Direction, EnvironmentMode, OrderStatus, ProviderHealthStatus, StrategyStatus, TradeType
+from trading_system.app.core.enums import (
+    Direction,
+    EnvironmentMode,
+    OrderStatus,
+    ProviderHealthStatus,
+    StrategyStatus,
+    TradeType,
+)
 from trading_system.app.data.quality_repair import MissingCandleRepairService
 from trading_system.app.data.universe import LiquidUniverseBuilder
 from trading_system.app.db import models
@@ -297,7 +304,9 @@ def _trade_signal_from_row(signal_row: models.Signal) -> TradeSignal:
 
 def test_auth_service_bootstraps_admin_and_authenticates_session():
     repo = _repo()
-    settings = Settings(admin_username="admin", admin_password="secret", admin_session_secret="unit-test")
+    settings = Settings(
+        admin_username="admin", admin_password="secret", admin_session_secret="unit-test"
+    )
     result = AuthService(repo, settings).login("admin", "secret")
 
     assert result.authenticated is True
@@ -316,7 +325,9 @@ def test_auth_service_bootstraps_admin_and_authenticates_session():
 
 def test_admin_session_revocation_invalidates_existing_token():
     repo = _repo()
-    settings = Settings(admin_username="admin", admin_password="secret", admin_session_secret="unit-test")
+    settings = Settings(
+        admin_username="admin", admin_password="secret", admin_session_secret="unit-test"
+    )
     auth = AuthService(repo, settings)
     result = auth.login("admin", "secret")
     user = repo.admin_user_by_username("admin")
@@ -511,7 +522,9 @@ def test_live_readiness_and_gates_can_pass_only_when_all_controls_are_green():
 
     report = repo.latest_live_readiness_reports(1)[0]
     assert report["payload"]["live_allowed"] is True
-    gate = LiveGateService(repo, settings).evaluate(strategy_id="VWAP_RECLAIM", signal_id="sig-test")
+    gate = LiveGateService(repo, settings).evaluate(
+        strategy_id="VWAP_RECLAIM", signal_id="sig-test"
+    )
     assert gate.allowed is True
 
 
@@ -530,7 +543,9 @@ def test_stale_alpaca_stream_heartbeat_blocks_live_gate():
         payload={},
     )
 
-    gate = LiveGateService(repo, settings).evaluate(strategy_id="VWAP_RECLAIM", signal_id="sig-test")
+    gate = LiveGateService(repo, settings).evaluate(
+        strategy_id="VWAP_RECLAIM", signal_id="sig-test"
+    )
 
     assert gate.allowed is False
     assert "market_data_stream_healthy" in gate.blockers
@@ -557,7 +572,9 @@ def test_runtime_bootstrap_preserves_strategy_approval_state():
     _make_live_ready(repo, settings)
 
     TradingRuntimeService(repo, settings=settings).bootstrap()
-    gate = LiveGateService(repo, settings).evaluate(strategy_id="VWAP_RECLAIM", signal_id="sig-test")
+    gate = LiveGateService(repo, settings).evaluate(
+        strategy_id="VWAP_RECLAIM", signal_id="sig-test"
+    )
     strategy = repo.session.scalar(
         select(models.StrategyRegistry).where(models.StrategyRegistry.strategy_id == "VWAP_RECLAIM")
     )
@@ -574,13 +591,19 @@ def test_missing_live_account_snapshot_blocks_readiness_and_gate():
     repo.session.commit()
 
     readiness = LiveReadinessService(repo, settings).generate_report()
-    gate = LiveGateService(repo, settings).evaluate(strategy_id="VWAP_RECLAIM", signal_id="sig-test")
+    gate = LiveGateService(repo, settings).evaluate(
+        strategy_id="VWAP_RECLAIM", signal_id="sig-test"
+    )
 
     assert readiness.live_allowed is False
     assert gate.allowed is False
     assert "live_account_snapshot_usable" in gate.blockers
     report = repo.latest_live_readiness_reports(1)[0]
-    check = next(item for item in report["payload"]["checks"] if item["check_name"] == "live_account_snapshot_usable")
+    check = next(
+        item
+        for item in report["payload"]["checks"]
+        if item["check_name"] == "live_account_snapshot_usable"
+    )
     assert check["passed"] is False
 
 
@@ -614,9 +637,15 @@ def test_expired_live_approval_blocks_readiness_check():
     repo.session.commit()
 
     readiness = LiveReadinessService(repo, settings).generate_report()
-    gate = LiveGateService(repo, settings).evaluate(strategy_id="VWAP_RECLAIM", signal_id="sig-test")
+    gate = LiveGateService(repo, settings).evaluate(
+        strategy_id="VWAP_RECLAIM", signal_id="sig-test"
+    )
     report = repo.latest_live_readiness_reports(1)[0]
-    check = next(item for item in report["payload"]["checks"] if item["check_name"] == "active_human_live_approval")
+    check = next(
+        item
+        for item in report["payload"]["checks"]
+        if item["check_name"] == "active_human_live_approval"
+    )
 
     assert readiness.live_allowed is False
     assert gate.allowed is False
@@ -745,7 +774,9 @@ async def test_duplicate_live_submit_is_rejected_before_second_broker_call():
     ],
 )
 @pytest.mark.asyncio
-async def test_mocked_live_blocked_flow_rejects_before_broker_when_any_gate_fails(broken_gate, expected_blocker):
+async def test_mocked_live_blocked_flow_rejects_before_broker_when_any_gate_fails(
+    broken_gate, expected_blocker
+):
     repo = _repo()
     ready_settings = _live_settings()
     _make_live_ready(repo, ready_settings)
@@ -799,7 +830,9 @@ async def test_mocked_live_blocked_flow_rejects_before_broker_when_any_gate_fail
         KillSwitchService(repo).activate(event_type="TEST", reason="unit test", payload={})
     elif broken_gate == "strategy_approval":
         strategy = repo.session.scalar(
-            select(models.StrategyRegistry).where(models.StrategyRegistry.strategy_id == "VWAP_RECLAIM")
+            select(models.StrategyRegistry).where(
+                models.StrategyRegistry.strategy_id == "VWAP_RECLAIM"
+            )
         )
         strategy.status = StrategyStatus.PAUSED.value
         repo.session.commit()
@@ -1050,7 +1083,9 @@ async def test_live_broker_submit_failure_rejects_order_and_persists_execution_e
         rule_version=signal_row.signal_rule_version,
     )
 
-    result = await LiveExecutionService(repo, adapter=FakeLiveRejectedAdapter(settings)).submit_limit_order(
+    result = await LiveExecutionService(
+        repo, adapter=FakeLiveRejectedAdapter(settings)
+    ).submit_limit_order(
         signal=trade_signal,
         signal_id=signal_row.id,
         risk_decision=RiskDecision(
@@ -1103,7 +1138,9 @@ async def test_internal_live_market_order_is_blocked_until_live_gates_pass():
     repo.session.add(order)
     repo.session.commit()
 
-    result = await TradingRuntimeService(repo, settings=Settings(environment_mode=EnvironmentMode.LIVE_DISABLED)).submit_internal_order_to_broker(
+    result = await TradingRuntimeService(
+        repo, settings=Settings(environment_mode=EnvironmentMode.LIVE_DISABLED)
+    ).submit_internal_order_to_broker(
         order_id=order.id,
         actor="unit-test",
         reason="submit live protective exit",
@@ -1173,7 +1210,9 @@ def test_default_admin_session_secret_blocks_live_readiness():
 
     report = repo.latest_live_readiness_reports(1)[0]
     secret_check = next(
-        check for check in report["payload"]["checks"] if check["check_name"] == "admin_session_secret_configured"
+        check
+        for check in report["payload"]["checks"]
+        if check["check_name"] == "admin_session_secret_configured"
     )
 
     assert report["payload"]["live_allowed"] is False
@@ -1195,7 +1234,9 @@ def test_stale_provider_health_blocks_live_readiness_and_gate():
         )
 
     readiness = LiveReadinessService(repo, settings).generate_report()
-    gate = LiveGateService(repo, settings).evaluate(strategy_id="VWAP_RECLAIM", signal_id="sig-test")
+    gate = LiveGateService(repo, settings).evaluate(
+        strategy_id="VWAP_RECLAIM", signal_id="sig-test"
+    )
 
     assert readiness.live_allowed is False
     assert gate.allowed is False
@@ -1224,7 +1265,9 @@ def test_stale_live_account_snapshot_blocks_live_readiness_and_gate():
     )
 
     readiness = LiveReadinessService(repo, settings).generate_report()
-    gate = LiveGateService(repo, settings).evaluate(strategy_id="VWAP_RECLAIM", signal_id="sig-test")
+    gate = LiveGateService(repo, settings).evaluate(
+        strategy_id="VWAP_RECLAIM", signal_id="sig-test"
+    )
 
     assert readiness.live_allowed is False
     assert gate.allowed is False
@@ -1237,7 +1280,9 @@ def test_kill_switch_blocks_live_gate_after_readiness_passed():
     _make_live_ready(repo, settings)
 
     KillSwitchService(repo).activate(event_type="TEST", reason="unit test", payload={})
-    gate = LiveGateService(repo, settings).evaluate(strategy_id="VWAP_RECLAIM", signal_id="sig-test")
+    gate = LiveGateService(repo, settings).evaluate(
+        strategy_id="VWAP_RECLAIM", signal_id="sig-test"
+    )
 
     assert gate.allowed is False
     assert "no_active_kill_switch" in gate.blockers
@@ -1265,7 +1310,9 @@ async def test_live_submit_is_testable_but_records_blocked_order_by_default():
 @pytest.mark.asyncio
 async def test_live_emergency_actions_are_blocked_and_audited_by_default():
     repo = _repo()
-    service = TradingRuntimeService(repo, settings=Settings(environment_mode=EnvironmentMode.LIVE_DISABLED))
+    service = TradingRuntimeService(
+        repo, settings=Settings(environment_mode=EnvironmentMode.LIVE_DISABLED)
+    )
 
     cancel = await service.cancel_all_live_orders(actor="admin", reason="unit test cancel")
     flatten = await service.flatten_all_live_positions(actor="admin", reason="unit test flatten")
@@ -1312,7 +1359,9 @@ async def test_alpaca_live_sync_persists_account_snapshot(monkeypatch):
 @pytest.mark.asyncio
 async def test_alpaca_live_sync_is_blocked_by_default_before_adapter_call(monkeypatch):
     repo = _repo()
-    service = TradingRuntimeService(repo, settings=Settings(environment_mode=EnvironmentMode.LIVE_DISABLED))
+    service = TradingRuntimeService(
+        repo, settings=Settings(environment_mode=EnvironmentMode.LIVE_DISABLED)
+    )
 
     class ShouldNotBeCalled:
         def __init__(self, _settings):
@@ -1425,7 +1474,9 @@ def test_missing_candle_repair_records_gap_and_universe_builder_blocks_illiquid_
     assert repair.gaps_detected == 1
     assert repo.latest_missing_candle_gaps(1)[0]["repaired"] is False
     assert universe.disabled_or_blocked == 1
-    symbol = repo.session.scalar(select(models.SymbolUniverse).where(models.SymbolUniverse.symbol == "AMD"))
+    symbol = repo.session.scalar(
+        select(models.SymbolUniverse).where(models.SymbolUniverse.symbol == "AMD")
+    )
     assert symbol.is_tradable is False
 
 
@@ -1463,11 +1514,16 @@ def test_universe_builder_rejects_research_only_yahoo_rows_for_production_tradab
         )
 
     universe = LiquidUniverseBuilder(repo, Settings(bar_freshness_max_seconds=600)).refresh(["AMD"])
-    symbol = repo.session.scalar(select(models.SymbolUniverse).where(models.SymbolUniverse.symbol == "AMD"))
+    symbol = repo.session.scalar(
+        select(models.SymbolUniverse).where(models.SymbolUniverse.symbol == "AMD")
+    )
 
     assert universe.disabled_or_blocked == 1
     assert symbol.is_tradable is False
-    assert symbol.tradability_reason == "No clean Alpaca market data available for production liquidity gates."
+    assert (
+        symbol.tradability_reason
+        == "No clean Alpaca market data available for production liquidity gates."
+    )
 
 
 def test_universe_builder_accepts_fresh_liquid_alpaca_rows():
@@ -1504,8 +1560,64 @@ def test_universe_builder_accepts_fresh_liquid_alpaca_rows():
         )
 
     universe = LiquidUniverseBuilder(repo, Settings(bar_freshness_max_seconds=600)).refresh(["AMD"])
-    symbol = repo.session.scalar(select(models.SymbolUniverse).where(models.SymbolUniverse.symbol == "AMD"))
+    symbol = repo.session.scalar(
+        select(models.SymbolUniverse).where(models.SymbolUniverse.symbol == "AMD")
+    )
 
     assert universe.tradable == 1
     assert symbol.is_tradable is True
     assert symbol.tradability_reason == "Symbol passes configured liquidity gates."
+
+
+def test_twap_manager_slices_large_parent_signal_into_capped_child_orders(monkeypatch):
+    from trading_system.app.execution.order_manager import MAX_CHILD_NOTIONAL, TWAP_Order_Manager
+    from trading_system.app import tasks as task_module
+    import celery as celery_module
+
+    repo = _repo()
+    signal_row = _store_test_signal(repo)
+    scheduled = []
+
+    class FakeSignature:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.countdown = None
+
+        def set(self, countdown):
+            self.countdown = countdown
+            scheduled.append(self)
+            return self
+
+    class FakeTask:
+        @staticmethod
+        def s(**kwargs):
+            return FakeSignature(**kwargs)
+
+    class FakeWorkflow:
+        id = "fake-twap-workflow"
+
+        def apply_async(self):
+            return self
+
+    monkeypatch.setattr(task_module, "execute_twap_child_order", FakeTask)
+    monkeypatch.setattr(celery_module, "chain", lambda *signatures: FakeWorkflow())
+
+    result = TWAP_Order_Manager(repo, _live_settings()).schedule_parent_order(
+        signal_id=signal_row.id,
+        strategy_id=signal_row.strategy_id,
+        symbol=signal_row.symbol,
+        side="buy",
+        quantity=500,
+        reference_price=100.0,
+        source_timestamp=signal_row.source_timestamp,
+    )
+
+    orders = repo.latest_orders(20)
+    assert result.success is True
+    assert result.payload["slice_count"] == 10
+    assert len(orders) == 10
+    assert len(scheduled) == 10
+    assert scheduled[0].countdown == 0
+    assert scheduled[1].countdown == 30
+    assert all(order["signal_id"] == signal_row.id for order in orders)
+    assert all(order["quantity"] * order["limit_price"] <= MAX_CHILD_NOTIONAL for order in orders)
