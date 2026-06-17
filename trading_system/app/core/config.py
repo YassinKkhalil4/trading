@@ -123,6 +123,7 @@ class Settings:
     scheduler_trade_monitor_seconds: int = 15
     scheduler_review_seconds: int = 3600
     provider_health_max_age_seconds: int = 180
+    primary_market_data_failure_kill_switch_streak: int = 3
     worker_sleep_seconds: int = 5
     scheduler_lock_ttl_seconds: int = 300
     scheduler_use_master_universe_refresh: bool = True
@@ -331,6 +332,9 @@ def get_settings() -> Settings:
         scheduler_review_seconds=_env_int("SCHEDULER_REVIEW_SECONDS", 3600),
         provider_health_max_age_seconds=_env_int(
             "PROVIDER_HEALTH_MAX_AGE_SECONDS", 180
+        ),
+        primary_market_data_failure_kill_switch_streak=_env_int(
+            "PRIMARY_MARKET_DATA_FAILURE_KILL_SWITCH_STREAK", 3
         ),
         worker_sleep_seconds=_env_int("WORKER_SLEEP_SECONDS", 5),
         scheduler_lock_ttl_seconds=_env_int("SCHEDULER_LOCK_TTL_SECONDS", 300),

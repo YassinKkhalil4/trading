@@ -111,7 +111,7 @@ from trading_system.app.strategies.registry import StrategyRegistryService
 @dataclass(frozen=True)
 class ScanCycleResult:
     symbol: str
-    collected: YahooChartResult | None
+    collected: AlpacaBarsResult | YahooChartResult | None
     scanner_result_id: str | None
     signal_id: str | None
     thesis_id: str | None
@@ -205,10 +205,14 @@ class TradingRuntimeService:
         collector = YahooChartCollector(self.repository)
         return collector.collect(symbol)
 
-    def collect_symbol_primary(self, symbol: str) -> AlpacaBarsResult | YahooChartResult:
+    def collect_symbol_primary(
+        self,
+        symbol: str,
+        require_primary: bool = False,
+    ) -> AlpacaBarsResult | YahooChartResult:
         collector = AlpacaBarsCollector(self.repository, self.settings)
         result = collector.collect(symbol)
-        if result.success or self.settings.environment_mode != EnvironmentMode.RESEARCH:
+        if result.success or require_primary or self.settings.environment_mode != EnvironmentMode.RESEARCH:
             return result
         return self.collect_symbol(symbol)
 
@@ -228,9 +232,38 @@ class TradingRuntimeService:
         self,
         symbol: str,
         *,
-        collected: YahooChartResult | None = None,
+        collected: AlpacaBarsResult | YahooChartResult | None = None,
     ) -> ScanCycleResult:
         normalized = symbol.strip().upper()
+        require_primary = self.settings.environment_mode == EnvironmentMode.LIVE
+        if require_primary and collected is None:
+            collected = self.collect_symbol_primary(normalized, require_primary=True)
+        if require_primary and isinstance(collected, AlpacaBarsResult) and not collected.success:
+            reason = "Primary market data unavailable; live trading scan aborted."
+            self._activate_primary_data_kill_switch(
+                symbol=normalized,
+                reason=reason,
+                payload={"collector_reason": collected.reason},
+            )
+            self.repository.store_decision_log(
+                decision_type=DecisionType.SCANNER,
+                outcome=DecisionOutcome.REJECTED,
+                entity_type="symbol",
+                entity_id=normalized,
+                strategy_id="VWAP_RECLAIM",
+                rule_version="vwap_reclaim_scanner_v1",
+                reason=reason,
+                payload={"collector_reason": collected.reason},
+            )
+            return ScanCycleResult(
+                symbol=normalized,
+                collected=collected,
+                scanner_result_id=None,
+                signal_id=None,
+                thesis_id=None,
+                reason=reason,
+            )
+
         frame = self.repository.clean_candles_df(normalized, limit=500)
         if len(frame) < 2:
             self.repository.store_decision_log(
@@ -301,7 +334,9 @@ class TradingRuntimeService:
             payload={
                 "snapshot": _snapshot_to_payload(snapshot),
                 "features": feature_payload,
-                "spread_note": "Yahoo chart has no bid/ask; spread_bps uses current candle range proxy.",
+                "spread_note": feature_payload.get("spread_note"),
+                "data_source": feature_payload.get("data_source"),
+                "spread_is_proxy": feature_payload.get("spread_is_proxy"),
                 "preflight": preflight,
                 "latest_close": snapshot.price,
                 "latest_vwap": snapshot.vwap,
@@ -367,7 +402,7 @@ class TradingRuntimeService:
         scanner_row: models.ScannerResult,
         snapshot: VwapReclaimSnapshot,
         decision: Any,
-        collected: YahooChartResult | None,
+        collected: AlpacaBarsResult | YahooChartResult | None,
     ) -> ScanCycleResult:
         """Route an accepted scanner result through the opportunity-ranking gate.
 
@@ -903,6 +938,7 @@ class TradingRuntimeService:
         )
         volatility_score = self._latest_volatility_score(signal.symbol)
         annualized_volatility = self._latest_annualized_volatility(signal.symbol)
+        spread_context = self._latest_spread_context(signal.symbol)
         portfolio_state = PortfolioState(
             account_equity=account_equity,
             open_positions=open_positions,
@@ -923,6 +959,9 @@ class TradingRuntimeService:
             broker_sync_ok=reconciliation.ok,
             broker_sync_reason=reconciliation.reason,
             kill_switch_active=self.repository.active_kill_switch_count() > 0,
+            data_source=spread_context.get("data_source"),
+            spread_note=spread_context.get("spread_note"),
+            spread_is_proxy=bool(spread_context.get("spread_is_proxy", False)),
         )
         risk_decision = RiskEngine(self.settings).evaluate(signal, portfolio_state)
         risk_context = self._risk_snapshot_context(
@@ -1315,6 +1354,21 @@ class TradingRuntimeService:
                 payload={"symbol": signal.symbol, "strategy_id": signal.strategy_id},
             )
 
+    def _latest_spread_context(self, symbol: str) -> dict[str, Any]:
+        row = self.repository.session.scalar(
+            select(models.SymbolFeatureSnapshot)
+            .where(models.SymbolFeatureSnapshot.symbol == symbol.upper())
+            .order_by(desc(models.SymbolFeatureSnapshot.source_timestamp))
+            .limit(1)
+        )
+        if not row or not isinstance(row.snapshot, dict):
+            return {}
+        return {
+            "data_source": row.snapshot.get("data_source"),
+            "spread_note": row.snapshot.get("spread_note"),
+            "spread_is_proxy": row.snapshot.get("spread_is_proxy", False),
+        }
+
     def _latest_annualized_volatility(self, symbol: str) -> float | None:
         candles = self.repository.get_symbol_recent_candles(symbol=symbol, timeframe="1d", limit=14)
         if not candles:
@@ -1481,7 +1535,26 @@ class TradingRuntimeService:
 
     def run_provider_health(self) -> ProviderHealthRunResult:
         self.bootstrap()
-        return ProviderHealthService(self.repository, self.settings).run_once()
+        result = ProviderHealthService(self.repository, self.settings).run_once()
+        if self.settings.environment_mode == EnvironmentMode.LIVE:
+            health = self.repository.latest_provider_health_for("alpaca_market_data")
+            failure_streak = int(health.failure_streak or 0) if health else 0
+            if (
+                health
+                and health.status != "HEALTHY"
+                and failure_streak >= self.settings.primary_market_data_failure_kill_switch_streak
+            ):
+                self._activate_primary_data_kill_switch(
+                    symbol=None,
+                    reason="Primary Alpaca market data health is not healthy; live trading disabled until restored.",
+                    payload={
+                        "provider_name": health.provider_name,
+                        "status": health.status,
+                        "failure_streak": health.failure_streak,
+                        "health_reason": health.reason,
+                    },
+                )
+        return result
 
     def run_features(self, symbols: list[str] | None = None) -> FeatureRunResult:
         self.bootstrap()
@@ -1665,6 +1738,26 @@ class TradingRuntimeService:
             "strategies": self.repository.list_rows(models.StrategyRegistry, 100),
         }
 
+    def _activate_primary_data_kill_switch(
+        self,
+        *,
+        symbol: str | None,
+        reason: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        if self.settings.environment_mode != EnvironmentMode.LIVE:
+            return
+        merged_payload = {"provider_name": "alpaca_market_data"}
+        if symbol is not None:
+            merged_payload["symbol"] = symbol
+        if payload:
+            merged_payload.update(payload)
+        self.repository.activate_kill_switch(
+            event_type="PRIMARY_MARKET_DATA_UNAVAILABLE",
+            reason=reason,
+            payload=merged_payload,
+        )
+
     def _build_vwap_snapshot(
         self,
         symbol: str,
@@ -1681,6 +1774,8 @@ class TradingRuntimeService:
             current_volume, max(1.0, float(ordered["volume"].tail(20).mean()))
         )
         dollar_volume = float((ordered["close"] * ordered["volume"]).sum())
+        data_source = str(latest.get("provider") or "unknown")
+        spread_is_proxy = data_source in {"yahoo_chart", "yfinance", "unknown"}
         spread_bps = calculate_spread_bps(float(latest["low"]), float(latest["high"]))
         volume_spike_score = calculate_volume_spike_score(relative_volume)
         liquidity_score = min(100.0, dollar_volume / max(1.0, self.settings.min_dollar_volume) * 50)
@@ -1714,7 +1809,13 @@ class TradingRuntimeService:
             "spread_bps": spread_bps,
             "dollar_volume": dollar_volume,
             "session_volume_so_far": session_volume,
-            "spread_note": "Proxy from current candle high/low because Yahoo chart has no bid/ask quote.",
+            "data_source": data_source,
+            "spread_is_proxy": spread_is_proxy,
+            "spread_note": (
+                "Proxy from current candle high/low because Yahoo chart has no bid/ask quote."
+                if spread_is_proxy
+                else "Primary Alpaca bar range used; execution risk still requires live quote validation."
+            ),
         }
         return snapshot, feature_payload
 
