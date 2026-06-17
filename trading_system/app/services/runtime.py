@@ -1606,7 +1606,7 @@ class TradingRuntimeService:
         )
         return {"report": model_to_dict(report), "metrics": metrics}
 
-    def dashboard_snapshot(self) -> dict[str, Any]:
+    def system_snapshot(self) -> dict[str, Any]:
         self.bootstrap()
         return {
             "counts": self.repository.counts(),

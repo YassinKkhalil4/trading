@@ -3,7 +3,27 @@ from __future__ import annotations
 import asyncio
 import inspect
 
+from unittest.mock import patch
+
 import pytest
+
+
+class _DummyAlphaModel:
+    def predict(self, _matrix):
+        return [0.75]
+
+
+_ALPHA_MODEL_PATCH = patch(
+    "trading_system.app.alpha.ml_inference.load_alpha_model",
+    return_value=_DummyAlphaModel(),
+)
+_ALPHA_MODEL_PATCH.start()
+
+
+@pytest.fixture(autouse=True)
+def mock_alpha_model_loader():
+    """Keep tests independent from unversioned alpha model artifacts."""
+    yield
 
 
 def pytest_configure(config: pytest.Config) -> None:

@@ -867,7 +867,7 @@ async def test_live_broker_submit_failure_rejects_order_and_persists_execution_e
     order = repo.latest_orders(1)[0]
     error = repo.latest_execution_errors(1)[0]
     decision = repo.latest_decisions(1)[0]
-    snapshot = TradingRuntimeService(repo, settings=settings).dashboard_snapshot()
+    snapshot = TradingRuntimeService(repo, settings=settings).system_snapshot()
 
     assert result.accepted is False
     assert result.broker_submit["submitted"] is False

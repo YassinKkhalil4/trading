@@ -8,7 +8,6 @@ on:
 env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: trading-intelligence
-  FRONTEND_ECR_REPOSITORY: trading-intelligence-frontend
   ECS_CLUSTER: trading-intelligence
 
 jobs:
@@ -26,48 +25,9 @@ jobs:
       - name: Run tests
         run: pytest trading_system/tests -q
 
-  build-frontend:
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-    outputs:
-      image: ${{ steps.frontend-image.outputs.image }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Build Next.js Frontend
-        working-directory: ./frontend
-        run: |
-          npm config set registry https://registry.npmjs.org/
-          npm ci
-          npm run build
-      - uses: aws-actions/configure-aws-credentials@v4
-        if: github.event_name == 'push'
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - uses: aws-actions/amazon-ecr-login@v2
-        if: github.event_name == 'push'
-        id: frontend-ecr
-      - name: Build and push frontend image
-        if: github.event_name == 'push'
-        id: frontend-image
-        env:
-          REGISTRY: ${{ steps.frontend-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          docker build -t "$REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG" ./frontend
-          docker push "$REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG"
-          echo "image=$REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
-
   deploy:
     if: github.event_name == 'push'
-    needs: [test, build-frontend]
+    needs: [test]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -93,8 +53,7 @@ jobs:
         id: task-defs
         env:
           BACKEND_IMAGE_URI: ${{ steps.image.outputs.image }}
-          FRONTEND_IMAGE_URI: ${{ needs.build-frontend.outputs.image }}
-          SERVICES: api scheduler market_stream reconciliation trade_monitor reviews learning frontend
+          SERVICES: api scheduler market_stream reconciliation trade_monitor reviews learning
         run: |
           set -euo pipefail
           mkdir -p /tmp/ecs-task-definitions
@@ -108,10 +67,8 @@ jobs:
               --output json)"
             next_task_definition="$(echo "$task_definition" | jq \
               --arg backend_image "$BACKEND_IMAGE_URI" \
-              --arg frontend_image "$FRONTEND_IMAGE_URI" \
               --arg container "$service" \
-              --arg service "$service" \
-              '.containerDefinitions |= map(if .name == $container then .image = (if $service == "frontend" then $frontend_image else $backend_image end) else . end)
+              '.containerDefinitions |= map(if .name == $container then .image = $backend_image else . end)
               | del(
                   .taskDefinitionArn,
                   .revision,

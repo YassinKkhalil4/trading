@@ -53,7 +53,6 @@ def test_terraform_deploys_required_independent_services_with_live_disabled_defa
     main_tf = _read(MAIN_TF)
     required_services = {
         "api",
-        "dashboard",
         "scheduler",
         "market_stream",
         "reconciliation",
@@ -64,6 +63,8 @@ def test_terraform_deploys_required_independent_services_with_live_disabled_defa
 
     for service in required_services:
         assert f"{service}" in main_tf, service
+
+    assert "dashboard" not in main_tf
 
     assert '{ name = "ENVIRONMENT_MODE", value = "paper" }' in main_tf
     assert 'value = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379/0"' in main_tf
@@ -139,7 +140,7 @@ def test_terraform_preserves_data_and_raw_archive_safety_controls():
 
 def test_github_actions_runs_tests_builds_ecr_migrates_then_rolls_services():
     workflow = _read(CI_CD)
-    expected_services = "api dashboard scheduler market_stream reconciliation trade_monitor reviews learning"
+    expected_services = "api scheduler market_stream reconciliation trade_monitor reviews learning"
 
     assert "pytest trading_system/tests -q" in workflow
     assert "aws-actions/configure-aws-credentials@v4" in workflow
@@ -159,7 +160,6 @@ def test_docker_compose_preserves_local_service_parity():
         "image: postgres:16",
         "image: redis:7",
         "api:",
-        "dashboard:",
         "celery-worker:",
         "celery-beat:",
         "REDIS_URL: redis://redis:6379/0",
@@ -169,6 +169,8 @@ def test_docker_compose_preserves_local_service_parity():
 
     for fragment in expected_fragments:
         assert fragment in compose, fragment
+
+    assert "dashboard:" not in compose
 
 
 def test_celery_tasks_replace_blocking_worker_loops():

@@ -669,7 +669,7 @@ def check_docker(report: ValidationReport) -> None:
                 repo = TradingRepository(session)
                 service = TradingRuntimeService(repo, settings=settings)
                 counts = service.bootstrap()
-                snapshot = service.dashboard_snapshot()
+                snapshot = service.system_snapshot()
             print("MODE", settings.environment_mode.value)
             print("LIVE_PATH", settings.live_order_path_enabled)
             print("ORDERS", counts.get("orders", -1))
@@ -991,7 +991,7 @@ def check_no_fake_trading_data(report: ValidationReport) -> None:
         settings=Settings(environment_mode=EnvironmentMode.RESEARCH, admin_session_secret="validation-secret"),
     )
     counts = service.bootstrap()
-    snapshot = service.dashboard_snapshot()
+    snapshot = service.system_snapshot()
 
     trading_empty = (
         counts.get("orders", 0) == 0

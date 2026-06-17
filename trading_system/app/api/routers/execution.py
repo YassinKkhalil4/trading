@@ -112,14 +112,14 @@ def journal_entry_create(
             pnl=request.pnl,
             human_notes=request.human_notes,
             mistake_tags=request.mistake_tags,
-            change_reason="Manual dashboard journal entry.",
+            change_reason="Manual API journal entry.",
         )
         service.repository.store_audit_log(
             actor=principal.username,
             event_type="JOURNAL_ENTRY_CREATED",
             entity_type="journal_entry",
             entity_id=row.id,
-            reason="Manual dashboard journal entry.",
+            reason="Manual API journal entry.",
             payload={"symbol": request.symbol, "source": "api"},
         )
         return {"journal_entry": model_to_dict(row)}

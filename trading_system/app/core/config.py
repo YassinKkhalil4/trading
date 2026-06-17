@@ -105,7 +105,6 @@ class Settings:
     min_average_volume: int = 1_000_000
     min_dollar_volume: float = 20_000_000.0
     max_spread_bps: float = 20.0
-    dashboard_refresh_seconds: int = 15
     news_rss_feeds: str = (
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
     )
@@ -308,7 +307,6 @@ def get_settings() -> Settings:
         min_average_volume=_env_int("MIN_AVERAGE_VOLUME", 1_000_000),
         min_dollar_volume=_env_float("MIN_DOLLAR_VOLUME", 20_000_000.0),
         max_spread_bps=_env_float("MAX_SPREAD_BPS", 20.0),
-        dashboard_refresh_seconds=_env_int("DASHBOARD_REFRESH_SECONDS", 15),
         news_rss_feeds=os.getenv(
             "NEWS_RSS_FEEDS",
             "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US",

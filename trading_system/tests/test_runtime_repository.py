@@ -107,7 +107,7 @@ def test_bootstrap_does_not_auto_create_schema_outside_local_sqlite(monkeypatch)
     assert calls["create_schema"] == 0
 
 
-def test_runtime_scan_persists_signal_and_thesis_from_clean_candles():
+def test_runtime_scan_persists_signal_from_clean_candles():
     repo = _repo()
     service = TradingRuntimeService(repo, settings=Settings(max_spread_bps=500.0))
     service.bootstrap()
@@ -147,10 +147,9 @@ def test_runtime_scan_persists_signal_and_thesis_from_clean_candles():
     result = service.run_vwap_scan("AMD")
     assert result.scanner_result_id is not None
     assert result.signal_id is not None
-    assert result.thesis_id is not None
-    snapshot = service.dashboard_snapshot()
+    snapshot = service.system_snapshot()
     assert snapshot["counts"]["signals"] == 1
-    assert snapshot["trade_theses"][0]["reason_for_trade"]
+    assert snapshot["signals"][0]["id"] == result.signal_id
 
 
 def _store_scannable_candles(repo: TradingRepository) -> list[datetime]:
@@ -236,8 +235,7 @@ def test_runtime_scan_routes_through_ranking_bridge_when_flag_enabled():
 
     assert result.scanner_result_id is not None
     assert result.signal_id is not None
-    assert result.thesis_id is not None
-    assert result.reason == "Ranked signal and thesis generated."
+    assert result.reason == "Ranked signal generated; deprecated trade thesis persistence has been removed."
     # The bridge path (and only the bridge path) records a strategy cooldown when
     # it creates a signal, so its presence proves we routed through the bridge.
     cooldowns = repo.session.scalars(select(models.StrategyCooldown)).all()
