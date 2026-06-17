@@ -43,6 +43,9 @@ class PortfolioState:
     market_regime: str | None = None
     annualized_volatility: float | None = None
     half_kelly_weight: float | None = None
+    data_source: str | None = None
+    spread_note: str | None = None
+    spread_is_proxy: bool = False
 
 
 @dataclass(frozen=True)
@@ -127,6 +130,8 @@ class RiskEngine:
             return self._reject(signal, "Live risk path requires explicit live configuration gates.")
         if portfolio.kill_switch_active:
             return self._reject(signal, "Kill switch is active.")
+        if self.settings.environment_mode == EnvironmentMode.LIVE and self._uses_non_primary_spread_data(portfolio):
+            return self._reject(signal, "Cannot execute live trades on non-primary (proxy) spread data.")
         if not portfolio.broker_sync_ok:
             return self._reject(signal, f"Broker/internal reconciliation failed: {portfolio.broker_sync_reason}")
         if portfolio.daily_loss_pct >= self.settings.max_daily_loss_pct:
@@ -206,6 +211,17 @@ class RiskEngine:
             rule_version=RISK_RULE_VERSION,
         )
         return decision
+
+    @staticmethod
+    def _uses_non_primary_spread_data(portfolio: PortfolioState) -> bool:
+        data_source = (portfolio.data_source or "").strip().lower()
+        spread_note = (portfolio.spread_note or "").strip().lower()
+        return (
+            portfolio.spread_is_proxy
+            or data_source in {"yahoo", "yahoo_chart", "yfinance"}
+            or "proxy" in spread_note
+            or "yahoo" in spread_note
+        )
 
     def _reject(self, signal: TradeSignal, reason: str) -> RiskDecision:
         self.decision_logger.record_simple(
