@@ -98,28 +98,23 @@ This plan converts the launch-readiness feedback into an ordered engineering bac
 - No runtime entrypoint depends on an infinite scheduler loop.
 - Tests validate task registration, cadence configuration, and lock behavior.
 
-### 6. Keep V1 time-series storage on PostgreSQL with strict retention
+### 6. Externalize high-volume time-series storage
 
-**Problem:** `RawMarketData` and `RawTradeTick` are high-volume candle/tick tables. Moving them to TimescaleDB or InfluxDB before V1 would reduce one risk while adding larger launch risks: new operational infrastructure, backup/restore complexity, deployment changes, and unfamiliar query/maintenance paths.
+**Problem:** `RawMarketData` and `RawTradeTick` store high-volume candle/tick data in ordinary PostgreSQL tables. Even with partitioning, high-frequency data can overwhelm the primary relational database.
 
-**V1 plan:**
+**Plan:**
 
-1. Keep raw candle/tick storage in standard PostgreSQL for V1.
-2. Strictly enforce day- or week-based partitioning for `RawMarketData` and `RawTradeTick`.
-3. Add a Celery-managed pruning job that deletes or drops tick partitions older than 7 days.
-4. Keep compact aggregates and execution-critical metadata longer than raw tick retention windows.
-5. Monitor ingestion volume, partition sizes, autovacuum behavior, replication lag, and WAL growth.
-
-**Backlog trigger for TimescaleDB or a dedicated tick store:**
-
-Only revisit a specialized time-series database after measured production-like ingestion shows PostgreSQL is the bottleneck, especially if daily ingestion actively overwhelms WAL throughput, retention pruning cannot keep table/index bloat controlled, or required analytics queries cannot meet latency targets on partitioned PostgreSQL.
+1. Decide the target store: TimescaleDB for SQL continuity, or a dedicated tick store if query patterns require it.
+2. Move `RawMarketData` and `RawTradeTick` writes behind a storage interface.
+3. Implement the selected time-series backend with retention, compression, and hypertable/partition policies.
+4. Keep PostgreSQL metadata tables for ingestion status, provider health, and compact aggregates only.
+5. Backfill/migration strategy: export current raw rows, load them into the time-series store, validate counts/checksums, then drop or archive raw Postgres tables.
 
 **Acceptance criteria:**
 
-- Raw tick/candle tables are partitioned by day or week.
-- A Celery pruning task enforces a 7-day raw tick retention policy.
-- Metrics and alerts cover table size, partition count, WAL growth, pruning failures, and ingestion latency.
-- The TimescaleDB/InfluxDB migration remains a documented backlog option, not a V1 launch blocker.
+- Hot tick/candle ingestion no longer writes raw payloads to the primary relational schema.
+- Retention and compression policies are documented and tested.
+- Existing analytics queries either use the new backend or documented aggregates.
 
 ### 7. Harden Alpaca stream freshness and reconnect handling
 
@@ -147,7 +142,7 @@ Only revisit a specialized time-series database after measured production-like i
 
 1. Keep the existing live-mode failsafe that rejects default `ADMIN_SESSION_SECRET` and requires `CONFIRM_LIVE_TRADING`.
 2. Add tests that dangerous admin endpoints reject default/weak secrets in every non-local deployment profile.
-3. Require audit logging for role changes, bootstrap actions, and trading-control mutations, emitted as structured logs to stdout/stderr so Datadog, CloudWatch, or the container log pipeline can ingest them even if PostgreSQL is unavailable or compromised.
+3. Require audit logging for role changes, bootstrap actions, and trading-control mutations.
 4. Add rate limits and short token expirations for admin sessions.
 5. Document secure secret provisioning for staging and live deployments.
 
@@ -155,7 +150,7 @@ Only revisit a specialized time-series database after measured production-like i
 
 - Admin mutation routes require strong secrets and privileged principals.
 - Security tests cover bootstrap and role-change routes.
-- Audit events are emitted to stdout/stderr as structured logs with actor, action, timestamp, target resource, request ID, source IP, and outcome; optional database audit rows may exist only as a secondary convenience copy.
+- Audit logs include actor, action, timestamp, and target resource.
 
 ## Product and Strategy Clarifications
 
@@ -203,7 +198,7 @@ Only revisit a specialized time-series database after measured production-like i
 4. Production market-data fallback hardening.
 5. Celery Beat migration.
 6. Stream freshness hardening.
-7. PostgreSQL partitioning and 7-day raw tick pruning.
+7. Time-series storage migration.
 8. Admin security hardening.
 9. Opportunity-ranking transparency.
 10. First-party strategy/alpha implementation.
@@ -219,5 +214,4 @@ Before launch, require all of the following:
 - Price monitoring enabled by default.
 - Stale market data blocks trading.
 - Admin endpoints tested with strong-secret requirements.
-- Raw tick/candle retention is enforced on partitioned PostgreSQL without requiring TimescaleDB or InfluxDB for V1.
 - Documented rollback procedures for scheduler, execution, and data-provider failures.
