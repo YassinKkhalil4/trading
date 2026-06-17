@@ -16,7 +16,7 @@ This plan converts the launch-readiness feedback into an ordered engineering bac
    - `MultiBaggerCandidateScore`
 2. Remove or replace repository methods that create/list those records in `trading_system/app/db/repositories.py`.
 3. Remove admin API routes backed by dropped tables from `trading_system/app/api/routers/admin.py`, including trade-review run/list endpoints.
-4. Update or delete frontend calls/components that depend on those endpoints, replacing them with explicit "feature removed" empty states only if the UI still needs navigation compatibility.
+4. Remove any obsolete API clients or documentation that depend on those endpoints.
 5. Add a database integration test that creates a fresh database, applies all Alembic migrations, imports all SQLAlchemy models, and verifies every model table exists or is intentionally externalized.
 
 **Acceptance criteria:**

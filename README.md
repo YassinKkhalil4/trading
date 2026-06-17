@@ -31,7 +31,7 @@ The platform now supports:
 - Alpha opportunity score can only reduce or modulate paper/live-disabled sizing after hard risk gates; it cannot bypass risk limits, strategy approval, live readiness, broker reconciliation, provider health, or kill switches.
 - Multi-bagger scoring is a watchlist/research layer, not an intraday execution signal.
 - Learning recommendations are audited, stored as recommendations, and cannot auto-apply changes.
-- Public health exposes only liveness. Detailed API read surfaces such as operational health, environment state, provider capabilities, strategy approvals, dashboard snapshots, and worker status require authenticated viewer-or-higher access.
+- Public health exposes only liveness. Detailed API read surfaces such as operational health, environment state, provider capabilities, strategy approvals, and worker status require authenticated viewer-or-higher access.
 
 ## Quick Start
 
@@ -48,26 +48,9 @@ Run API:
 uvicorn trading_system.app.api.main:app --reload
 ```
 
-Run dashboard:
+### Headless API
 
-```bash
-cd frontend && npm run dev
-```
-
-### Streamlit dashboard sunset
-
-The legacy Streamlit dashboard sunset date is **2026-06-28**. Streamlit is no longer a supported UI surface: all admin user management, manual trading operations, live-readiness, audit, and trading views must be served from `frontend/` against the production-gated API. Do not add new Streamlit entrypoints or restore `trading_system/dashboard/`.
-
-The dashboard is database-backed. It shows only real provider calls and persisted decisions:
-
-- market candles, features, scanner decisions, signals, and theses
-- Alpaca market-data stream events
-- paper orders, fills, broker sync logs, and reconciliation results
-- SEC filings and news catalyst rows
-- scheduler runs, audit logs, decision logs, and live-readiness reports
-- journal lifecycle metrics, AI reviews, weekly reviews, and learning recommendations
-- provider health, data quality, missing-candle gaps, backtest reports, live approvals, and kill switches
-- Alpha Command Center data: opportunity scores, rejection reasons, expectancy snapshots, sector/stock leadership, point-in-time universe rows, short-interest snapshots, options-intelligence snapshots, and multi-bagger watchlist scores
+This platform is a strictly headless command-and-control REST API. The legacy Next.js and Streamlit UI surfaces have been removed; do not add frontend-serving routes, HTML responses, chart-specific payloads, browser websocket bridges, or UI session state to core execution paths.
 
 Run tests:
 
@@ -127,7 +110,7 @@ Persisted alpha intelligence tables include:
 
 ## Production Topology
 
-AWS Terraform deploys independent ECS Fargate services for API, Next.js dashboard, scheduler, market stream, reconciliation, trade monitor, reviews, and learning. PostgreSQL is the source of truth, Redis is used for cache/coordination, and raw provider payloads can be archived to S3 when `RAW_ARCHIVE_BUCKET` is configured.
+AWS Terraform deploys independent ECS Fargate services for API, scheduler, market stream, reconciliation, trade monitor, reviews, and learning. PostgreSQL is the source of truth, Redis is used for cache/coordination, and raw provider payloads can be archived to S3 when `RAW_ARCHIVE_BUCKET` is configured.
 
 ## Backtest Warning
 

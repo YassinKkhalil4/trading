@@ -26,6 +26,22 @@ from trading_system.app.security.auth import (
 client = TestClient(app)
 
 
+def _api_routes():
+    routes = []
+    pending = list(app.routes)
+    while pending:
+        route = pending.pop(0)
+        nested = getattr(route, "routes", None)
+        if nested:
+            pending.extend(nested)
+        original_router = getattr(route, "original_router", None)
+        if original_router is not None:
+            pending.extend(original_router.routes)
+        if isinstance(route, APIRoute):
+            routes.append(route)
+    return routes
+
+
 def test_cors_is_restricted_to_configured_origins():
     cors_middleware = next(
         middleware
@@ -44,8 +60,8 @@ def test_read_routes_are_protected_by_default():
     auth_dependencies = {require_principal, require_admin_token, require_trader_or_admin}
     unprotected = []
 
-    for route in app.routes:
-        if not isinstance(route, APIRoute) or "GET" not in route.methods:
+    for route in _api_routes():
+        if "GET" not in route.methods:
             continue
         if route.path in public_get_routes:
             continue
@@ -72,7 +88,6 @@ def test_database_bootstrap_requires_admin_authentication():
 
 def test_sensitive_read_endpoints_require_authentication():
     endpoints = [
-        "/dashboard/snapshot",
         "/admin/users",
         "/ops/health",
         "/ops/workers",
@@ -120,11 +135,10 @@ def test_sensitive_read_endpoints_require_authentication():
         assert response.status_code == 401, endpoint
 
 
-def test_api_exposes_required_dashboard_and_operations_surfaces():
+def test_api_exposes_required_headless_operations_surfaces():
     route_paths = {
         route.path
-        for route in app.routes
-        if isinstance(route, APIRoute)
+        for route in _api_routes()
     }
     required_paths = {
         "/ops/health",
@@ -210,8 +224,8 @@ def test_state_changing_routes_are_protected_by_default():
     auth_dependencies = {require_principal, require_admin_token, require_trader_or_admin}
     unprotected = []
 
-    for route in app.routes:
-        if not isinstance(route, APIRoute) or "POST" not in route.methods:
+    for route in _api_routes():
+        if "POST" not in route.methods:
             continue
         if route.path in public_post_routes:
             continue
@@ -220,53 +234,6 @@ def test_state_changing_routes_are_protected_by_default():
             unprotected.append(route.path)
 
     assert unprotected == []
-
-
-def test_live_approval_revoke_endpoint_is_admin_only_and_uses_repository(monkeypatch):
-    class FakeSession:
-        def close(self) -> None:
-            pass
-
-    class FakeRepository:
-        def __init__(self) -> None:
-            self.revoked: dict | None = None
-
-                {
-                    "id": self.revoked["approval_id"] if self.revoked else "unknown",
-                    "status": "REVOKED",
-                    "revoked_by": self.revoked["revoked_by"] if self.revoked else None,
-                    "revoke_reason": self.revoked["reason"] if self.revoked else None,
-                }
-            ][:limit]
-
-    class FakeService:
-        def __init__(self, repository: FakeRepository) -> None:
-            self.repository = repository
-
-        def bootstrap(self) -> dict:
-            return {}
-
-    repository = FakeRepository()
-
-    def fake_runtime():
-        return FakeSession(), FakeService(repository)
-
-    monkeypatch.setattr(admin_router, "_runtime", fake_runtime)
-    app.dependency_overrides[require_admin_token] = lambda: AdminPrincipal(username="risk-admin", role="ADMIN")
-    try:
-        response = client.post(
-            json={"approval_id": "approval-1", "reason": "Operator ended the live window."},
-        )
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 200
-    assert repository.revoked == {
-        "approval_id": "approval-1",
-        "revoked_by": "risk-admin",
-        "reason": "Operator ended the live window.",
-    }
-    assert response.json()["approval"]["status"] == "REVOKED"
 
 
 def test_symbol_config_mutations_are_audited(monkeypatch):

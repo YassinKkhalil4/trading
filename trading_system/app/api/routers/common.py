@@ -7,13 +7,10 @@ from fastapi import (
     Header,
     HTTPException,
     Query,
-    WebSocket,
-    WebSocketDisconnect,
     status,
 )
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import desc, select
 
 from trading_system.app.core.config import get_settings
 from trading_system.app.alpha.expectancy import AlphaExpectancyRefreshService
@@ -25,7 +22,7 @@ from trading_system.app.alpha.intelligence import (
 )
 from trading_system.app.alpha.leadership import SectorLeadershipService
 from trading_system.app.alpha.strategies import ALPHA_STRATEGIES
-from trading_system.app.core.enums import AdminRole, EnvironmentMode, MarketRegime
+from trading_system.app.core.enums import AdminRole, EnvironmentMode, MarketRegime, OrderStatus
 from trading_system.app.data.market_calendar import get_session, opening_range_window
 from trading_system.app.db import models
 from trading_system.app.db.repositories import TradingRepository, model_to_dict
@@ -56,7 +53,6 @@ from trading_system.app.services.ranking.opportunity_ranking import (
     OpportunityRankingService,
 )
 from trading_system.app.services.runtime import TradingRuntimeService
-from trading_system.app.services.streaming_events import redis_event_stream
 from trading_system.app.security.auth import (
     AdminPrincipal,
     AuthService,
@@ -428,14 +424,6 @@ def _read_rows(
     finally:
         session.close()
 
-
-
-
-
-class MarketCandlePage(BaseModel):
-    candles: list[dict[str, Any]]
-    next_cursor: str | None = None
-    limit: int
 
 
 
