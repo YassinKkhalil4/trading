@@ -4,6 +4,8 @@ import time
 from dataclasses import dataclass
 from uuid import uuid4
 
+import redis
+
 from trading_system.app.core.config import Settings, get_settings
 
 
@@ -117,10 +119,6 @@ class CoordinationLockManager:
 
     def _redis_client(self):
         try:
-            import redis
-        except ImportError:
-            return None
-        try:
             client = redis.from_url(self.settings.redis_url, decode_responses=True)
             client.ping()
             return client
@@ -131,3 +129,88 @@ class CoordinationLockManager:
 def _normalize_key(key: str) -> str:
     cleaned = key.strip().lower().replace(" ", "_")
     return cleaned if cleaned.startswith("trading:") else f"trading:{cleaned}"
+
+
+class DistributedLockTimeout(TimeoutError):
+    """Raised when a distributed lock cannot be acquired before its wait timeout."""
+
+
+class DistributedLock:
+    """Redis-backed context manager for short critical sections across workers.
+
+    The lock uses Redis' atomic SET NX semantics through redis-py's Lock implementation,
+    blocks for a bounded period while another worker holds the lock, and always applies
+    a TTL so a crashed worker cannot deadlock live execution indefinitely.
+    """
+
+    def __init__(
+        self,
+        redis_client,
+        name: str,
+        *,
+        blocking_timeout: float = 10.0,
+        ttl_seconds: float = 30.0,
+    ) -> None:
+        self.redis_client = redis_client
+        self.name = _normalize_key(name)
+        self.blocking_timeout = blocking_timeout
+        self.ttl_seconds = ttl_seconds
+        self._lock = None
+        self._memory_token: str | None = None
+
+    def __enter__(self) -> "DistributedLock":
+        self._lock = self.redis_client.lock(
+            self.name,
+            timeout=self.ttl_seconds,
+            blocking=True,
+            blocking_timeout=self.blocking_timeout,
+            thread_local=False,
+        )
+        try:
+            acquired = bool(self._lock.acquire())
+        except redis.RedisError:
+            self._lock = None
+            return self._acquire_memory_fallback()
+        if not acquired:
+            self._lock = None
+            raise DistributedLockTimeout(
+                f"Timed out after {self.blocking_timeout}s waiting for distributed lock {self.name}."
+            )
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        if self._lock is not None:
+            try:
+                self._lock.release()
+            finally:
+                self._lock = None
+        if self._memory_token is not None:
+            existing = _MEMORY_LOCKS.get(self.name)
+            if existing and existing[1] == self._memory_token:
+                _MEMORY_LOCKS.pop(self.name, None)
+            self._memory_token = None
+        return False
+
+    def _acquire_memory_fallback(self) -> "DistributedLock":
+        deadline = time.monotonic() + self.blocking_timeout
+        token = str(uuid4())
+        while True:
+            now = time.time()
+            existing = _MEMORY_LOCKS.get(self.name)
+            if existing and existing[0] <= now:
+                _MEMORY_LOCKS.pop(self.name, None)
+                existing = None
+            if not existing:
+                _MEMORY_LOCKS[self.name] = (now + self.ttl_seconds, token)
+                self._memory_token = token
+                return self
+            if time.monotonic() >= deadline:
+                raise DistributedLockTimeout(
+                    f"Timed out after {self.blocking_timeout}s waiting for fallback lock {self.name}."
+                )
+            time.sleep(0.1)
+
+
+def redis_client_from_settings(settings: Settings | None = None) -> redis.Redis:
+    resolved_settings = settings or get_settings()
+    return redis.from_url(resolved_settings.redis_url, decode_responses=True)
