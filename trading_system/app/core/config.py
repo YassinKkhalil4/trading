@@ -131,7 +131,7 @@ class Settings:
     # When True the scheduler skips every price/market-data job (market data,
     # features, price scanners, candle repair, regime, SEC) and the universe
     # refresh activates all tradable assets without a price-based liquidity cap.
-    news_only_mode: bool = True
+    news_only_mode: bool = False
     scheduler_news_screener_seconds: int = 300
 
     # Opportunity ranking engine. The score is a weighted average of the eight
@@ -339,7 +339,7 @@ def get_settings() -> Settings:
         scheduler_use_master_universe_refresh=_env_bool(
             "SCHEDULER_USE_MASTER_UNIVERSE_REFRESH", True
         ),
-        news_only_mode=_env_bool("NEWS_ONLY_MODE", True),
+        news_only_mode=_env_bool("NEWS_ONLY_MODE", False),
         scheduler_news_screener_seconds=_env_int(
             "SCHEDULER_NEWS_SCREENER_SECONDS", 300
         ),

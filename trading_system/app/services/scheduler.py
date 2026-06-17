@@ -20,7 +20,6 @@ from trading_system.app.services.universe import MasterUniverseRefreshWorker
 from trading_system.app.db.repositories import TradingRepository
 from trading_system.app.execution.fill_reconciliation import FillReconciliationLoop
 from trading_system.app.features.production_features import ProductionFeatureEngine
-from trading_system.app.journal.review_engine import TradeReviewEngine
 from trading_system.app.learning.recommendations import LearningRecommendationEngine
 from trading_system.app.monitoring.trade_monitor_service import TradeMonitorService
 from trading_system.app.ops.coordination import CoordinationLockManager
@@ -297,8 +296,12 @@ class ScheduledCollectorRunner:
             result = TradeMonitorService(self.repository).run_once()
             return ScheduledJobResult(job_name, True, result.reason, {"result": asdict(result)})
         if job_name == "reviews":
-            result = TradeReviewEngine(self.repository).run_once()
-            return ScheduledJobResult(job_name, True, result.reason, {"result": asdict(result)})
+            return ScheduledJobResult(
+                job_name,
+                True,
+                "Deprecated AI trade reviews are disabled because ai_reviews was removed from the schema.",
+                {"result": {"reviews_created": 0}},
+            )
         if job_name == "learning":
             result = LearningRecommendationEngine(self.repository).run_weekly_review()
             return ScheduledJobResult(job_name, True, result.reason, {"result": asdict(result)})

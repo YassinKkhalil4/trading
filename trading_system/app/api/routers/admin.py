@@ -337,15 +337,6 @@ def missing_candle_gaps(
     )
 
 
-@router.get("/reviews/trades")
-def trade_reviews(
-    _principal: AdminPrincipal = Depends(require_principal),
-    limit: int = Query(default=100, ge=1, le=500),
-) -> dict:
-    return _read_rows(
-        "ai_reviews", lambda repo, row_limit: repo.latest_ai_reviews(row_limit), limit
-    )
-
 
 @router.get("/reviews/weekly")
 def weekly_reviews(
@@ -948,25 +939,6 @@ def trade_monitor_run(
             service.repository,
             actor=principal.username,
             operation="trade_monitor_run",
-            reason=result.reason,
-            result=result,
-        )
-        return result.__dict__
-    finally:
-        session.close()
-
-
-@router.post("/reviews/trades/run")
-def trade_reviews_run(
-    principal: AdminPrincipal = Depends(require_trader_or_admin),
-) -> dict:
-    session, service = _runtime()
-    try:
-        result = service.run_reviews()
-        _audit_manual_operation(
-            service.repository,
-            actor=principal.username,
-            operation="trade_reviews_run",
             reason=result.reason,
             result=result,
         )

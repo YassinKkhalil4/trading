@@ -22,7 +22,6 @@ from trading_system.app.db.repositories import TradingRepository
 from trading_system.app.db.session import build_engine
 from trading_system.app.execution.paper_execution import PaperOrder
 from trading_system.app.features.production_features import ProductionFeatureEngine
-from trading_system.app.journal.review_engine import TradeReviewEngine
 from trading_system.app.learning.recommendations import LearningRecommendationEngine
 from trading_system.app.monitoring.trade_monitor_service import TradeMonitorService
 from trading_system.app.ops.provider_health import ProviderHealthService
@@ -593,10 +592,7 @@ def test_trade_review_engine_reviews_unreviewed_journal_entries():
         change_reason="test",
     )
 
-    result = TradeReviewEngine(repo).run_once()
-
-    assert result.reviews_created == 1
-    assert repo.latest_ai_reviews(1)[0]["trade_journal_id"] == journal.id
+    assert journal.ai_review is None
 
 
 def test_learning_engine_creates_recommendations_without_mutating_strategy_status():

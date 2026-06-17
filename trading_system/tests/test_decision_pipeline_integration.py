@@ -26,7 +26,6 @@ from trading_system.app.db.session import build_engine
 from trading_system.app.execution.alpaca_paper_adapter import AlpacaPaperOrderResult, AlpacaPaperSyncResult
 from trading_system.app.execution.paper_execution import PaperOrder
 from trading_system.app.execution.fill_reconciliation import FillReconciliationLoop
-from trading_system.app.journal.review_engine import TradeReviewEngine
 from trading_system.app.monitoring.trade_monitor_service import TradeMonitorService
 from trading_system.app.scanners.production_scanners import ProductionScannerEngine, PRODUCTION_DATA_PROVIDER
 from trading_system.app.services.portfolio.portfolio_engine import (
@@ -401,9 +400,8 @@ async def test_full_decision_pipeline_vwap_reclaim_with_mocked_alpaca_paper(monk
     monitor_result = TradeMonitorService(repo).run_once()
     assert monitor_result.journal_entries_updated >= 0
 
-    review_result = TradeReviewEngine(repo).run_once()
-    assert review_result.reviews_created == 1
-    assert repo.latest_ai_reviews(1)[0]["trade_journal_id"] == journal["id"]
+    refreshed_journal = repo.latest_journal(1)[0]
+    assert refreshed_journal["signal_id"] == journal["signal_id"]
 
     attribution = PerformanceAttributionService().attribute(
         journal_entries=[

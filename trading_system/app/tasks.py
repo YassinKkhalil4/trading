@@ -42,6 +42,7 @@ celery.conf.update(
         "trading_system.app.tasks.request_bracket_order": {"queue": "execution"},
         "trading_system.app.tasks.execute_twap_child_order": {"queue": "execution"},
         "trading_system.app.tasks.maintain_db_partitions": {"queue": "analytics"},
+        "trading_system.app.tasks.prune_raw_time_series_partitions": {"queue": "analytics"},
     },
     task_acks_late=True,
     task_reject_on_worker_lost=True,
@@ -87,6 +88,10 @@ celery.conf.update(
             "task": "trading_system.app.tasks.maintain_db_partitions",
             "schedule": crontab(hour=0, minute=15, day_of_week="sun"),
         },
+        "prune-raw-time-series-partitions": {
+            "task": "trading_system.app.tasks.prune_raw_time_series_partitions",
+            "schedule": crontab(hour=0, minute=30),
+        },
     },
 )
 
@@ -104,6 +109,19 @@ def maintain_db_partitions() -> dict[str, str]:
     session = SessionLocal()
     try:
         return PartitionManager(session).create_next_week_partitions()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+@celery.task(name="trading_system.app.tasks.prune_raw_time_series_partitions", **_TASK_OPTIONS)
+def prune_raw_time_series_partitions(retention_days: int = 7) -> dict[str, list[str]]:
+    """Drop raw market-data partitions older than the V1 retention window."""
+    session = SessionLocal()
+    try:
+        return PartitionManager(session).drop_partitions_older_than(retention_days=retention_days)
     except Exception:
         session.rollback()
         raise

@@ -385,7 +385,7 @@ def risk_check_vwap_reclaim(
 
 
 @router.post("/execution/paper/submit-vwap-reclaim")
-def submit_paper_order(
+async def submit_paper_order(
     request: PaperOrderRequest,
     _principal: AdminPrincipal = Depends(require_trader_or_admin),
 ) -> dict:
@@ -423,11 +423,39 @@ def submit_paper_order(
             )
         ]
     )
-    order = PaperExecutionEngine().submit_limit_order(
-        signal=signal,
-        risk_decision=risk_decision,
-        reconciliation=reconciliation,
-    )
+    if risk_decision.approved and reconciliation.ok:
+        idempotency_key = build_idempotency_key(
+            namespace="order",
+            symbol=signal.symbol,
+            strategy_id=signal.strategy_id,
+            source_timestamp=signal.source_timestamp,
+            direction=signal.direction.value,
+        )
+        order = PaperOrder(
+            symbol=signal.symbol,
+            side=entry_side_from_direction(signal.direction),
+            quantity=risk_decision.position_size,
+            order_type="limit",
+            limit_price=signal.entry_zone[0],
+            stop_loss=signal.stop_loss,
+            idempotency_key=idempotency_key,
+            status=OrderStatus.CREATED,
+            reason="Paper order candidate created for Alpaca Paper broker submission.",
+            created_at=datetime.now(UTC),
+        )
+    else:
+        order = PaperOrder(
+            symbol=signal.symbol,
+            side=entry_side_from_direction(signal.direction),
+            quantity=0,
+            order_type="limit",
+            limit_price=signal.entry_zone[0],
+            stop_loss=signal.stop_loss,
+            idempotency_key="",
+            status=OrderStatus.REJECTED,
+            reason=(risk_decision.reason if not risk_decision.approved else reconciliation.reason),
+            created_at=datetime.now(UTC),
+        )
     session, service = _runtime()
     try:
         scanner_result_id, signal_id = _persist_direct_scan_decision(
@@ -452,6 +480,23 @@ def submit_paper_order(
             environment_mode=EnvironmentMode.PAPER.value,
             source_timestamp=order.created_at,
         )
+        broker_submit = None
+        if order.quantity > 0:
+            broker_submit = await AlpacaPaperAdapter(service.settings).submit_limit_bracket_order(
+                symbol=order.symbol,
+                side=order.side,
+                quantity=order.quantity,
+                limit_price=order.limit_price,
+                stop_price=order.stop_loss,
+                take_profit_price=signal.target_1,
+                client_order_id=order.idempotency_key,
+            )
+            order_row = service.repository.mark_order_broker_result(
+                order_id=order_row.id,
+                broker_order_id=broker_submit.broker_order_id,
+                status=OrderStatus.SUBMITTED.value if broker_submit.submitted else OrderStatus.REJECTED.value,
+                reason=broker_submit.reason,
+            )
     finally:
         session.close()
     return {
@@ -464,4 +509,5 @@ def submit_paper_order(
         "signal_id": signal_id,
         "risk_check_id": risk_check_id,
         "order_id": order_row.id,
+        "broker_submit": broker_submit.__dict__ if broker_submit else None,
     }

@@ -30,8 +30,11 @@ from trading_system.app.data.market_calendar import get_session, opening_range_w
 from trading_system.app.db import models
 from trading_system.app.db.repositories import TradingRepository, model_to_dict
 from trading_system.app.db.session import SessionLocal
+from trading_system.app.execution.alpaca_paper_adapter import AlpacaPaperAdapter
 from trading_system.app.execution.order_manager import OrderManager
-from trading_system.app.execution.paper_execution import PaperExecutionEngine
+from trading_system.app.execution.order_side import entry_side_from_direction
+from trading_system.app.execution.paper_execution import PaperOrder
+from trading_system.app.signals.idempotency import build_idempotency_key
 from trading_system.app.execution.reconciliation import (
     PositionSnapshot,
     reconcile_positions,
