@@ -84,7 +84,13 @@ from trading_system.app.research.vectorbt_backtests import (
 from trading_system.app.risk.kill_switch import KillSwitchActionResult, KillSwitchService
 from trading_system.app.regime.regime_service import MarketRegimeService, RegimeRunResult
 from trading_system.app.risk.live_gates import LiveGateService
-from trading_system.app.risk.risk_engine import PortfolioState, RiskDecision, RiskEngine
+from trading_system.app.risk.risk_engine import (
+    PortfolioState,
+    RiskDecision,
+    RiskEngine,
+    calculate_annualized_volatility_from_ewma_true_range,
+    calculate_ewma_true_range,
+)
 from trading_system.app.risk.live_readiness import LiveReadinessResult, LiveReadinessService
 from trading_system.app.scanners.production_scanners import (
     ProductionScannerEngine,
@@ -496,6 +502,7 @@ class TradingRuntimeService:
             weekly_loss_pct=weekly_loss_pct,
         )
         volatility_score = self._latest_volatility_score(signal.symbol)
+        annualized_volatility = self._latest_annualized_volatility(signal.symbol)
         portfolio_state = PortfolioState(
             account_equity=account_equity,
             open_positions=open_positions,
@@ -510,6 +517,7 @@ class TradingRuntimeService:
             spread_bps=spread_bps,
             expected_slippage_bps=expected_slippage_bps,
             volatility_score=volatility_score,
+            annualized_volatility=annualized_volatility,
             trades_today=trades_today,
             trades_by_strategy_today={signal.strategy_id: strategy_trades_today},
             broker_sync_ok=reconciliation.ok,
@@ -870,6 +878,7 @@ class TradingRuntimeService:
             weekly_loss_pct=weekly_loss_pct,
         )
         volatility_score = self._latest_volatility_score(signal.symbol)
+        annualized_volatility = self._latest_annualized_volatility(signal.symbol)
         portfolio_state = PortfolioState(
             account_equity=account_equity,
             open_positions=open_positions,
@@ -884,6 +893,7 @@ class TradingRuntimeService:
             spread_bps=spread_bps,
             expected_slippage_bps=expected_slippage_bps,
             volatility_score=volatility_score,
+            annualized_volatility=annualized_volatility,
             trades_today=trades_today,
             trades_by_strategy_today={signal.strategy_id: strategy_trades_today},
             broker_sync_ok=reconciliation.ok,
@@ -1279,6 +1289,16 @@ class TradingRuntimeService:
                 ),
                 payload={"symbol": signal.symbol, "strategy_id": signal.strategy_id},
             )
+
+    def _latest_annualized_volatility(self, symbol: str) -> float | None:
+        candles = self.repository.get_symbol_recent_candles(symbol=symbol, timeframe="1d", limit=14)
+        if not candles:
+            return 0.4
+        ewma_true_range = calculate_ewma_true_range(candles)
+        return calculate_annualized_volatility_from_ewma_true_range(
+            ewma_true_range,
+            current_price=float(candles[-1]["close"]),
+        )
 
     def _latest_volatility_score(self, symbol: str) -> float | None:
         feature = self.repository.latest_daily_feature_for(symbol)
