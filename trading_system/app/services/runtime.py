@@ -75,6 +75,7 @@ from trading_system.app.monitoring.trade_monitor_service import (
     TradeMonitorRunResult,
     TradeMonitorService,
 )
+from trading_system.app.ops.coordination import DistributedLock, redis_client_from_settings
 from trading_system.app.ops.provider_health import ProviderHealthRunResult, ProviderHealthService
 from trading_system.app.research.vectorbt_backtests import (
     BacktestAssumptions,
@@ -737,6 +738,10 @@ class TradingRuntimeService:
         return result
 
     async def sync_alpaca_live(self) -> dict[str, Any]:
+        with DistributedLock(redis_client_from_settings(self.settings), "live_broker_sync_lock"):
+            return await self._sync_alpaca_live_locked()
+
+    async def _sync_alpaca_live_locked(self) -> dict[str, Any]:
         if self.settings.environment_mode != EnvironmentMode.LIVE or not (
             self.settings.alpaca_live_api_key and self.settings.alpaca_live_secret_key
         ):
@@ -979,15 +984,16 @@ class TradingRuntimeService:
                 "reconciliation": reconciliation.__dict__,
             },
         )
-        return await LiveExecutionService(
-            self.repository,
-            adapter=AlpacaLiveAdapter(self.settings),
-        ).submit_limit_order(
-            signal=signal,
-            signal_id=signal_row.id,
-            risk_decision=risk_decision,
-            reconciliation=reconciliation,
-        )
+        with DistributedLock(redis_client_from_settings(self.settings), "live_broker_sync_lock"):
+            return await LiveExecutionService(
+                self.repository,
+                adapter=AlpacaLiveAdapter(self.settings),
+            ).submit_limit_order(
+                signal=signal,
+                signal_id=signal_row.id,
+                risk_decision=risk_decision,
+                reconciliation=reconciliation,
+            )
 
     async def submit_internal_order_to_broker(
         self,

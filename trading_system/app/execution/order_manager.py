@@ -24,6 +24,7 @@ from trading_system.app.db import models
 from trading_system.app.db.repositories import TradingRepository, model_to_dict
 from trading_system.app.execution.alpaca_live_adapter import AlpacaLiveAdapter
 from trading_system.app.execution.alpaca_paper_adapter import AlpacaPaperAdapter
+from trading_system.app.ops.coordination import DistributedLock, redis_client_from_settings
 from trading_system.app.risk.live_gates import LiveGateService
 
 
@@ -213,15 +214,16 @@ class TWAP_Order_Manager:
         order.status = OrderStatus.SUBMITTED.value
         order.submitted_at = datetime.now(UTC)
         self.repository.session.commit()
-        broker_submit = asyncio.run(
-            AlpacaLiveAdapter(self.settings).submit_limit_order(
-                symbol=order.symbol,
-                side=order.side,
-                quantity=order.quantity,
-                limit_price=order.limit_price,
-                client_order_id=order.idempotency_key,
+        with DistributedLock(redis_client_from_settings(self.settings), "live_broker_sync_lock"):
+            broker_submit = asyncio.run(
+                AlpacaLiveAdapter(self.settings).submit_limit_order(
+                    symbol=order.symbol,
+                    side=order.side,
+                    quantity=order.quantity,
+                    limit_price=order.limit_price,
+                    client_order_id=order.idempotency_key,
+                )
             )
-        )
         if broker_submit.submitted:
             self.repository.mark_order_broker_result(
                 order_id=order.id,
