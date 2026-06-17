@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import sqrt
 
 from trading_system.app.audit.logger import InMemoryDecisionLogger
 from trading_system.app.core.config import Settings, get_settings
@@ -8,7 +9,10 @@ from trading_system.app.core.enums import DecisionOutcome, DecisionType, Environ
 from trading_system.app.signals.signal_engine import TradeSignal
 
 
-RISK_RULE_VERSION = "risk_rules_v1"
+RISK_RULE_VERSION = "risk_rules_v2"
+TARGET_DAILY_RISK_PERCENT = 0.005
+TRADING_DAYS_PER_YEAR = 252
+EWMA_TRUE_RANGE_PERIODS = 14
 
 
 @dataclass(frozen=True)
@@ -37,6 +41,8 @@ class PortfolioState:
     expectancy_sample_size: int = 0
     recent_strategy_drawdown: float = 0.0
     market_regime: str | None = None
+    annualized_volatility: float | None = None
+    half_kelly_weight: float | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +53,60 @@ class RiskDecision:
     position_size: int = 0
     risk_amount: float = 0.0
     risk_multiplier: float = 0.0
+    position_size_dollars: float = 0.0
+    annualized_volatility: float = 0.0
+    half_kelly_weight: float = 0.0
+
+
+def calculate_ewma_true_range(
+    candles: list[dict[str, float]],
+    periods: int = EWMA_TRUE_RANGE_PERIODS,
+) -> float:
+    """Return the EWMA true range for the most recent candles.
+
+    Candles must be ordered oldest to newest and expose high, low, and close values.
+    """
+    if not candles:
+        return 0.0
+    alpha = 2 / (periods + 1)
+    ewma: float | None = None
+    previous_close: float | None = None
+    for candle in candles[-periods:]:
+        high = float(candle["high"])
+        low = float(candle["low"])
+        true_range = high - low
+        if previous_close is not None:
+            true_range = max(true_range, abs(high - previous_close), abs(low - previous_close))
+        ewma = true_range if ewma is None else (alpha * true_range) + ((1 - alpha) * ewma)
+        previous_close = float(candle["close"])
+    return float(ewma or 0.0)
+
+
+def calculate_annualized_volatility_from_ewma_true_range(ewma_true_range: float, current_price: float) -> float:
+    if ewma_true_range <= 0 or current_price <= 0:
+        return 0.0
+    return (ewma_true_range / current_price) * sqrt(TRADING_DAYS_PER_YEAR)
+
+
+def calculate_volatility_targeted_position_size_dollars(
+    *,
+    portfolio_value: float,
+    current_annualized_volatility: float,
+    target_daily_risk_percent: float = TARGET_DAILY_RISK_PERCENT,
+) -> float:
+    if portfolio_value <= 0 or current_annualized_volatility <= 0 or target_daily_risk_percent <= 0:
+        return 0.0
+    return (
+        (portfolio_value * target_daily_risk_percent)
+        / (current_annualized_volatility * sqrt(1 / TRADING_DAYS_PER_YEAR))
+    )
+
+
+def calculate_half_kelly_weight(*, win_rate: float, win_loss_ratio: float) -> float:
+    if win_loss_ratio <= 0:
+        return 0.0
+    kelly_percentage = win_rate - ((1 - win_rate) / win_loss_ratio)
+    return kelly_percentage / 2
 
 
 class RiskEngine:
@@ -107,21 +167,35 @@ class RiskEngine:
         if risk_per_share <= 0:
             return self._reject(signal, "Invalid stop loss: risk per share must be positive.")
 
-        risk_multiplier = self._adaptive_risk_multiplier(portfolio)
-        if risk_multiplier <= 0:
-            return self._reject(signal, "Opportunity score/expectancy does not allow risk allocation.")
-        risk_amount = portfolio.account_equity * (self.settings.risk_per_trade_pct / 100) * risk_multiplier
-        position_size = int(risk_amount // risk_per_share)
+        if portfolio.expectancy_r is not None and portfolio.expectancy_r < 0:
+            return self._reject(signal, "Strategy expectancy is negative.")
+        if portfolio.half_kelly_weight is not None and portfolio.half_kelly_weight <= 0:
+            return self._reject(signal, "Half-Kelly allocation is non-positive.")
+
+        annualized_volatility = portfolio.annualized_volatility
+        if annualized_volatility is None or annualized_volatility <= 0:
+            return self._reject(signal, "Annualized volatility is required for volatility-targeted sizing.")
+
+        position_size_dollars = calculate_volatility_targeted_position_size_dollars(
+            portfolio_value=portfolio.account_equity,
+            current_annualized_volatility=annualized_volatility,
+        )
+        if portfolio.half_kelly_weight is not None:
+            position_size_dollars *= portfolio.half_kelly_weight
+        position_size = int(position_size_dollars // entry)
         if position_size <= 0:
-            return self._reject(signal, "Account risk amount is too small for this stop distance.")
+            return self._reject(signal, "Volatility-targeted allocation is too small for this entry price.")
 
         decision = RiskDecision(
             approved=True,
-            reason="Risk checks approved.",
+            reason="Risk checks approved with volatility-targeted sizing.",
             risk_rule_version=RISK_RULE_VERSION,
             position_size=position_size,
-            risk_amount=risk_amount,
-            risk_multiplier=risk_multiplier,
+            risk_amount=position_size_dollars,
+            risk_multiplier=portfolio.half_kelly_weight if portfolio.half_kelly_weight is not None else 1.0,
+            position_size_dollars=position_size_dollars,
+            annualized_volatility=annualized_volatility,
+            half_kelly_weight=portfolio.half_kelly_weight if portfolio.half_kelly_weight is not None else 1.0,
         )
         self.decision_logger.record_simple(
             DecisionType.RISK,
@@ -132,43 +206,6 @@ class RiskEngine:
             rule_version=RISK_RULE_VERSION,
         )
         return decision
-
-    def _adaptive_risk_multiplier(self, portfolio: PortfolioState) -> float:
-        if portfolio.expectancy_r is not None and portfolio.expectancy_r < 0:
-            return 0.0
-        grade = (portfolio.opportunity_grade or "").upper()
-        if grade == "A+":
-            multiplier = 1.0
-        elif grade == "A":
-            multiplier = 0.75
-        elif grade == "B":
-            multiplier = 0.5
-        elif grade == "C":
-            multiplier = 0.1 if self.settings.environment_mode == EnvironmentMode.PAPER else 0.0
-        elif portfolio.opportunity_score is not None:
-            if portfolio.opportunity_score >= 90:
-                multiplier = 1.0
-            elif portfolio.opportunity_score >= 80:
-                multiplier = 0.75
-            elif portfolio.opportunity_score >= 70:
-                multiplier = 0.5
-            elif portfolio.opportunity_score >= 60 and self.settings.environment_mode == EnvironmentMode.PAPER:
-                multiplier = 0.1
-            else:
-                multiplier = 0.0
-        else:
-            multiplier = 1.0
-
-        has_alpha_context = portfolio.opportunity_grade is not None or portfolio.opportunity_score is not None
-        if has_alpha_context and (portfolio.expectancy_r is None or portfolio.expectancy_sample_size < 20):
-            multiplier *= 0.5
-        if portfolio.recent_strategy_drawdown < -2.0:
-            multiplier *= 0.5
-        if portfolio.market_regime in {"BEAR_TREND", "RISK_OFF", "HIGH_VOLATILITY", "MACRO_EVENT_RISK"}:
-            multiplier *= 0.5
-        if portfolio.volatility_score is not None and portfolio.volatility_score > 75:
-            multiplier *= 0.75
-        return round(max(0.0, min(1.0, multiplier)), 4)
 
     def _reject(self, signal: TradeSignal, reason: str) -> RiskDecision:
         self.decision_logger.record_simple(

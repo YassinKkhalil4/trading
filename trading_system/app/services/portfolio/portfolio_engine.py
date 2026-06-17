@@ -7,6 +7,7 @@ from typing import Any
 from trading_system.app.core.config import Settings, get_settings
 from trading_system.app.core.enums import DecisionOutcome, DecisionType, TradeType
 from trading_system.app.db.repositories import TradingRepository
+from trading_system.app.risk.risk_engine import calculate_half_kelly_weight
 from trading_system.app.signals.signal_engine import TradeSignal
 
 PORTFOLIO_RULE_VERSION = "portfolio_engine_v1"
@@ -170,6 +171,18 @@ class PortfolioDecisionService:
             self._maybe_persist(decision, signal, persist)
             return decision
 
+        kelly_weight = self._half_kelly_weight(signal.strategy_id, reasons)
+        if kelly_weight is not None and kelly_weight <= 0:
+            decision = self._reject(
+                signal_id=signal_id,
+                signal=signal,
+                context=context,
+                reasons=tuple(reasons) or ("Half-Kelly allocation is non-positive.",),
+                exposure_snapshot=exposure_snapshot,
+            )
+            self._maybe_persist(decision, signal, persist)
+            return decision
+
         soft_multiplier = _soft_limit_multiplier(
             signal=signal,
             context=context,
@@ -177,7 +190,10 @@ class PortfolioDecisionService:
             exposure_snapshot=exposure_snapshot,
             reasons=reasons,
         )
-        recommended_multiplier = min(hard_multiplier, soft_multiplier)
+        allocation_limits = [hard_multiplier, soft_multiplier]
+        if kelly_weight is not None:
+            allocation_limits.append(kelly_weight)
+        recommended_multiplier = min(allocation_limits)
 
         if recommended_multiplier <= 0:
             decision = self._reject(
@@ -213,6 +229,22 @@ class PortfolioDecisionService:
         )
         self._maybe_persist(decision, signal, persist)
         return decision
+
+    def _half_kelly_weight(self, strategy_id: str, reasons: list[str]) -> float | None:
+        if self.repository is None:
+            return None
+        stats = self.repository.get_strategy_expectancy_stats(strategy_id=strategy_id, limit=100)
+        if not stats or stats.get("sample_size", 0) <= 0:
+            return None
+        half_kelly_weight = calculate_half_kelly_weight(
+            win_rate=float(stats["win_rate"]),
+            win_loss_ratio=float(stats["win_loss_ratio"]),
+        )
+        if half_kelly_weight <= 0:
+            reasons.append("Strategy expectancy blocks capital allocation (Kelly <= 0).")
+            return 0.0
+        reasons.append(f"Half-Kelly allocation cap applied ({half_kelly_weight:.2f}x).")
+        return half_kelly_weight
 
     def _reject(
         self,

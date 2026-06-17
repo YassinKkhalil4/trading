@@ -148,11 +148,13 @@ def test_adaptive_risk_sizing_reduces_alpha_context_without_bypassing_hard_rules
             expectancy_r=1.2,
             expectancy_sample_size=50,
             market_regime="BULL_TREND",
+            annualized_volatility=0.4,
         ),
     )
     assert decision.approved is True
-    assert decision.risk_multiplier == 0.75
-    assert decision.risk_amount == 75.0
+    assert decision.position_size_dollars > 0
+    assert decision.annualized_volatility == 0.4
+    assert decision.risk_amount == decision.position_size_dollars
 
     rejected = RiskEngine(settings).evaluate(
         signal,
@@ -167,10 +169,11 @@ def test_adaptive_risk_sizing_reduces_alpha_context_without_bypassing_hard_rules
             opportunity_grade="A+",
             expectancy_r=-0.2,
             expectancy_sample_size=100,
+            annualized_volatility=0.4,
         ),
     )
     assert rejected.approved is False
-    assert "does not allow risk allocation" in rejected.reason
+    assert "expectancy" in rejected.reason
 
 
 def test_sector_leadership_and_expectancy_refresh_persist_snapshots():

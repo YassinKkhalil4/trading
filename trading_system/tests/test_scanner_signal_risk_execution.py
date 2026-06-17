@@ -206,3 +206,53 @@ def test_paper_execution_requires_paper_mode():
     )
     assert order.quantity == 0
     assert "ENVIRONMENT_MODE=paper" in order.reason
+
+
+def test_volatility_targeted_position_sizing_halves_allocation_when_volatility_doubles():
+    from trading_system.app.risk.risk_engine import calculate_volatility_targeted_position_size_dollars
+
+    low_vol_allocation = calculate_volatility_targeted_position_size_dollars(
+        portfolio_value=100_000,
+        current_annualized_volatility=0.40,
+    )
+    high_vol_allocation = calculate_volatility_targeted_position_size_dollars(
+        portfolio_value=100_000,
+        current_annualized_volatility=0.80,
+    )
+
+    assert high_vol_allocation == pytest.approx(low_vol_allocation / 2)
+
+
+def test_risk_engine_blocks_non_positive_half_kelly_allocation():
+    signal = _signal()
+    risk = RiskEngine(Settings(environment_mode=EnvironmentMode.PAPER)).evaluate(
+        signal,
+        PortfolioState(
+            account_equity=100_000,
+            open_positions=0,
+            daily_loss_pct=0,
+            weekly_loss_pct=0,
+            sector_exposure_pct=0,
+            trades_today=0,
+            trades_by_strategy_today={},
+            annualized_volatility=0.4,
+            half_kelly_weight=0.0,
+        ),
+    )
+
+    assert risk.approved is False
+    assert "Half-Kelly" in risk.reason
+
+
+def test_ewma_true_range_uses_gap_aware_true_range():
+    from trading_system.app.risk.risk_engine import calculate_ewma_true_range
+
+    ewma = calculate_ewma_true_range(
+        [
+            {"high": 10.0, "low": 9.0, "close": 9.5},
+            {"high": 12.0, "low": 11.0, "close": 11.5},
+        ],
+        periods=14,
+    )
+
+    assert ewma > 1.0

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
@@ -16,7 +15,6 @@ from trading_system.app.services.portfolio.portfolio_engine import (
     PortfolioDecisionOutcome,
     PortfolioDecisionService,
     PortfolioEvaluationContext,
-    PortfolioOpenOrder,
     PortfolioPosition,
 )
 from trading_system.app.signals.signal_engine import TradeSignal
@@ -264,3 +262,30 @@ def test_portfolio_decision_persists_to_decision_logs():
     assert row.entity_type == "portfolio_decision"
     assert row.payload["portfolio_outcome"] == decision.outcome.value
     assert row.payload["recommended_size_multiplier"] == decision.recommended_size_multiplier
+
+
+def test_portfolio_rejects_negative_kelly_strategy_expectancy():
+    repo = _repo()
+    for pnl in [-100.0, -50.0, 25.0, -75.0]:
+        repo.store_journal_entry(
+            symbol="AMD",
+            strategy_id="VWAP_RECLAIM",
+            signal_id=None,
+            entry_thesis="kelly test",
+            actual_entry=100.0,
+            actual_exit=101.0,
+            pnl=pnl,
+            human_notes=None,
+            mistake_tags=[],
+            change_reason="closed trade",
+        )
+        repo.latest_journal(1)[0]
+    decision = PortfolioDecisionService(settings=_settings(), repository=repo).evaluate(
+        signal_id="kelly-block",
+        signal=_signal(symbol="AMD"),
+        context=PortfolioEvaluationContext(account_equity=100_000, account_cash=100_000),
+        persist=False,
+    )
+
+    assert decision.approved is False
+    assert "Kelly" in "; ".join(decision.reasons)

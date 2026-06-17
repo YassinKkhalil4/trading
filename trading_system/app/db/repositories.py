@@ -2354,6 +2354,62 @@ class TradingRepository:
         self.session.commit()
         return row
 
+    def get_symbol_recent_candles(
+        self,
+        *,
+        symbol: str,
+        timeframe: str = "1d",
+        limit: int = 14,
+    ) -> list[dict[str, float]]:
+        rows = self.session.scalars(
+            select(models.CleanMarketData)
+            .where(
+                models.CleanMarketData.symbol == symbol.upper(),
+                models.CleanMarketData.timeframe == timeframe,
+                models.CleanMarketData.data_quality_status == DataQualityStatus.VALID.value,
+            )
+            .order_by(desc(models.CleanMarketData.source_timestamp))
+            .limit(limit)
+        ).all()
+        return [
+            {"high": float(row.high), "low": float(row.low), "close": float(row.close)}
+            for row in reversed(rows)
+        ]
+
+    def get_strategy_expectancy_stats(
+        self,
+        *,
+        strategy_id: str,
+        limit: int = 100,
+    ) -> dict[str, float | int] | None:
+        rows = self.session.scalars(
+            select(models.TradeJournal)
+            .where(
+                models.TradeJournal.strategy_id == strategy_id,
+                models.TradeJournal.pnl.is_not(None),
+                models.TradeJournal.actual_exit.is_not(None),
+            )
+            .order_by(desc(models.TradeJournal.source_timestamp), desc(models.TradeJournal.created_at))
+            .limit(limit)
+        ).all()
+        if not rows:
+            return None
+
+        wins = [float(row.pnl) for row in rows if row.pnl is not None and row.pnl > 0]
+        losses = [abs(float(row.pnl)) for row in rows if row.pnl is not None and row.pnl < 0]
+        sample_size = len(rows)
+        win_rate = len(wins) / sample_size if sample_size else 0.0
+        average_win = sum(wins) / len(wins) if wins else 0.0
+        average_loss = sum(losses) / len(losses) if losses else 0.0
+        win_loss_ratio = average_win / average_loss if average_loss > 0 else 0.0
+        return {
+            "sample_size": sample_size,
+            "win_rate": win_rate,
+            "average_win": average_win,
+            "average_loss": average_loss,
+            "win_loss_ratio": win_loss_ratio,
+        }
+
     def store_journal_entry(
         self,
         *,
