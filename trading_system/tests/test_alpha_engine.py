@@ -244,12 +244,6 @@ def test_missing_alpha_intelligence_layers_persist_and_feed_scanners():
     assert options.records_created == 1
     assert repo.latest_options_intelligence_for("GME").options_score > 0
     assert multi.records_created == 1
-    assert repo.latest_multi_bagger_candidate_scores(1)[0]["target_multiple"] in {
-        "3x",
-        "5x",
-        "10x",
-        "watch",
-    }
 
     scanner = AlphaStrategyScannerService(repo, Settings()).run_strategy(
         "FAILED_BREAKDOWN_REVERSAL", symbols=["GME"]

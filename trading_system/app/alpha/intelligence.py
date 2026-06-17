@@ -254,7 +254,7 @@ class MultiBaggerScoringService:
             created, "Multi-bagger long-shot candidates scored separately from intraday alpha."
         )
 
-    def score_symbol(self, symbol: str) -> models.MultiBaggerCandidateScore:
+    def score_symbol(self, symbol: str) -> dict[str, object]:
         symbol = symbol.upper()
         universe = self.session.scalar(
             select(models.SymbolUniverse).where(models.SymbolUniverse.symbol == symbol)
@@ -320,24 +320,18 @@ class MultiBaggerScoringService:
             f"{symbol} long-shot score {score:.1f}: narrative={component_scores['narrative']:.1f}, "
             f"growth={component_scores['growth']:.1f}, flows={component_scores['capital_flows']:.1f}."
         )
-        return self.repository.store_multi_bagger_candidate_score(
-            symbol=symbol,
-            horizon="multi_bagger_long_shot",
-            score=score,
-            grade=grade,
-            target_multiple=target_multiple,
-            component_scores=component_scores,
-            narrative=narrative,
-            growth_score=component_scores["growth"],
-            capital_flows_score=component_scores["capital_flows"],
-            institutional_accumulation_score=component_scores["institutional_accumulation"],
-            short_squeeze_score=component_scores["short_squeeze"],
-            options_leverage_score=component_scores["options_leverage"],
-            risk_flags=risk_flags,
-            confidence_level=confidence,
-            payload={"sector_etf": SECTOR_ETFS.get(universe.sector or "") if universe else None},
-            source_timestamp=datetime.now(UTC),
-        )
+        return {
+            "symbol": symbol,
+            "horizon": "multi_bagger_long_shot",
+            "score": score,
+            "grade": grade,
+            "target_multiple": target_multiple,
+            "component_scores": component_scores,
+            "narrative": narrative,
+            "risk_flags": risk_flags,
+            "confidence_level": min(score / 100.0, 1.0),
+            "payload": {"source": "heuristic_scoring", "version": "multi_bagger_v1"},
+        }
 
     def _latest_feature(self, symbol: str) -> models.SymbolFeatureSnapshot | None:
         return self.session.scalar(

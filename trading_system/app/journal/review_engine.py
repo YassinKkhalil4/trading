@@ -27,20 +27,9 @@ class TradeReviewEngine:
         journals = self.repository.session.scalars(select(models.TradeJournal).limit(500)).all()
         created = 0
         for journal in journals:
-            existing = self.repository.session.scalar(
-                select(models.AIReview).where(models.AIReview.trade_journal_id == journal.id)
-            )
-            if existing:
+            if journal.ai_review:
                 continue
             review = self._build_review(journal)
-            self.repository.store_ai_review(
-                trade_journal_id=journal.id,
-                prompt_version=REVIEW_ENGINE_VERSION,
-                review_text=review,
-                confidence_score=70.0,
-                reason="Deterministic review generated; AI provider not required.",
-                source_timestamp=journal.source_timestamp,
-            )
             journal.ai_review = review
             self.repository.session.commit()
             created += 1

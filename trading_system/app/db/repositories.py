@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -37,6 +38,8 @@ from trading_system.app.execution.paper_execution import PaperOrder
 from trading_system.app.risk.risk_engine import RiskDecision
 from trading_system.app.scanners.vwap_reclaim import ScannerDecision
 from trading_system.app.signals.signal_engine import TradeSignal
+
+audit_logger = logging.getLogger("trading.audit")
 
 
 def model_to_dict(row: Any) -> dict[str, Any]:
@@ -1305,60 +1308,6 @@ class TradingRepository:
         self.session.commit()
         return row
 
-    def store_trade_thesis(
-        self,
-        thesis: AIThesis,
-        *,
-        signal_id: str,
-        symbol: str,
-        strategy_id: str,
-        source_timestamp: datetime,
-    ) -> models.TradeThesis:
-        row = models.TradeThesis(
-            signal_id=signal_id,
-            symbol=symbol,
-            strategy_id=strategy_id,
-            prompt_version=thesis.prompt_version,
-            trade_type=thesis.trade_type,
-            setup_quality=thesis.setup_quality,
-            catalyst_quality=thesis.catalyst_quality,
-            confidence=thesis.confidence,
-            reason_for_trade=thesis.reason_for_trade,
-            invalidation_reason=thesis.invalidation_reason,
-            risks=thesis.risks,
-            suggested_holding_period=thesis.suggested_holding_period,
-            reason="Rule-based thesis generated for dashboard review; not trade authority.",
-            source_timestamp=source_timestamp,
-        )
-        self.session.add(row)
-        self.session.commit()
-        self.store_decision_log(
-            decision_type=DecisionType.AI_REVIEW,
-            outcome=DecisionOutcome.RECORDED,
-            entity_type="trade_thesis",
-            entity_id=row.id,
-            strategy_id=strategy_id,
-            rule_version=thesis.prompt_version,
-            reason=row.reason or "Thesis recorded.",
-            payload={"confidence": thesis.confidence},
-            source_timestamp=source_timestamp,
-        )
-        return row
-
-    def signal_by_id(self, signal_id: str) -> models.Signal | None:
-        return self.session.get(models.Signal, signal_id)
-
-    def latest_candidate_signal(self) -> models.Signal | None:
-        return self.session.scalar(
-            select(models.Signal)
-            .where(
-                models.Signal.status.in_(
-                    [SignalStatus.CANDIDATE.value, SignalStatus.APPROVED.value]
-                )
-            )
-            .order_by(desc(models.Signal.created_at))
-        )
-
     def store_risk_check(
         self,
         risk: RiskDecision,
@@ -2343,14 +2292,30 @@ class TradingRepository:
         payload: dict | None = None,
         source_timestamp: datetime | None = None,
     ) -> models.AuditLog:
+        event_timestamp = source_timestamp or _now()
+        safe_payload = _json_safe(payload)
+        audit_logger.info(
+            "admin_audit_event",
+            extra={
+                "audit_event": {
+                    "actor": actor,
+                    "event_type": event_type,
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "reason": reason,
+                    "payload": safe_payload,
+                    "source_timestamp": event_timestamp.isoformat(),
+                }
+            },
+        )
         row = models.AuditLog(
             actor=actor,
             event_type=event_type,
             entity_type=entity_type,
             entity_id=entity_id,
             reason=reason,
-            payload=_json_safe(payload),
-            source_timestamp=source_timestamp or _now(),
+            payload=safe_payload,
+            source_timestamp=event_timestamp,
         )
         self.session.add(row)
         self.session.commit()
@@ -2767,29 +2732,6 @@ class TradingRepository:
                 violations.append("STOP_LOSS_BREACHED")
         return violations
 
-    def store_ai_review(
-        self,
-        *,
-        trade_journal_id: str | None,
-        prompt_version: str,
-        review_text: str,
-        confidence_score: float | None,
-        reason: str,
-        source_timestamp: datetime | None = None,
-    ) -> models.AIReview:
-        row = models.AIReview(
-            trade_journal_id=trade_journal_id,
-            prompt_template_id=None,
-            prompt_version=prompt_version,
-            review_text=review_text,
-            confidence_score=confidence_score,
-            reason=reason,
-            source_timestamp=source_timestamp or _now(),
-        )
-        self.session.add(row)
-        self.session.commit()
-        return row
-
     def store_weekly_review(
         self,
         *,
@@ -2917,7 +2859,6 @@ class TradingRepository:
             "pit_universe_memberships": "PointInTimeUniverseMembership",
             "short_interest_snapshots": "ShortInterestSnapshot",
             "options_intelligence_snapshots": "OptionsIntelligenceSnapshot",
-            "multi_bagger_candidate_scores": "MultiBaggerCandidateScore",
         }
         counts = {}
         for name, model_name in tracked_model_names.items():
@@ -3209,22 +3150,6 @@ class TradingRepository:
         self.session.commit()
         return row
 
-    def store_multi_bagger_candidate_score(self, **kwargs: Any) -> models.MultiBaggerCandidateScore:
-        if "payload" in kwargs:
-            kwargs["payload"] = _json_safe(kwargs["payload"])
-        if "risk_flags" in kwargs:
-            kwargs["risk_flags"] = _json_safe(kwargs["risk_flags"])
-        if "component_scores" in kwargs:
-            kwargs["component_scores"] = _json_safe(kwargs["component_scores"])
-        if "symbol" in kwargs:
-            kwargs["symbol"] = str(kwargs["symbol"]).upper()
-        row = models.MultiBaggerCandidateScore(**kwargs)
-        if row.source_timestamp is None:
-            row.source_timestamp = _now()
-        self.session.add(row)
-        self.session.commit()
-        return row
-
     def latest_short_interest_for(self, symbol: str) -> models.ShortInterestSnapshot | None:
         return self.session.scalar(
             select(models.ShortInterestSnapshot)
@@ -3259,11 +3184,6 @@ class TradingRepository:
 
     def latest_options_intelligence_snapshots(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.list_rows(models.OptionsIntelligenceSnapshot, limit)
-
-    def latest_multi_bagger_candidate_scores(self, limit: int = 100) -> list[dict[str, Any]]:
-        if not hasattr(models, "MultiBaggerCandidateScore"):
-            return []
-        return self.list_rows(models.MultiBaggerCandidateScore, limit)
 
     def latest_opportunity_scores(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.list_rows(models.OpportunityScore, limit)
@@ -3348,10 +3268,8 @@ class TradingRepository:
     def latest_signals(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.list_rows(models.Signal, limit)
 
-    def latest_trade_theses(self, limit: int = 100) -> list[dict[str, Any]]:
-        if not hasattr(models, "TradeThesis"):
-            return []
-        return self.list_rows(models.TradeThesis, limit)
+    def signal_by_id(self, signal_id: str) -> models.Signal | None:
+        return self.session.get(models.Signal, signal_id)
 
     def latest_risk_checks(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.list_rows(models.RiskCheck, limit)
@@ -3367,11 +3285,6 @@ class TradingRepository:
 
     def latest_journal(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.list_rows(models.TradeJournal, limit)
-
-    def latest_ai_reviews(self, limit: int = 100) -> list[dict[str, Any]]:
-        if not hasattr(models, "AIReview"):
-            return []
-        return self.list_rows(models.AIReview, limit)
 
     def latest_decisions(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.list_rows(models.DecisionLog, limit)
