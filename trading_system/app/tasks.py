@@ -15,7 +15,10 @@ from trading_system.app.db.session import SessionLocal
 from trading_system.app.research.backtest_service import BacktestService
 from trading_system.app.alpha.strategies import AlphaStrategyScannerService
 from trading_system.app.execution.order_manager import OrderManager, TWAP_Order_Manager
-from trading_system.app.services.runtime import TradingRuntimeService
+from trading_system.app.services.orchestrators.data_pipeline_orchestrator import DataPipelineOrchestrator
+from trading_system.app.services.orchestrators.execution_orchestrator import ExecutionOrchestrator
+from trading_system.app.services.orchestrators.research_orchestrator import ResearchOrchestrator
+from trading_system.app.services.orchestrators.risk_and_sync_orchestrator import RiskAndSyncOrchestrator
 from trading_system.app.services.scheduler import _job_cadences
 
 settings = get_settings()
@@ -129,14 +132,14 @@ def prune_raw_time_series_partitions(retention_days: int = 7) -> dict[str, list[
         session.close()
 
 
-def _with_runtime(task_name: str, operation: Callable[[TradingRuntimeService], Any]) -> Any:
+def _with_orchestrator(task_name: str, orchestrator_type: type, operation: Callable[[Any], Any]) -> Any:
     session = SessionLocal()
     started_at = datetime.now(UTC)
     try:
         repository = TradingRepository(session)
-        service = TradingRuntimeService(repository, settings=get_settings())
-        service.bootstrap()
-        result = operation(service)
+        orchestrator = orchestrator_type(repository, settings=get_settings())
+        orchestrator.bootstrap()
+        result = operation(orchestrator)
         repository.store_worker_heartbeat(
             worker_name=task_name,
             status="HEALTHY",
@@ -162,6 +165,22 @@ def _with_runtime(task_name: str, operation: Callable[[TradingRuntimeService], A
         session.close()
 
 
+def _with_data_orchestrator(task_name: str, operation: Callable[[DataPipelineOrchestrator], Any]) -> Any:
+    return _with_orchestrator(task_name, DataPipelineOrchestrator, operation)
+
+
+def _with_execution_orchestrator(task_name: str, operation: Callable[[ExecutionOrchestrator], Any]) -> Any:
+    return _with_orchestrator(task_name, ExecutionOrchestrator, operation)
+
+
+def _with_risk_and_sync_orchestrator(task_name: str, operation: Callable[[RiskAndSyncOrchestrator], Any]) -> Any:
+    return _with_orchestrator(task_name, RiskAndSyncOrchestrator, operation)
+
+
+def _with_research_orchestrator(task_name: str, operation: Callable[[ResearchOrchestrator], Any]) -> Any:
+    return _with_orchestrator(task_name, ResearchOrchestrator, operation)
+
+
 def _serialize_result(result: Any) -> Any:
     if is_dataclass(result) and not isinstance(result, type):
         return _serialize_result(asdict(result))
@@ -184,7 +203,7 @@ def run_scheduled_job(
     symbols: list[str] | None = None,
     actor: str = "celery",
 ) -> Any:
-    return _with_runtime(
+    return _with_data_orchestrator(
         job_name,
         lambda service: service.run_scheduled_job(job_name, symbols=symbols, actor=actor),
     )
@@ -207,7 +226,7 @@ def fetch_sec_filings(symbols: list[str] | None = None) -> Any:
 
 @celery.task(name="trading_system.app.tasks.run_fill_reconciliation", **_TASK_OPTIONS)
 def run_fill_reconciliation() -> Any:
-    return _with_runtime(
+    return _with_risk_and_sync_orchestrator(
         "fill_reconciliation",
         lambda service: service.run_fill_reconciliation_once(),
     )
@@ -215,12 +234,12 @@ def run_fill_reconciliation() -> Any:
 
 @celery.task(name="trading_system.app.tasks.run_trade_monitor", **_TASK_OPTIONS)
 def run_trade_monitor() -> Any:
-    return _with_runtime("trade_monitor", lambda service: service.run_trade_monitor())
+    return _with_risk_and_sync_orchestrator("trade_monitor", lambda service: service.run_trade_monitor())
 
 
 @celery.task(name="trading_system.app.tasks.stream_market_data", **_TASK_OPTIONS)
 def stream_market_data(max_messages: int | None = None) -> Any:
-    return _with_runtime(
+    return _with_data_orchestrator(
         "market_stream",
         lambda service: asyncio.run(
             service.run_alpaca_market_data_stream(
@@ -235,7 +254,7 @@ def run_backtest(
     symbols: list[str] | None = None,
     provider: str = "alpaca_market_data",
 ) -> Any:
-    return _with_runtime(
+    return _with_research_orchestrator(
         "backtest",
         lambda service: BacktestService(service.repository).run_vwap_reclaim(
             symbols=symbols,
@@ -250,7 +269,7 @@ def run_production_scanners(
     symbols: list[str] | None = None,
     actor: str = "celery",
 ) -> Any:
-    return _with_runtime(
+    return _with_data_orchestrator(
         "production_scanners",
         lambda service: service.run_production_scanners(symbols),
     )
@@ -263,7 +282,7 @@ def run_alpha_strategy_scanner(
     symbols: list[str] | None = None,
     actor: str = "celery",
 ) -> Any:
-    return _with_runtime(
+    return _with_data_orchestrator(
         "alpha_scanner_run",
         lambda service: AlphaStrategyScannerService(service.repository).run_strategy(
             strategy_id, symbols=symbols
@@ -273,7 +292,7 @@ def run_alpha_strategy_scanner(
 
 @celery.task(bind=True, name="trading_system.app.tasks.request_bracket_order", **_TASK_OPTIONS)
 def request_bracket_order(self, **kwargs: Any) -> Any:
-    return _with_runtime(
+    return _with_execution_orchestrator(
         "request_bracket_order",
         lambda service: OrderManager(service.repository).request_bracket_order(**kwargs),
     )
@@ -283,7 +302,7 @@ def request_bracket_order(self, **kwargs: Any) -> Any:
 def execute_twap_child_order(
     self, previous_result: dict[str, Any] | None = None, **kwargs: Any
 ) -> Any:
-    return _with_runtime(
+    return _with_execution_orchestrator(
         "execute_twap_child_order",
         lambda service: TWAP_Order_Manager(service.repository).execute_child_order(
             previous_result, **kwargs
