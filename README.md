@@ -115,3 +115,7 @@ AWS Terraform deploys independent ECS Fargate services for API, scheduler, marke
 ## Backtest Warning
 
 Early S&P 500 backtests are marked as potentially survivorship-biased unless a point-in-time universe is used. The `point_in_time_universe_memberships` table now supports dated membership snapshots so future backtests can request the tradable universe as it existed on the test date rather than relying on today's surviving symbols.
+
+---
+
+Built by [Yassin Khalil](https://ykhalil.com)
